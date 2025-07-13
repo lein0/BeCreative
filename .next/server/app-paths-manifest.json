@@ -1,9 +1,0 @@
-{
-  "/not-found": "app/not-found.js",
-  "/page": "app/page.js",
-  "/explore/page": "app/explore/page.js",
-  "/plans/page": "app/plans/page.js",
-  "/signup/page": "app/signup/page.js",
-  "/login/page": "app/login/page.js",
-  "/become-a-teacher/page": "app/become-a-teacher/page.js"
-}
