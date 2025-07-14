@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { Input } from "../../../components/ui/input";
 import { Button } from "../../../components/ui/button";
 import { Card } from "../../../components/ui/card";
-import { supabase } from "../../../lib/supabase";
+import { directSupabase } from "../../../lib/supabase-direct";
 import Cropper from "react-easy-crop";
 
 function getCroppedImg(imageSrc: any, crop: any, zoom: any, aspect: any) {
@@ -32,25 +32,25 @@ export default function ProfileSetupPage() {
   useEffect(() => {
     async function checkAuth() {
       console.log('Profile setup: Checking authentication...');
-      const { data: { user }, error } = await supabase.auth.getUser();
-      console.log('Profile setup: Auth check result:', { user: !!user, error: error?.message });
+      const { data: authData, error: authError } = await directSupabase.getUser();
+      console.log('Profile setup: Auth check result:', { user: !!authData.user, error: authError?.message });
       
-      if (error || !user) {
+      if (authError || !authData.user) {
         console.error('Profile setup: Not authenticated, redirecting to login');
         router.push('/login');
         return;
       }
       
       // Check if user exists in users table
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', user.id)
-        .single();
+      const { data: userData, error: userError } = await directSupabase.queryTable('users', {
+        select: '*',
+        eq: ['id', authData.user.id],
+        single: true
+      });
       
       console.log('Profile setup: User table check:', { userData: !!userData, userError: userError?.message });
       
-      if (userError && userError.code !== 'PGRST116') {
+      if (userError && !userError.message.includes('No rows found')) {
         console.error('Profile setup: User not found in database');
         // User doesn't exist in our table, redirect to signup
         router.push('/signup');
@@ -100,24 +100,24 @@ export default function ProfileSetupPage() {
       console.log('Profile setup: Starting form submission...');
       
       // Check authentication first
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      console.log('Profile setup: Auth check:', { user: !!user, error: authError?.message });
+      const { data: authData, error: authError } = await directSupabase.getUser();
+      console.log('Profile setup: Auth check:', { user: !!authData.user, error: authError?.message });
       
-      if (authError || !user) {
+      if (authError || !authData.user) {
         console.error('Profile setup: Not authenticated');
         throw new Error("Not authenticated. Please try logging in again.");
       }
       
       // Check if user exists in users table
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', user.id)
-        .single();
+      const { data: userData, error: userError } = await directSupabase.queryTable('users', {
+        select: '*',
+        eq: ['id', authData.user.id],
+        single: true
+      });
       
       console.log('Profile setup: User table check:', { userData: !!userData, userError: userError?.message });
       
-      if (userError && userError.code !== 'PGRST116') {
+      if (userError && !userError.message.includes('No rows found')) {
         console.error('Profile setup: Error checking user table:', userError);
         throw new Error('User profile not found. Please try signing up again.');
       }
@@ -126,21 +126,27 @@ export default function ProfileSetupPage() {
       if (profilePic && imageSrc) {
         console.log('Profile setup: Uploading profile picture...');
         // Check if bucket exists (defensive)
-        const { data: bucketList, error: bucketError } = await supabase.storage.listBuckets();
+        const { data: bucketList, error: bucketError } = await directSupabase.storageListBuckets();
         console.log('DEBUG: bucketList', bucketList, 'bucketError', bucketError);
         if (bucketError || !bucketList?.find((b: any) => b.name === "profile-pictures")) {
           throw new Error("Profile pictures bucket not found. Please contact support.");
         }
-        const { data, error: uploadError } = await supabase.storage
-          .from("profile-pictures")
-          .upload(`public/${user.id}/${profilePic.name}`, profilePic, {
+        const { data, error: uploadError } = await directSupabase.storageUpload(
+          "profile-pictures",
+          `public/${authData.user.id}/${profilePic.name}`,
+          profilePic,
+          {
             cacheControl: "3600",
             upsert: true,
-          });
+          }
+        );
         if (uploadError) throw uploadError;
-        avatar_url = data?.path
-          ? supabase.storage.from("profile-pictures").getPublicUrl(data.path).data.publicUrl
-          : null;
+        if (data?.path) {
+          const { data: urlData } = await directSupabase.storageGetPublicUrl("profile-pictures", data.path);
+          avatar_url = urlData.publicUrl;
+        } else {
+          avatar_url = null;
+        }
         console.log('Profile setup: Avatar uploaded:', avatar_url);
       }
       
@@ -155,12 +161,14 @@ export default function ProfileSetupPage() {
         tiktok_url
       });
       
-      const { error: updateError } = await supabase.from("users").update({
+      const { error: updateError } = await directSupabase.updateTable('users', {
         bio,
         avatar_url,
         instagram_url,
         tiktok_url,
-      }).eq("id", user.id);
+      }, {
+        eq: ['id', authData.user.id]
+      });
       
       if (updateError) {
         console.error('Profile setup: Update error:', updateError);
@@ -181,8 +189,8 @@ export default function ProfileSetupPage() {
     setLoading(true);
     setError("");
     try {
-      const user = (await supabase.auth.getUser()).data.user;
-      if (!user) throw new Error("Not authenticated");
+      const { data: authData, error: authError } = await directSupabase.getUser();
+      if (authError || !authData.user) throw new Error("Not authenticated");
       router.push("/explore");
     } catch (err: any) {
       setError(err.message || "Something went wrong");
@@ -251,39 +259,29 @@ export default function ProfileSetupPage() {
                 />
               </div>
               <div>
-                <label className="block mb-1 font-medium">Instagram Handle</label>
-                <div className="flex items-center">
-                  <span className="px-2 py-2 bg-gray-100 border border-input rounded-l-md text-gray-500 select-none">@</span>
-                  <Input
-                    type="text"
-                    value={instagram.replace(/^@/, "")}
-                    onChange={e => setInstagram(e.target.value.replace(/[^a-zA-Z0-9_\.]/g, ""))}
-                    placeholder="yourhandle"
-                    maxLength={30}
-                    className="rounded-l-none"
-                  />
-                </div>
+                <label className="block mb-1 font-medium">Instagram</label>
+                <Input
+                  type="text"
+                  value={instagram}
+                  onChange={e => setInstagram(e.target.value)}
+                  placeholder="@username"
+                />
               </div>
               <div>
-                <label className="block mb-1 font-medium">TikTok Handle</label>
-                <div className="flex items-center">
-                  <span className="px-2 py-2 bg-gray-100 border border-input rounded-l-md text-gray-500 select-none">@</span>
-                  <Input
-                    type="text"
-                    value={tiktok.replace(/^@/, "")}
-                    onChange={e => setTiktok(e.target.value.replace(/[^a-zA-Z0-9_\.]/g, ""))}
-                    placeholder="yourhandle"
-                    maxLength={30}
-                    className="rounded-l-none"
-                  />
-                </div>
+                <label className="block mb-1 font-medium">TikTok</label>
+                <Input
+                  type="text"
+                  value={tiktok}
+                  onChange={e => setTiktok(e.target.value)}
+                  placeholder="@username"
+                />
               </div>
-              {error && <div className="text-red-500 text-sm">{error}</div>}
+              {error && <div className="text-red-600 text-sm">{error}</div>}
               <div className="flex gap-2">
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "Saving..." : "Save and continue"}
+                <Button type="submit" disabled={loading} className="flex-1">
+                  {loading ? "Saving..." : "Complete Profile"}
                 </Button>
-                <Button type="button" variant="outline" className="w-full" onClick={handleSkip} disabled={loading}>
+                <Button type="button" variant="outline" onClick={handleSkip} disabled={loading}>
                   Skip
                 </Button>
               </div>

@@ -13,27 +13,102 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Search, Menu, X, User, Settings, LogOut, BookOpen, Users, Calendar, Heart } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { directSupabase } from '@/lib/supabase-direct'
 
 export function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function fetchUser() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        // Fetch user profile info
-        const { data } = await supabase.from('users').select('*').eq('id', user.id).single()
-        setUser({ ...user, ...data })
-      } else {
+      try {
+        console.log("Header: Fetching user with direct client...")
+        const { data: { user }, error } = await directSupabase.getUser()
+        
+        if (error) {
+          console.error("Header: Auth error:", error)
+          setUser(null)
+          return
+        }
+        
+        if (user) {
+          console.log("Header: User found:", user.id)
+          // Fetch user profile info
+          try {
+            const { data: profileData, error: profileError } = await directSupabase.queryTable('users', {
+              select: '*',
+              eq: ['id', user.id],
+              single: true
+            })
+            
+            if (profileError && !profileError.message.includes('No rows found')) {
+              console.log("Header: Profile fetch error:", profileError)
+              setUser({ ...user, full_name: user.email })
+            } else if (profileData) {
+              console.log("Header: Profile data found")
+              setUser({ ...user, ...profileData })
+            } else {
+              console.log("Header: No profile data, using auth user")
+              setUser({ ...user, full_name: user.email })
+            }
+          } catch (profileErr) {
+            console.log("Header: Profile fetch failed:", profileErr)
+            setUser({ ...user, full_name: user.email })
+          }
+        } else {
+          console.log("Header: No user found")
+          setUser(null)
+        }
+      } catch (err) {
+        console.error("Header: Unexpected error:", err)
         setUser(null)
+      } finally {
+        setLoading(false)
       }
     }
+
     fetchUser()
-    // Optionally, subscribe to auth changes
-    const { data: listener } = supabase.auth.onAuthStateChange(() => fetchUser())
-    return () => { listener?.subscription.unsubscribe() }
+    
+    // Set up more frequent checks and listen for storage events
+    const interval = setInterval(fetchUser, 2000) // Check every 2 seconds
+    
+    // Listen for custom auth events
+    const handleAuthChange = () => {
+      console.log("Header: Auth change event detected")
+      fetchUser()
+    }
+    
+    // Listen for storage changes (in case auth token is stored in localStorage)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key && e.key.includes('supabase') || e.key?.includes('auth')) {
+        console.log("Header: Storage change detected")
+        fetchUser()
+      }
+    }
+    
+    // Listen for page visibility changes
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log("Header: Page became visible, checking auth")
+        fetchUser()
+      }
+    }
+    
+    window.addEventListener('storage', handleStorageChange)
+    window.addEventListener('focus', handleAuthChange)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    
+    // Custom event for manual auth updates
+    window.addEventListener('auth-state-changed', handleAuthChange)
+    
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('focus', handleAuthChange)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('auth-state-changed', handleAuthChange)
+    }
   }, [])
 
   const navigationLinks = [
@@ -43,10 +118,21 @@ export function Header() {
   ]
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut()
-    setUser(null)
-    window.location.href = '/'
+    console.log("Header: Signing out...")
+    try {
+      await directSupabase.signOut()
+      setUser(null)
+      
+      // Dispatch custom event
+      window.dispatchEvent(new CustomEvent('auth-state-changed'))
+      
+      window.location.href = '/'
+    } catch (err) {
+      console.error("Header: Sign out error:", err)
+    }
   }
+
+
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -87,7 +173,9 @@ export function Header() {
             </Button>
 
             {/* Auth Section */}
-            {user ? (
+            {loading ? (
+              <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
+            ) : user ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" className="relative h-8 w-8 rounded-full">
@@ -122,10 +210,7 @@ export function Header() {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem asChild={false} className="text-red-600">
                     <button
-                      onClick={() => {
-                        console.log("Signing out...");
-                        handleSignOut();
-                      }}
+                      onClick={handleSignOut}
                       className="flex items-center w-full text-left"
                       type="button"
                     >

@@ -4,7 +4,7 @@ import React, { useState } from 'react'
 import { AuthCard } from '@/components/ui/auth-card'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { directSupabase } from '@/lib/supabase-direct'
 
 export default function LoginPage() {
   const [form, setForm] = useState({ email: '', password: '' })
@@ -16,26 +16,88 @@ export default function LoginPage() {
     e.preventDefault()
     setError(null)
     setLoading(true)
+    
     try {
+      console.log("=== LOGIN START (Direct Client) ===")
       console.log("Logging in with", form.email)
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: form.email,
-        password: form.password,
-      })
+      
+      const { data, error } = await directSupabase.signInWithPassword(
+        form.email,
+        form.password
+      )
+      
       console.log("Login result", { data, error })
+      
       if (error) {
-        setError(error.message)
-      } else if (data.user && !data.user.email_confirmed_at) {
-        router.push('/verify-email')
-      } else if (data.user) {
-        router.push('/') // or dashboard
-      } else {
-        setError("Unknown error. Please try again.")
+        console.error("Login error:", error)
+        
+        // Convert API errors to user-friendly messages
+        let userMessage = error.message
+        if (error.message.includes('invalid_credentials') || error.message.includes('Invalid login credentials')) {
+          userMessage = "Invalid email or password. Please check your credentials and try again."
+        } else if (error.message.includes('too_many_requests')) {
+          userMessage = "Too many login attempts. Please wait a moment before trying again."
+        } else if (error.message.includes('email_not_confirmed')) {
+          userMessage = "Please check your email and click the verification link before logging in."
+        }
+        
+        setError(userMessage)
+        return
       }
+      
+      if (!data.user) {
+        console.error("No user data returned")
+        setError("Login failed. Please try again.")
+        return
+      }
+      
+      console.log("Login successful for user:", data.user.id)
+      console.log("Email confirmed:", data.user.email_confirmed_at ? "Yes" : "No")
+      
+      // Notify header about auth state change
+      window.dispatchEvent(new CustomEvent('auth-state-changed'))
+      
+      // Check if email is confirmed
+      if (!data.user.email_confirmed_at) {
+        console.log("Email not confirmed, redirecting to verify-email")
+        router.push('/verify-email')
+        return
+      }
+      
+      // Email is confirmed, check if user exists in our database
+      console.log("Checking user in database...")
+      try {
+        const { data: userData, error: userError } = await directSupabase.queryTable('users', {
+          select: '*',
+          eq: ['id', data.user.id],
+          single: true
+        })
+        
+        if (userError && !userError.message.includes('No rows found')) {
+          console.error("User check error:", userError)
+          // User might not exist in our database, redirect to profile setup
+          router.push('/onboarding/profile-setup')
+          return
+        }
+        
+        if (userData) {
+          console.log("User found in database, redirecting to profile")
+          router.push('/profile')
+        } else {
+          console.log("User not found in database, redirecting to onboarding")
+          router.push('/onboarding/profile-setup')
+        }
+      } catch (userCheckErr) {
+        console.log("User check failed, redirecting to profile:", userCheckErr)
+        router.push('/profile')
+      }
+      
     } catch (err: any) {
+      console.error("Unexpected login error:", err)
       setError(err.message || "Unexpected error. Please try again.")
     } finally {
       setLoading(false)
+      console.log("=== LOGIN END ===")
     }
   }
 
