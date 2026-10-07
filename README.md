@@ -1,297 +1,152 @@
-# BeCreative - Creative Classes Platform
+# BeCreative
 
-A full-stack web application that connects creative instructors with students, similar to ClassPass but focused on creative arts and performance classes.
+BeCreative is a booking platform for independent creative teachers. Teachers set the price. Students book a session, a whole series, a class pack, or a membership. There is no credit subscription.
 
-## 🎨 Features
+The app runs locally and in CI with Postgres only. Production is meant to be the owner's AWS account. Nothing in the repo calls Supabase, and no cloud account is required to boot the demo.
 
-### For Students
-- Discover in-person and virtual creative classes
-- Book classes using credits or direct payment
-- View instructor profiles with reviews and credentials
-- Track upcoming classes and credit balance
-- Favorite instructors and classes
-- City-based search and filtering
-
-### For Instructors
-- Instructor onboarding and approval process
-- Create and manage class listings
-- Set pricing in credits and/or dollars
-- Manage bookings and student communications
-- Receive payments via Stripe Connect
-- Track revenue and class performance
-
-### Core Features
-- Role-based authentication (Student/Instructor/Admin)
-- Credit subscription system with rollover
-- Stripe integration for payments and instructor payouts
-- Real-time booking and availability management
-- Review and rating system
-- Mobile-responsive design
-
-## 🛠 Tech Stack
-
-- **Frontend**: Next.js 14 (App Router)
-- **Backend**: Supabase (Auth, Database, Storage)
-- **Styling**: Tailwind CSS + shadcn/ui
-- **Payments**: Stripe (Subscriptions, One-time payments, Connect)
-- **Deployment**: Vercel
-- **Database**: PostgreSQL (via Supabase)
-- **Authentication**: Supabase Auth with Row Level Security
-
-## 📦 Project Structure
-
-```
-BeCreative/
-├── app/                    # Next.js App Router pages
-│   ├── globals.css        # Global styles
-│   ├── layout.tsx         # Root layout
-│   └── page.tsx           # Homepage
-├── components/            # React components
-│   ├── ui/               # shadcn/ui components
-│   └── forms/            # Form components
-├── lib/                  # Utility functions
-│   ├── supabase.ts       # Supabase client
-│   ├── stripe.ts         # Stripe utilities
-│   └── utils.ts          # General utilities
-├── supabase/             # Database migrations
-│   └── migrations/       # SQL migration files
-├── scripts/              # Database seeding
-└── public/               # Static assets
-```
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- Node.js 18+ 
-- npm or yarn
-- Supabase account
-- Stripe account
-
-### 1. Clone the Repository
+## Setup
 
 ```bash
-git clone <repository-url>
-cd BeCreative
-```
-
-### 2. Install Dependencies
-
-```bash
+docker compose up -d
+cp .env.example .env.local
 npm install
-```
-
-### 3. Environment Setup
-
-Copy the example environment file and fill in your credentials:
-
-```bash
-cp env.example .env.local
-```
-
-Update `.env.local` with your actual values:
-
-```env
-# Supabase Configuration
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-
-# Stripe Configuration
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=your_stripe_publishable_key
-STRIPE_SECRET_KEY=your_stripe_secret_key
-STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret
-
-# Stripe Connect (for instructor payouts)
-STRIPE_CONNECT_CLIENT_ID=your_stripe_connect_client_id
-
-# App Configuration
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-NEXT_PUBLIC_APP_NAME=BeCreative
-```
-
-### 4. Database Setup
-
-#### Option A: Using Supabase CLI (Recommended)
-
-1. Install Supabase CLI:
-```bash
-npm install -g supabase
-```
-
-2. Login to Supabase:
-```bash
-supabase login
-```
-
-3. Link your project:
-```bash
-supabase link --project-ref your-project-ref
-```
-
-4. Push the database schema:
-```bash
-npm run db:push
-```
-
-#### Option B: Manual Setup
-
-1. Go to your Supabase dashboard
-2. Navigate to the SQL Editor
-3. Run the contents of `supabase/migrations/001_initial_schema.sql`
-4. Run the contents of `supabase/migrations/002_row_level_security.sql`
-
-### 5. Seed the Database
-
-Populate the database with sample data:
-
-```bash
+npm run db:migrate
 npm run db:seed
-```
-
-### 6. Start the Development Server
-
-```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the application.
+Open http://localhost:3000.
 
-## 🗄 Database Schema
+`npm run db:wipe-demo` removes rows flagged `is_demo` and leaves categories and platform settings in place. The seed is idempotent: it wipes demo data, then inserts it again.
 
-### Core Tables
+## Demo logins
 
-- **users**: User profiles and authentication
-- **instructors**: Extended instructor information
-- **classes**: Class listings and details
-- **bookings**: Student class reservations
-- **subscriptions**: Credit subscription management
-- **reviews**: Instructor reviews and ratings
-- **favorite_instructors**: Student favorite instructors
+Password for every demo account: `DemoPass123!`
 
-### Key Features
+| Email | Role |
+| --- | --- |
+| admin@becreative.demo | Admin |
+| manager@becreative.demo | Account manager |
+| teacher@becreative.demo | Maya Alvarez, approved teacher in Silver Lake |
+| student@becreative.demo | Student with bookings and a class pack |
+| lila@becreative.demo | Teacher pending approval |
 
-- Row Level Security (RLS) for data protection
-- UUID primary keys for scalability
-- JSONB fields for flexible data storage
-- Proper indexing for performance
-- Automatic timestamp management
+## What you can click through
 
-## 💳 Payment Integration
+- Explore classes on a Leaflet map and book a session, with promo code `BECREATIVE15` or `MAYA10`.
+- A teacher profile at `/t/maya-alvarez`, a class at `/c/scene-study`, a link-in-bio page at `/t/maya-alvarez/bio`, and an embed at `/embed/maya-alvarez`.
+- Share opens a sheet with copy, a QR code, a promo baked into the URL, and a link preview.
+- Studio → New class: one-time or repeating, with a plain-English summary and the generated dates before save.
+- Roster, attendance, manual bookings, and email on a session page.
+- Reports include clicks and attributed bookings. Billing shows the amount owed after payouts.
+- Admin stats, teacher approval, platform promos, and the fee setting.
+- CRM at `/crm` for admins and account managers: filters, saved views, kanban, follow-ups due, CSV import/export, convert to teacher.
+- Account managers edit any teacher's class at `/manage`. Those edits are audited. They do not see platform finances.
 
-### Stripe Setup
+Without Stripe keys, paid bookings complete as pay-at-studio. The confirmation email is written to the `email_outbox` table and printed by the console provider.
 
-1. Create a Stripe account and get your API keys
-2. Set up Stripe Connect for instructor payouts
-3. Create subscription products in Stripe dashboard
-4. Configure webhooks for payment events
+## Stacking and money
 
-### Credit System
+- One promo code per order.
+- Codes do not apply to a $0 class, a first-class-free intro, or a booking paid with pack or membership credits.
+- First class free, when the teacher allows it, is one intro per student per teacher and beats a promo code.
+- Pack credits spend one credit per drop-in session. They do not automatically pay a cash series price.
+- The platform fee is a percent and an optional fixed amount, stored in `platform_settings` and edited by admins. It applies to online card charges. Offline, manual, and pay-at-studio bookings carry a $0 platform fee.
+- Teacher baseline is the list price minus the normal fee on the list price.
+- Teacher-funded: the teacher absorbs the full discount off that baseline, so the platform still keeps the original fee when the student payment covers it.
+- Platform-funded: the teacher keeps the full-price baseline. If the fee cannot absorb the discount, the shortfall is recorded as platform liability. Stripe cannot transfer more than the charge.
+- Split: `platformSharePercent` of the discount is platform-funded and the rest comes off the teacher baseline.
+- Stripe Checkout is charged the discounted student amount. The `orders` table is the ledger. The app does not create Stripe coupons.
 
-- **Basic Plan**: 5 credits/month ($19.99)
-- **Premium Plan**: 10 credits/month ($34.99)
-- **Unlimited Plan**: 20 credits/month ($59.99)
+## Stripe mapping
 
-Credits roll over month to month and can be used for class bookings.
+| Product | Stripe | Ledger |
+| --- | --- | --- |
+| Session, series, pack | Checkout `mode=payment` on the platform, `application_fee_amount`, `transfer_data.destination` when the teacher has a connected account | `orders` row is the source of truth |
+| Membership | Checkout `mode=subscription` with `application_fee_percent` and `transfer_data` on the connected account | `membership_subscriptions` plus the order |
+| $0, credits, intro, or no Stripe keys | No Checkout session | Order status `paid`, `pay_at_studio`, or entitlement |
 
-## 🔐 Authentication & Authorization
+Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `charge.refunded`, and `account.updated`.
 
-### User Roles
+## Architecture
 
-- **Student**: Can browse, book classes, leave reviews
-- **Instructor**: Can create classes, manage bookings, receive payments
-- **Admin**: Full system access
+- Next.js App Router, TypeScript, Tailwind.
+- Drizzle and Postgres. Migrations live in `drizzle/`.
+- Better Auth with email and password. Sessions are in Postgres. Role checks run on the server for every studio, admin, CRM, and booking action.
+- Email goes through `lib/email.ts`. `console` writes the outbox. `ses` uses Amazon SES.
+- Uploads go through `lib/storage.ts`. `local` stores files under `./data/uploads`. `s3` returns a presigned PUT. The browser never receives the AWS secret key.
+- Maps are Leaflet and OpenStreetMap behind `components/studio-map.tsx`. Geocoding is `lib/geocode.ts` (`local`, `nominatim`, or `mapbox`).
+- Recurring classes store a rule plus generated session rows. A rolling window covers "never" (about eight weeks ahead). Instances with bookings are kept. Times are America/Los_Angeles, including DST.
+- Share links: `/t/[slug]`, `/c/[slug]`, `/t/[slug]/bio`, `/t/[slug]/p/[pack]`, `/t/[slug]/m/[membership]`, plus `?session=`, `?code=`, `?ref=`, and UTM params. `proxy.ts` stores attribution for 30 days. Clicks land in `link_clicks`.
 
-### Security Features
+## Environment
 
-- Supabase Auth with email/password
-- Row Level Security policies
-- Role-based access control
-- Secure API endpoints
+See `.env.example`.
 
-## 📱 Pages & Routes
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Postgres connection string |
+| `BETTER_AUTH_SECRET` | Session signing secret |
+| `BETTER_AUTH_URL` | Auth base URL |
+| `NEXT_PUBLIC_APP_URL` | Public origin for links, embeds, and Checkout return URLs |
+| `NEXT_PUBLIC_APP_NAME` | Product name |
+| `REQUIRE_EMAIL_VERIFICATION` | `false` skips the verification email |
+| `EMAIL_PROVIDER` | `console` or `ses` |
+| `EMAIL_FROM` | From line for the console provider |
+| `NEXT_PUBLIC_MAP_PROVIDER` | `leaflet` |
+| `GEOCODER_PROVIDER` | `local`, `nominatim`, or `mapbox` |
+| `MAPBOX_TOKEN` | Only for the Mapbox geocoder |
+| `STORAGE_PROVIDER` | `local` or `s3` |
+| `UPLOAD_DIR` | Local upload directory |
+| `AWS_REGION` | SES and S3 |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Server-side only |
+| `S3_BUCKET` | Media bucket |
+| `S3_ENDPOINT` | Optional. Set for MinIO |
+| `S3_FORCE_PATH_STYLE` | `true` for MinIO |
+| `S3_PUBLIC_URL_BASE` | Optional public base for object URLs |
+| `SES_FROM_EMAIL` | Verified SES sender |
+| `STRIPE_SECRET_KEY` | Secret key. Omit to run pay-at-studio |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Publishable key. Both keys are required before Checkout is used |
+| `STRIPE_WEBHOOK_SECRET` | Webhook signing secret |
 
-- `/` - Homepage with featured instructors
-- `/explore` - Browse and filter classes
-- `/classes/[id]` - Class details and booking
-- `/instructors/[id]` - Instructor profile and reviews
-- `/dashboard` - Role-aware user dashboard
-- `/onboarding` - Instructor application form
+The platform fee is not an environment variable. Admins edit it in settings.
 
-## 🎯 Development Guidelines
+`docker compose --profile minio up -d` starts MinIO on ports 9000 and 9001 (`becreative` / `becreative-secret`).
 
-### Code Style
+## AWS resources to provision
 
-- Use TypeScript for type safety
-- Follow Next.js 14 App Router conventions
-- Use shadcn/ui components for consistency
-- Implement proper error handling
-- Write meaningful commit messages
+Point the same env vars at these and the app does not need a code change.
 
-### Testing
+- VPC with private subnets for the database.
+- RDS Postgres or Aurora PostgreSQL. Put the connection string in `DATABASE_URL`. Run `npm run db:migrate` against it.
+- S3 bucket for class media, with CORS allowing `PUT` from the site origin. IAM credentials limited to `s3:PutObject` and `s3:GetObject` on that bucket.
+- SES in the same region: a verified identity, production access, and `SES_FROM_EMAIL`.
+- A Node host that can run Next.js server-side (Amplify Hosting SSR, ECS, or a similar service). This app uses server actions, webhooks, and a Postgres session, so a static export will not work.
+- Secrets for `DATABASE_URL`, `BETTER_AUTH_SECRET`, AWS keys, and Stripe keys.
+- Stripe webhook endpoint `https://<host>/api/webhooks/stripe`.
+- Stripe Connect Express is created per teacher when you add an onboarding flow on top of `stripeAccountId`. Checkout already sends `transfer_data.destination` when that id is set.
+
+## Scripts
 
 ```bash
-# Run linting
 npm run lint
-
-# Type checking
-npx tsc --noEmit
+npm run typecheck
+npm test
+npm run build
+npm run db:generate
+npm run db:migrate
+npm run db:seed
+npm run db:wipe-demo
 ```
 
-### Database Changes
+## Known gaps
 
-1. Create new migration files in `supabase/migrations/`
-2. Test migrations locally
-3. Update TypeScript types if needed
-4. Deploy to production
-
-## 🚀 Deployment
-
-### Vercel Deployment
-
-1. Connect your repository to Vercel
-2. Set environment variables in Vercel dashboard
-3. Deploy automatically on push to main branch
-
-### Environment Variables
-
-Ensure all environment variables are set in your production environment:
-
-- Supabase configuration
-- Stripe API keys
-- App configuration
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🆘 Support
-
-For support and questions:
-
-- Create an issue in the repository
-- Check the documentation
-- Review the code examples
-
-## 🔮 Future Enhancements
-
-- Class reviews and ratings
-- Community "local hubs" by city
-- Referral credit system
-- Advanced analytics dashboard
-- Mobile app development
-- Video streaming integration
-- Group class discounts
-- Instructor scheduling tools
-
----
-
-Built with ❤️ for the creative community 
+- A pending Stripe Checkout holds a seat until the webhook or a cancel. Holds do not expire on their own.
+- Cancelling one date of a series does not prorate a series booking. A single-session booking refunds when Stripe has a payment intent.
+- Class emails put every recipient on the `To` line. There is no BCC.
+- `next_step_due` is stored and shown in the CRM. It is intentionally absent from the official 36-column CSV so a round trip does not invent a column. Import leaves an existing due date alone when the column is missing.
+- Platform-funded discounts larger than the fee are recorded as liability. There is no automatic Stripe top-up transfer.
+- The local geocoder uses neighborhood centroids plus a small jitter. It is not a street-level geocoder.
+- A map provider other than Leaflet shows that maps are not configured.
+- Manual bookings do not block when the session is already full. They are the pen-and-paper path.
+- Converting a lead emails a temporary password and also writes it on the activity. That is for the demo, not a production invite flow.

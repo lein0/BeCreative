@@ -1,107 +1,63 @@
-import Stripe from 'stripe'
+import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2023-10-16',
-})
-
-export { stripe }
-
-// Subscription plans configuration
-export const SUBSCRIPTION_PLANS = {
-  basic: {
-    name: 'Basic',
-    credits: 5,
-    price: 1999, // $19.99
-    stripePriceId: 'price_basic_credits', // Replace with actual Stripe price ID
-  },
-  premium: {
-    name: 'Premium',
-    credits: 10,
-    price: 3499, // $34.99
-    stripePriceId: 'price_premium_credits', // Replace with actual Stripe price ID
-  },
-  unlimited: {
-    name: 'Unlimited',
-    credits: 20,
-    price: 5999, // $59.99
-    stripePriceId: 'price_unlimited_credits', // Replace with actual Stripe price ID
-  },
-} as const
-
-// Create a Stripe customer
-export async function createStripeCustomer(email: string, name: string) {
-  return await stripe.customers.create({
-    email,
-    name,
-  })
+export function stripeConfigured() {
+  return Boolean(process.env.STRIPE_SECRET_KEY && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 }
 
-// Create a subscription
-export async function createSubscription(
-  customerId: string,
-  priceId: string,
-  metadata?: Record<string, string>
-) {
-  return await stripe.subscriptions.create({
-    customer: customerId,
-    items: [{ price: priceId }],
-    metadata,
-    payment_behavior: 'default_incomplete',
-    payment_settings: { save_default_payment_method: 'on_subscription' },
-    expand: ['latest_invoice.payment_intent'],
-  })
+export function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  return new Stripe(key);
 }
 
-// Create a payment intent for one-time payments
-export async function createPaymentIntent(
-  amount: number,
-  customerId: string,
-  metadata?: Record<string, string>
-) {
-  return await stripe.paymentIntents.create({
-    amount,
-    currency: 'usd',
-    customer: customerId,
-    metadata,
-    automatic_payment_methods: {
-      enabled: true,
-    },
-  })
+export async function createCheckout(input: {
+  name: string;
+  amountCents: number;
+  applicationFeeCents: number;
+  destinationAccountId?: string | null;
+  customerEmail?: string | null;
+  successPath: string;
+  cancelPath: string;
+  metadata: Record<string, string>;
+  recurring?: { interval: "month"; intervalCount: number } | null;
+}) {
+  const stripe = getStripe();
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  if (!stripe || input.amountCents <= 0) return null;
+  const fee = Math.max(0, Math.min(input.applicationFeeCents, input.amountCents - 1));
+  const transfer = input.destinationAccountId
+    ? { transfer_data: { destination: input.destinationAccountId }, ...(input.recurring ? {} : { application_fee_amount: fee }) }
+    : {};
+  const session = await stripe.checkout.sessions.create({
+    mode: input.recurring ? "subscription" : "payment",
+    customer_email: input.customerEmail ?? undefined,
+    line_items: [
+      {
+        quantity: 1,
+        price_data: {
+          currency: "usd",
+          unit_amount: input.amountCents,
+          product_data: { name: input.name },
+          ...(input.recurring ? { recurring: { interval: "month", interval_count: input.recurring.intervalCount } } : {}),
+        },
+      },
+    ],
+    success_url: `${appUrl}${input.successPath}`,
+    cancel_url: `${appUrl}${input.cancelPath}`,
+    metadata: input.metadata,
+    ...(input.recurring
+      ? {
+          subscription_data: {
+            metadata: input.metadata,
+            ...(input.destinationAccountId ? { transfer_data: { destination: input.destinationAccountId }, application_fee_percent: feePercent(input) } : {}),
+          },
+        }
+      : { payment_intent_data: { metadata: input.metadata, ...transfer } }),
+  });
+  return session;
 }
 
-// Create a Stripe Connect account for instructors
-export async function createConnectAccount(email: string, country: string = 'US') {
-  return await stripe.accounts.create({
-    type: 'express',
-    country,
-    email,
-    capabilities: {
-      card_payments: { requested: true },
-      transfers: { requested: true },
-    },
-  })
+function feePercent(input: { amountCents: number; applicationFeeCents: number }) {
+  if (input.amountCents <= 0) return 0;
+  return Math.min(100, Math.round((input.applicationFeeCents / input.amountCents) * 1000) / 10);
 }
-
-// Create a transfer to instructor's Connect account
-export async function createTransfer(
-  amount: number,
-  destinationAccountId: string,
-  description: string
-) {
-  return await stripe.transfers.create({
-    amount,
-    currency: 'usd',
-    destination: destinationAccountId,
-    description,
-  })
-}
-
-// Get account link for instructor onboarding
-export async function createAccountLink(accountId: string, refreshUrl: string, returnUrl: string) {
-  return await stripe.accountLinks.create({
-    account: accountId,
-    refresh_url: refreshUrl,
-    return_url: returnUrl,
-    type: 'account_onboarding',
-  })
-} 

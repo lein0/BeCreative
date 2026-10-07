@@ -1,0 +1,59 @@
+import Link from "next/link";
+import { Suspense } from "react";
+import { getActor } from "@/lib/actor";
+import { canManageLeads, canViewPlatformStats } from "@/lib/permissions";
+
+export function SiteFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <Suspense fallback={<header className="h-16 border-b border-line bg-paper/80" />}>
+        <SiteHeader />
+      </Suspense>
+      <main>{children}</main>
+      <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-8 text-sm text-ink/60">
+        <p>BeCreative · independent teachers, direct bookings.</p>
+        <p>Los Angeles</p>
+      </footer>
+    </>
+  );
+}
+
+async function SiteHeader() {
+  const actor = await getActor();
+  const teacher = actor?.roles.includes("teacher");
+  const admin = actor ? canViewPlatformStats(actor.roles) : false;
+  const crm = actor ? canManageLeads(actor.roles) : false;
+  const manage = actor?.roles.includes("account_manager") || admin;
+  return (
+    <header className="sticky top-0 z-30 border-b border-line/80 bg-paper/90 backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5">
+        <Link href="/" className="display text-2xl tracking-tight">
+          Be<span className="text-clay">Creative</span>
+        </Link>
+        <nav className="flex items-center gap-1 text-sm">
+          <Nav href="/explore">Explore</Nav>
+          {teacher ? <Nav href="/teach">Studio</Nav> : null}
+          {manage ? <Nav href="/manage">Studios</Nav> : null}
+          {crm ? <Nav href="/crm">Leads</Nav> : null}
+          {admin ? <Nav href="/admin">Admin</Nav> : null}
+          {actor ? <Nav href="/bookings">Bookings</Nav> : null}
+          {actor ? (
+            <span className="ml-2 hidden text-ink/70 sm:inline">{actor.name.split(" ")[0]}</span>
+          ) : (
+            <Link href="/login" className="ml-2 rounded-full bg-ink px-3 py-1.5 text-paper">
+              Sign in
+            </Link>
+          )}
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+function Nav({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link href={href} className="rounded-full px-3 py-1.5 text-ink/80 hover:bg-sand hover:text-ink">
+      {children}
+    </Link>
+  );
+}
