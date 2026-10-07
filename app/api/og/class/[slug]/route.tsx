@@ -2,11 +2,8 @@ import { ImageResponse } from "next/og";
 import { classDetail } from "@/lib/queries";
 import { priceLabel } from "@/lib/utils";
 
-export const size = { width: 1200, height: 630 };
-export const contentType = "image/png";
-
-export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params;
+export async function GET(_request: Request, context: { params: Promise<{ slug: string }> }) {
+  const { slug } = await context.params;
   const detail = await classDetail(slug).catch(() => null);
   const title = detail?.class.title ?? "BeCreative";
   const price = detail ? priceLabel(detail.class.pricePerSessionCents, detail.class.pricePerSeriesCents) : "";
@@ -23,6 +20,6 @@ export default async function Image({ params }: { params: Promise<{ slug: string
         </div>
       </div>
     ),
-    size,
+    { width: 1200, height: 630 },
   );
 }

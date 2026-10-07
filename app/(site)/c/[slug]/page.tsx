@@ -21,7 +21,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   return {
     title: detail.class.title,
     description: `${detail.class.title} with ${detail.teacher.studioName}. ${price}${next ? `. Next ${next.localDate}` : ""}.`,
-    openGraph: { title: detail.class.title, description: detail.class.description, images: [`/c/${slug}/opengraph-image`] },
+    openGraph: { title: detail.class.title, description: detail.class.description, images: [`/api/og/class/${slug}`] },
+    twitter: { card: "summary_large_image" as const, images: [`/api/og/class/${slug}`] },
   };
 }
 

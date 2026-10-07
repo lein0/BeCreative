@@ -19,7 +19,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   return {
     title: profile.teacher.studioName ?? profile.person?.name ?? "Teacher",
     description: profile.teacher.bio,
-    openGraph: { images: [`/t/${slug}/opengraph-image`] },
+    openGraph: { images: [`/api/og/teacher/${slug}`] },
+    twitter: { card: "summary_large_image" as const, images: [`/api/og/teacher/${slug}`] },
     other: from ? { price: from } : undefined,
   };
 }

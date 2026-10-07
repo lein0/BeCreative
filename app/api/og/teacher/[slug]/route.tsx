@@ -2,11 +2,8 @@ import { ImageResponse } from "next/og";
 import { teacherProfile } from "@/lib/queries";
 import { money } from "@/lib/utils";
 
-export const size = { width: 1200, height: 630 };
-export const contentType = "image/png";
-
-export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params;
+export async function GET(_request: Request, context: { params: Promise<{ slug: string }> }) {
+  const { slug } = await context.params;
   const profile = await teacherProfile(slug).catch(() => null);
   const prices = profile?.offerings.map((item) => item.pricePerSessionCents).filter((value): value is number => value != null) ?? [];
   const from = prices.length ? `from ${money(Math.min(...prices))}` : "Book a class";
@@ -21,6 +18,6 @@ export default async function Image({ params }: { params: Promise<{ slug: string
         </div>
       </div>
     ),
-    size,
+    { width: 1200, height: 630 },
   );
 }
