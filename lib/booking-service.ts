@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { decideBooking, decideSeriesBooking } from "@/lib/booking-rules";
 import { db } from "@/lib/db";
@@ -32,7 +32,8 @@ import {
   validatePromo,
   type PromoRule,
 } from "@/lib/pricing";
-import { createCheckout, stripeConfigured } from "@/lib/stripe";
+import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
+import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
 
 export type ActionState = { error?: string; ok?: string } | null;
 
@@ -89,6 +90,35 @@ function toRule(row: typeof promoCodes.$inferSelect): PromoRule {
   };
 }
 
+export async function releaseExpiredCheckoutHolds(now = new Date()) {
+  const cutoff = checkoutHoldCutoff(now, checkoutHoldMinutes());
+  const stale = await db.select().from(orders).where(and(eq(orders.status, "pending"), lte(orders.createdAt, cutoff)));
+  const stripe = getStripe();
+  let released = 0;
+  for (const order of stale) {
+    if (stripe && order.stripeCheckoutSessionId) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+        if (session.status === "complete" || session.payment_status === "paid") continue;
+        if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+      } catch {
+        // The Checkout session is already closed. Release the seat anyway.
+      }
+    }
+    const updated = await db
+      .update(orders)
+      .set({ status: "expired", updatedAt: now })
+      .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+      .returning({ id: orders.id });
+    if (!updated.length) continue;
+    await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+    await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+    await db.update(membershipSubscriptions).set({ status: "cancelled" }).where(eq(membershipSubscriptions.orderId, order.id));
+    released += 1;
+  }
+  return released;
+}
+
 export async function confirmedCount(sessionId: string, tx: typeof db = db) {
   const [row] = await tx
     .select({ count: sql<number>`count(distinct ${bookingSessions.bookingId})::int` })
@@ -122,6 +152,7 @@ export async function bookSession(input: {
   if (codeInput.error) return { error: codeInput.error };
   const fee = await fees();
   const now = new Date();
+  await releaseExpiredCheckoutHolds(now);
 
   try {
     const created = await db.transaction(async (tx) => {
@@ -416,6 +447,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   const normalized = normalizeCodes([input.code ?? "", attr.code]);
   if (normalized.error) return { error: normalized.error };
   const now = new Date();
+  await releaseExpiredCheckoutHolds(now);
   if (input.kind === "pack") {
     const [pack] = await db.select().from(packs).where(eq(packs.id, input.id)).limit(1);
     if (!pack || !pack.active) return { error: "That pack is unavailable." };

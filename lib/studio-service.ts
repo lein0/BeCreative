@@ -15,7 +15,9 @@ import {
   teachers,
   user,
 } from "@/lib/db/schema";
-import { sendEmail } from "@/lib/email";
+import { confirmedCount, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { decideManualBooking } from "@/lib/booking-rules";
+import { sendIndividually } from "@/lib/email";
 import { geocoder } from "@/lib/geocode";
 import { collectOccurrences, describeRecurrence, diffSessions, previewOccurrences, type RecurrenceRule } from "@/lib/recurrence";
 import { addDaysYmd, ymdInZone, zonedTimeToUtc } from "@/lib/time";
@@ -112,9 +114,9 @@ async function notifySession(sessionId: string, subject: string, text: string) {
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .leftJoin(user, eq(user.id, bookings.userId))
     .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
-  const emails = [...new Set(links.map((link) => link.email || link.guestEmail).filter((value): value is string => Boolean(value)))];
+  const emails = links.map((link) => link.email || link.guestEmail).filter((value): value is string => Boolean(value));
   if (!emails.length) return;
-  await sendEmail({ to: emails, subject, text });
+  await sendIndividually({ recipients: emails, subject, text });
 }
 
 export async function saveClass(input: {
@@ -299,9 +301,14 @@ export async function moveSession(sessionId: string, date: string, time: string,
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: "session.move", entityType: "session", entityId: sessionId, summary: `Moved a session to ${date} ${time}` });
 }
 
-export async function manualBook(input: { classId: string; sessionId: string; name: string; email: string; payment: "paid" | "pay_at_studio" | "unpaid"; actorUserId: string; delegated: boolean }) {
+export async function manualBook(input: { classId: string; sessionId: string; name: string; email: string; payment: "paid" | "pay_at_studio" | "unpaid"; override: boolean; actorUserId: string; delegated: boolean }) {
   const [klass] = await db.select().from(classes).where(eq(classes.id, input.classId)).limit(1);
   if (!klass) return { error: "Class not found." };
+  const [session] = await db.select().from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
+  if (!session) return { error: "Session not found." };
+  await releaseExpiredCheckoutHolds();
+  const decision = decideManualBooking({ capacity: session.capacity, confirmedCount: await confirmedCount(session.id), override: input.override });
+  if (!decision.ok) return { error: "This session is full. Check override capacity to add someone anyway." };
   const bookingId = crypto.randomUUID();
   await db.insert(bookings).values({
     id: bookingId,
@@ -335,10 +342,10 @@ export async function emailRoster(input: { sessionId?: string; classId?: string;
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .leftJoin(user, eq(user.id, bookings.userId))
     .where(and(inArray(bookingSessions.sessionId, ids), eq(bookings.status, "confirmed")));
-  const to = [...new Set(people.map((person) => person.email || person.guest).filter((value): value is string => Boolean(value)))];
-  if (!to.length) return { error: "Nobody is booked yet." };
-  await sendEmail({ to, subject: input.subject, text: input.body, teacherId: input.teacherId });
-  return { ok: `Sent to ${to.length} student${to.length === 1 ? "" : "s"}.` };
+  const recipients = people.map((person) => person.email || person.guest).filter((value): value is string => Boolean(value));
+  if (!recipients.length) return { error: "Nobody is booked yet." };
+  const sent = await sendIndividually({ recipients, subject: input.subject, text: input.body, teacherId: input.teacherId });
+  return { ok: `Sent to ${sent.count} student${sent.count === 1 ? "" : "s"}.` };
 }
 
 export async function savePack(input: { teacherId: string; name: string; creditCount: number; priceCents: number; expiryDays: number; classIds: string[]; description: string; actorUserId: string; delegated: boolean }) {

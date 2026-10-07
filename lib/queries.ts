@@ -25,6 +25,7 @@ import {
   user,
   userRoles,
 } from "@/lib/db/schema";
+import { releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { ymdInZone } from "@/lib/time";
 
 export async function categoryTree() {
@@ -95,6 +96,7 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {
 
 async function countMap(sessionIds: string[]) {
   if (!sessionIds.length) return new Map<string, number>();
+  await releaseExpiredCheckoutHolds();
   const rows = await db
     .select({ sessionId: bookingSessions.sessionId, count: sql<number>`count(*)::int` })
     .from(bookingSessions)
@@ -170,6 +172,7 @@ export async function classStudio(classId: string) {
 }
 
 export async function roster(sessionId: string) {
+  await releaseExpiredCheckoutHolds();
   const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
   if (!session) return null;
   const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);

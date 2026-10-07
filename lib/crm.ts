@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
-import { hashPassword } from "better-auth/crypto";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { account, leadActivities, leads, teachers, user, userRoles } from "@/lib/db/schema";
+import { account, leadActivities, leads, teachers, user, userRoles, verification } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
+import { inviteActivityNote, inviteSetPasswordUrl, teacherInviteEmail } from "@/lib/invites";
 import { offersOnlineOf, planLeadImport, priorityOf, rowsFromCsv, statusOf, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
 import { uniqueSlug } from "@/lib/utils";
 import { OUTREACH_LABELS, type OutreachStatus } from "@/lib/constants";
@@ -117,10 +117,8 @@ export async function convertLead(leadId: string) {
   if (lead.convertedTeacherId) return { error: "This lead is already linked to a teacher." };
   const [existing] = await db.select().from(user).where(eq(user.email, lead.email.toLowerCase())).limit(1);
   let userId = existing?.id;
-  let tempNote = "Existing account linked.";
   if (!userId) {
     userId = crypto.randomUUID();
-    const password = `Invite-${crypto.randomUUID().slice(0, 8)}!`;
     await db.insert(user).values({
       id: userId,
       name: lead.contactName || lead.businessName,
@@ -129,22 +127,32 @@ export async function convertLead(leadId: string) {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    await db.insert(account).values({
+    await db.insert(userRoles).values({ id: crypto.randomUUID(), userId, role: "student" });
+  }
+  const [credential] = await db
+    .select({ password: account.password })
+    .from(account)
+    .where(and(eq(account.userId, userId), eq(account.providerId, "credential")))
+    .limit(1);
+  let note = "Existing account linked.";
+  if (!credential?.password) {
+    const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await db.insert(verification).values({
       id: crypto.randomUUID(),
-      accountId: userId,
-      providerId: "credential",
-      userId,
-      password: await hashPassword(password),
+      identifier: `reset-password:${token}`,
+      value: userId,
+      expiresAt,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    await db.insert(userRoles).values({ id: crypto.randomUUID(), userId, role: "student" });
-    tempNote = `Temporary password ${password}`;
-    await sendEmail({
-      to: [lead.email],
-      subject: "You're invited to teach on BeCreative",
-      text: `${lead.contactName || "Hello"}, ${lead.businessName} is invited to list classes on BeCreative. Sign in at ${appOrigin()}/login with ${lead.email}. ${tempNote}. Please reset the password after you sign in.`,
+    const mail = teacherInviteEmail({
+      contactName: lead.contactName,
+      businessName: lead.businessName,
+      url: inviteSetPasswordUrl(appOrigin(), token),
     });
+    await sendEmail({ to: [lead.email], subject: mail.subject, text: mail.text, html: mail.html });
+    note = inviteActivityNote();
   }
   const [alreadyTeacher] = await db.select().from(teachers).where(eq(teachers.userId, userId)).limit(1);
   const teacherId = alreadyTeacher?.id ?? crypto.randomUUID();
@@ -165,6 +173,6 @@ export async function convertLead(leadId: string) {
     await db.insert(userRoles).values({ id: crypto.randomUUID(), userId, role: "teacher" }).onConflictDoNothing();
   }
   await db.update(leads).set({ convertedTeacherId: teacherId, outreachStatus: "onboarding", updatedAt: new Date() }).where(eq(leads.id, lead.id));
-  await logLeadActivity(lead.id, userId, "note", `Converted to a pending teacher. ${tempNote}`);
-  return { teacherId, note: tempNote };
+  await logLeadActivity(lead.id, userId, "note", `Converted to a pending teacher. ${note}`);
+  return { teacherId, note };
 }

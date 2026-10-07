@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { orders, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const paymentIntent = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
     const subscription = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
     if (orderId) {
-      await db.update(orders).set({ status: "paid", stripePaymentIntentId: paymentIntent ?? null, stripeSubscriptionId: subscription ?? null, updatedAt: new Date() }).where(eq(orders.id, orderId));
+      await db.update(orders).set({ status: "paid", stripePaymentIntentId: paymentIntent ?? null, stripeSubscriptionId: subscription ?? null, updatedAt: new Date() }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
     }
   }
   if (event.type === "charge.refunded") {

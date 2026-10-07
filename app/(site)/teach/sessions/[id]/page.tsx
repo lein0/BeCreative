@@ -5,17 +5,19 @@ import { Panel, control } from "@/components/bits";
 import { loadTeacherAccess } from "@/lib/actor";
 import { roster } from "@/lib/queries";
 import { formatDateTimeInZone } from "@/lib/time";
+import { one } from "@/lib/utils";
 
-export default function RosterPage({ params }: { params: Promise<{ id: string }> }) {
+export default function RosterPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   return (
     <Suspense fallback={<p>Loading roster…</p>}>
-      <Body params={params} />
+      <Body params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function Body({ params }: { params: Promise<{ id: string }> }) {
+async function Body({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { id } = await params;
+  const error = one((await searchParams).error);
   const data = await roster(id);
   if (!data?.klass) notFound();
   const access = await loadTeacherAccess(data.klass.teacherId);
@@ -25,6 +27,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
     <div>
       <h1 className="display text-5xl">{data.klass?.title}</h1>
       <p className="text-ink/60">{formatDateTimeInZone(data.session.startsAt)} · capacity {data.session.capacity}</p>
+      {error ? <p className="mt-2 text-sm text-clay">{error}</p> : null}
       <p className="mt-2 text-sm"><a className="text-clay" href={`/api/sessions/${id}/roster.csv`}>Download CSV</a></p>
       <div className="mt-4 space-y-2">
         {data.people.map((person) => (
@@ -55,6 +58,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
           <option value="paid">Paid offline</option>
           <option value="unpaid">Unpaid</option>
         </select>
+        <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" name="override" /> Override capacity</label>
         <button className="rounded-full bg-clay px-4 py-2 text-sm text-white">Add manual booking</button>
       </form>
       <form action={rosterAction} className="mt-6 space-y-2">

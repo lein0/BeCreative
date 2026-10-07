@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideBooking, decideSeriesBooking, spotsRemaining } from "@/lib/booking-rules";
+import { decideBooking, decideManualBooking, decideSeriesBooking, spotsRemaining } from "@/lib/booking-rules";
 
 const now = new Date("2026-10-07T18:00:00Z");
 const future = new Date("2026-10-20T02:00:00Z");
@@ -12,6 +12,12 @@ describe("capacity", () => {
     expect(decideBooking({ now, sessionStartsAt: future, sessionStatus: "scheduled", capacity: 12, confirmedCount: 12, waitlistEnabled: false, alreadyBooked: false }).ok).toBe(false);
     expect(decideBooking({ now, sessionStartsAt: future, sessionStatus: "scheduled", capacity: 12, confirmedCount: 1, waitlistEnabled: false, alreadyBooked: true })).toEqual({ ok: false, reason: "already_booked" });
     expect(decideBooking({ now, sessionStartsAt: future, sessionStatus: "paused", capacity: 12, confirmedCount: 0, waitlistEnabled: false, alreadyBooked: false })).toEqual({ ok: false, reason: "paused" });
+  });
+
+  it("stops a manual booking at capacity unless the teacher overrides it", () => {
+    expect(decideManualBooking({ capacity: 2, confirmedCount: 2, override: false })).toEqual({ ok: false, reason: "full" });
+    expect(decideManualBooking({ capacity: 2, confirmedCount: 1, override: false })).toEqual({ ok: true });
+    expect(decideManualBooking({ capacity: 2, confirmedCount: 2, override: true })).toEqual({ ok: true });
   });
 
   it("requires every upcoming session in a series to have room", () => {

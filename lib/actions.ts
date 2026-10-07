@@ -214,15 +214,17 @@ export async function rosterAction(formData: FormData) {
     if (!klass) return;
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
     if (!teacher || !canEditTeacherContent(actor.roles, teacher.userId === actor.id)) return;
-    await manualBook({
+    const result = await manualBook({
       classId: klass.id,
       sessionId: text(formData, "sessionId"),
       name: text(formData, "name"),
       email: text(formData, "email"),
       payment: (text(formData, "payment") as "paid" | "pay_at_studio" | "unpaid") || "pay_at_studio",
+      override: formData.get("override") === "on",
       actorUserId: actor.id,
       delegated: teacher.userId !== actor.id,
     });
+    if (result?.error) redirect(`/teach/sessions/${text(formData, "sessionId")}?error=${encodeURIComponent(result.error)}`);
   }
   if (command === "email") {
     const result = await emailRoster({

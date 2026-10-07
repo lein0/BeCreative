@@ -9,6 +9,19 @@ export type EmailMessage = {
   teacherId?: string | null;
 };
 
+export function individualDeliveries(recipients: string[]) {
+  const seen = new Set<string>();
+  const deliveries: string[] = [];
+  for (const raw of recipients) {
+    const email = raw.trim();
+    const key = email.toLowerCase();
+    if (!email || seen.has(key)) continue;
+    seen.add(key);
+    deliveries.push(email);
+  }
+  return deliveries;
+}
+
 export interface EmailProvider {
   readonly name: string;
   send(message: EmailMessage): Promise<{ providerMessageId: string | null }>;
@@ -51,6 +64,15 @@ class SesEmailProvider implements EmailProvider {
 
 export function getEmailProvider(): EmailProvider {
   return process.env.EMAIL_PROVIDER === "ses" ? new SesEmailProvider() : new ConsoleEmailProvider();
+}
+
+export async function sendIndividually(input: Omit<EmailMessage, "to"> & { recipients: string[] }) {
+  const deliveries = individualDeliveries(input.recipients);
+  const results = [];
+  for (const recipient of deliveries) {
+    results.push(await sendEmail({ to: [recipient], subject: input.subject, text: input.text, html: input.html, teacherId: input.teacherId }));
+  }
+  return { count: deliveries.length, results };
 }
 
 export async function sendEmail(message: EmailMessage) {

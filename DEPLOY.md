@@ -54,6 +54,7 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `EMAIL_PROVIDER` | no | `console` logs mail. `ses` sends through SES |
 | `GOOGLE_CLIENT_ID` | no | Google sign-in is off until both this and `GOOGLE_CLIENT_SECRET` are set |
 | `GOOGLE_CLIENT_SECRET` | no | Pair to the client id |
+| `CHECKOUT_HOLD_MINUTES` | no | How long an unpaid Stripe Checkout holds a seat. Default 30 |
 | `STRIPE_SECRET_KEY` | no | Omit and bookings stay pay-at-studio |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | no | Required only when the secret key is set |
 | `STRIPE_WEBHOOK_SECRET` | no | Signing secret for `POST /api/webhooks/stripe` |

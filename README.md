@@ -143,12 +143,11 @@ npm run db:wipe-demo
 
 ## Known gaps
 
-- A pending Stripe Checkout holds a seat until the webhook or a cancel. Holds do not expire on their own.
+- A paid Stripe webhook that arrives after the hold expired does not reopen the seat. `CHECKOUT_HOLD_MINUTES` defaults to 30.
 - Cancelling one date of a series does not prorate a series booking. A single-session booking refunds when Stripe has a payment intent.
 - Class emails put every recipient on the `To` line. There is no BCC.
 - `next_step_due` is stored and shown in the CRM. It is intentionally absent from the official 36-column CSV so a round trip does not invent a column. Import leaves an existing due date alone when the column is missing.
 - Platform-funded discounts larger than the fee are recorded as liability. There is no automatic Stripe top-up transfer.
 - The local geocoder uses neighborhood centroids plus a small jitter. It is not a street-level geocoder.
 - A map provider other than Leaflet shows that maps are not configured.
-- Manual bookings do not block when the session is already full. They are the pen-and-paper path.
-- Converting a lead emails a temporary password and also writes it on the activity. That is for the demo, not a production invite flow.
+- Converting a lead with an existing password leaves that password in place and links the studio. A new teacher gets a set-password link.

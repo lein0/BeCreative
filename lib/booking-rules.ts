@@ -29,6 +29,12 @@ export function decideBooking(input: {
   return { ok: false, reason: "full" };
 }
 
+export function decideManualBooking(input: { capacity: number; confirmedCount: number; override: boolean }): { ok: true } | { ok: false; reason: "full" } {
+  if (input.override) return { ok: true };
+  if (spotsRemaining(input.capacity, input.confirmedCount) < 1) return { ok: false, reason: "full" };
+  return { ok: true };
+}
+
 export function decideSeriesBooking(
   sessions: Array<{ id: string; startsAt: Date; status: SessionState; capacity: number; confirmedCount: number }>,
   now: Date,
