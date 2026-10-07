@@ -25,7 +25,7 @@ async function Body() {
                   <form action={leadAction} className="mt-2">
                     <input type="hidden" name="command" value="status" />
                     <input type="hidden" name="leadId" value={lead.id} />
-                    <select name="status" defaultValue={status} className="w-full rounded-xl border border-line px-2 py-1 text-xs" onChange={() => {}}>
+                    <select name="status" defaultValue={status} className="w-full rounded-xl border border-line px-2 py-1 text-xs">
                       {OUTREACH_STATUSES.map((option) => <option key={option} value={option}>{OUTREACH_LABELS[option]}</option>)}
                     </select>
                     <button className="mt-1 text-xs text-clay">Move</button>
