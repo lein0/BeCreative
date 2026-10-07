@@ -145,7 +145,6 @@ npm run db:wipe-demo
 
 - A paid Stripe webhook that arrives after the hold expired does not reopen the seat. `CHECKOUT_HOLD_MINUTES` defaults to 30.
 - Cancelling one date of a series does not prorate a series booking. A single-session booking refunds when Stripe has a payment intent.
-- Class emails put every recipient on the `To` line. There is no BCC.
 - `next_step_due` is stored and shown in the CRM. It is intentionally absent from the official 36-column CSV so a round trip does not invent a column. Import leaves an existing due date alone when the column is missing.
 - Platform-funded discounts larger than the fee are recorded as liability. There is no automatic Stripe top-up transfer.
 - The local geocoder uses neighborhood centroids plus a small jitter. It is not a street-level geocoder.
