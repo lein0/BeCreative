@@ -30,6 +30,7 @@ class SesEmailProvider implements EmailProvider {
     const from = process.env.SES_FROM_EMAIL;
     if (!region || !from) throw new Error("SES is not configured. Set AWS_REGION and SES_FROM_EMAIL.");
     const { SESClient, SendEmailCommand } = await import("@aws-sdk/client-ses");
+    // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
     const result = await client.send(
       new SendEmailCommand({

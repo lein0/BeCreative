@@ -36,6 +36,7 @@ import { quotePrice } from "@/lib/pricing";
 import { syncRule } from "@/lib/studio-service";
 import { zonedTimeToUtc } from "@/lib/time";
 import { slugify } from "@/lib/utils";
+import { ensureBootstrapAdmins } from "@/lib/admins";
 import { wipeDemo } from "./wipe-demo";
 
 const PASSWORD = "DemoPass123!";
@@ -545,6 +546,7 @@ async function main() {
     void place;
   }
 
+  await ensureBootstrapAdmins();
   console.log(`Seeded ${teacherSeeds.length} teachers, ${classSeeds.length} classes, ${leadsSeed.length} leads.`);
   console.log(`Demo password ${PASSWORD}`);
   console.log(`Online teacher amount recorded for Maya before the $50 payout: ${(teacherOnline / 100).toFixed(2)}`);

@@ -6,6 +6,7 @@ import { sendEmail } from "@/lib/email";
 import { offersOnlineOf, planLeadImport, priorityOf, rowsFromCsv, statusOf, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
 import { uniqueSlug } from "@/lib/utils";
 import { OUTREACH_LABELS, type OutreachStatus } from "@/lib/constants";
+import { appOrigin } from "@/lib/env";
 
 export function leadToCsv(rows: (typeof leads.$inferSelect)[], reps: Map<string, string>): string {
   const mapped: LeadCsvRow[] = rows.map((lead) => ({
@@ -142,7 +143,7 @@ export async function convertLead(leadId: string) {
     await sendEmail({
       to: [lead.email],
       subject: "You're invited to teach on BeCreative",
-      text: `${lead.contactName || "Hello"}, ${lead.businessName} is invited to list classes on BeCreative. Sign in at ${process.env.NEXT_PUBLIC_APP_URL}/login with ${lead.email}. ${tempNote}. Please reset the password after you sign in.`,
+      text: `${lead.contactName || "Hello"}, ${lead.businessName} is invited to list classes on BeCreative. Sign in at ${appOrigin()}/login with ${lead.email}. ${tempNote}. Please reset the password after you sign in.`,
     });
   }
   const [alreadyTeacher] = await db.select().from(teachers).where(eq(teachers.userId, userId)).limit(1);

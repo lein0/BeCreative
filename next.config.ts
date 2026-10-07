@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
   serverExternalPackages: ["pg", "qrcode", "@aws-sdk/client-s3", "@aws-sdk/client-ses", "@aws-sdk/s3-request-presigner"],

@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
@@ -21,26 +22,57 @@ function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
+function authFailure(error: unknown, fallback: string) {
+  const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
+  const message = error instanceof Error ? error.message : "";
+  if (status === 429 || /too many/i.test(message)) return "Too many attempts. Wait a minute and try again.";
+  return fallback;
+}
+
 export async function loginAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const next = text(formData, "next") || "/explore";
-  const result = await auth.api.signInEmail({
-    body: { email: text(formData, "email"), password: text(formData, "password") },
-    headers: await headers(),
-  });
-  if (!result) return { error: "Check the email and password." };
+  const email = text(formData, "email");
+  try {
+    const result = await auth.api.signInEmail({
+      body: { email, password: text(formData, "password") },
+      headers: await headers(),
+    });
+    if (!result) return { error: "Check the email and password." };
+    await ensureAdminByEmail(email);
+  } catch (error) {
+    return { error: authFailure(error, "Check the email and password.") };
+  }
   redirect(next.startsWith("/") ? next : "/explore");
 }
 
 export async function signupAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const email = text(formData, "email");
   try {
     await auth.api.signUpEmail({
-      body: { email: text(formData, "email"), password: text(formData, "password"), name: text(formData, "name") },
+      body: { email, password: text(formData, "password"), name: text(formData, "name") },
+      headers: await headers(),
+    });
+    await ensureAdminByEmail(email);
+  } catch (error) {
+    return { error: authFailure(error, "Could not create the account.") };
+  }
+  redirect("/verify-email");
+}
+
+export async function resetPasswordAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const password = text(formData, "password");
+  const confirm = text(formData, "confirm");
+  if (password.length < 8) return { error: "Use at least 8 characters." };
+  if (password !== confirm) return { error: "Those passwords do not match." };
+  try {
+    await auth.api.resetPassword({
+      body: { newPassword: password, token: text(formData, "token") },
       headers: await headers(),
     });
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "Could not create the account." };
+    return { error: authFailure(error, "That reset link is invalid or expired.") };
   }
-  redirect("/verify-email");
+  redirect("/login");
 }
 
 export async function bookAction(formData: FormData): Promise<void> {
@@ -364,7 +396,7 @@ export async function forgotAction(_prev: ActionState, formData: FormData): Prom
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not send the reset email." };
   }
-  return { ok: "If that email has an account, a reset link is in the outbox." };
+  return { ok: "If that email has an account, a reset link is on its way." };
 }
 
 export async function mediaAction(formData: FormData) {

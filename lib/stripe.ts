@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { appOrigin } from "@/lib/env";
 
 export function stripeConfigured() {
   return Boolean(process.env.STRIPE_SECRET_KEY && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
@@ -22,7 +23,7 @@ export async function createCheckout(input: {
   recurring?: { interval: "month"; intervalCount: number } | null;
 }) {
   const stripe = getStripe();
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const appUrl = appOrigin();
   if (!stripe || input.amountCents <= 0) return null;
   const fee = Math.max(0, Math.min(input.applicationFeeCents, input.amountCents - 1));
   const transfer = input.destinationAccountId

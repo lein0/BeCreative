@@ -2,15 +2,19 @@
 
 import { useActionState } from "react";
 import Link from "next/link";
-import { forgotAction, loginAction, signupAction } from "@/lib/actions";
+import { createAuthClient } from "better-auth/react";
+import { forgotAction, loginAction, resetPasswordAction, signupAction } from "@/lib/actions";
 import { control } from "@/components/bits";
 
-export function LoginForm({ next }: { next: string }) {
+const authClient = createAuthClient();
+
+export function LoginForm({ next, google }: { next: string; google?: boolean }) {
   const [state, action, pending] = useActionState(loginAction, null);
   return (
     <form action={action} className="space-y-3">
       <input type="hidden" name="next" value={next} />
       {state?.error ? <p className="text-sm text-clay">{state.error}</p> : null}
+      {google ? <GoogleButton next={next} /> : null}
       <input name="email" type="email" required placeholder="Email" className={control} />
       <input name="password" type="password" required placeholder="Password" className={control} />
       <button disabled={pending} className="w-full rounded-full bg-ink py-3 text-paper">
@@ -25,11 +29,12 @@ export function LoginForm({ next }: { next: string }) {
   );
 }
 
-export function SignupForm() {
+export function SignupForm({ google }: { google?: boolean }) {
   const [state, action, pending] = useActionState(signupAction, null);
   return (
     <form action={action} className="space-y-3">
       {state?.error ? <p className="text-sm text-clay">{state.error}</p> : null}
+      {google ? <GoogleButton next="/explore" /> : null}
       <input name="name" required placeholder="Name" className={control} />
       <input name="email" type="email" required placeholder="Email" className={control} />
       <input name="password" type="password" required minLength={8} placeholder="Password" className={control} />
@@ -51,5 +56,32 @@ export function ForgotForm() {
         Send reset link
       </button>
     </form>
+  );
+}
+
+export function ResetForm({ token }: { token: string }) {
+  const [state, action, pending] = useActionState(resetPasswordAction, null);
+  return (
+    <form action={action} className="space-y-3">
+      <input type="hidden" name="token" value={token} />
+      {state?.error ? <p className="text-sm text-clay">{state.error}</p> : null}
+      <input name="password" type="password" required minLength={8} placeholder="New password" className={control} />
+      <input name="confirm" type="password" required minLength={8} placeholder="Confirm password" className={control} />
+      <button disabled={pending} className="w-full rounded-full bg-ink py-3 text-paper">
+        {pending ? "Saving…" : "Save password"}
+      </button>
+    </form>
+  );
+}
+
+function GoogleButton({ next }: { next: string }) {
+  return (
+    <button
+      type="button"
+      className="w-full rounded-full border border-line bg-white py-3 text-sm"
+      onClick={() => authClient.signIn.social({ provider: "google", callbackURL: next })}
+    >
+      Continue with Google
+    </button>
   );
 }

@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { appOrigin } from "@/lib/env";
 
 export type UploadGrant = {
   uploadUrl: string;
@@ -18,7 +19,14 @@ export interface StorageProvider {
 }
 
 function appUrl() {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return appOrigin();
+}
+
+function s3Credentials() {
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  if (!accessKeyId || !secretAccessKey) return undefined;
+  return { accessKeyId, secretAccessKey };
 }
 
 export function safeKey(filename: string) {
@@ -49,9 +57,7 @@ class S3Storage implements StorageProvider {
       region: process.env.AWS_REGION ?? "us-west-2",
       endpoint: process.env.S3_ENDPOINT || undefined,
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
-      credentials: process.env.AWS_ACCESS_KEY_ID
-        ? { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "" }
-        : undefined,
+      credentials: s3Credentials(),
     });
   }
   async createUpload(input: { key: string; contentType: string }): Promise<UploadGrant> {

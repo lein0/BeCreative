@@ -31,6 +31,8 @@ Password for every demo account: `DemoPass123!`
 | student@becreative.demo | Student with bookings and a class pack |
 | lila@becreative.demo | Teacher pending approval |
 
+`npm run db:seed` also creates or upgrades every address in `ADMIN_EMAILS` (default `eric.leino@gmail.com`) as an admin. That account has no password. Use Forgot password, or Google when those keys are set. Production deploy steps are in `DEPLOY.md`.
+
 ## What you can click through
 
 - Explore classes on a Leaflet map and book a session, with promo code `BECREATIVE15` or `MAYA10`.
@@ -72,7 +74,7 @@ Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `char
 
 - Next.js App Router, TypeScript, Tailwind.
 - Drizzle and Postgres. Migrations live in `drizzle/`.
-- Better Auth with email and password. Sessions are in Postgres. Role checks run on the server for every studio, admin, CRM, and booking action.
+- Better Auth with email and password. Sessions are in Postgres. Role checks run on the server for `/teach`, `/admin`, `/manage`, and `/crm`. See `DEPLOY.md` for App Runner.
 - Email goes through `lib/email.ts`. `console` writes the outbox. `ses` uses Amazon SES.
 - Uploads go through `lib/storage.ts`. `local` stores files under `./data/uploads`. `s3` returns a presigned PUT. The browser never receives the AWS secret key.
 - Maps are Leaflet and OpenStreetMap behind `components/studio-map.tsx`. Geocoding is `lib/geocode.ts` (`local`, `nominatim`, or `mapbox`).
@@ -86,9 +88,9 @@ See `.env.example`.
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string |
-| `BETTER_AUTH_SECRET` | Session signing secret |
-| `BETTER_AUTH_URL` | Auth base URL |
-| `NEXT_PUBLIC_APP_URL` | Public origin for links, embeds, and Checkout return URLs |
+| `AUTH_SECRET` | Session signing secret. `BETTER_AUTH_SECRET` is the fallback |
+| `APP_URL` | Public origin. `BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL` are fallbacks |
+| `ADMIN_EMAILS` | Comma-separated admins. Default `eric.leino@gmail.com`. No password is seeded |
 | `NEXT_PUBLIC_APP_NAME` | Product name |
 | `REQUIRE_EMAIL_VERIFICATION` | `false` skips the verification email |
 | `EMAIL_PROVIDER` | `console` or `ses` |
@@ -121,8 +123,8 @@ Point the same env vars at these and the app does not need a code change.
 - RDS Postgres or Aurora PostgreSQL. Put the connection string in `DATABASE_URL`. Run `npm run db:migrate` against it.
 - S3 bucket for class media, with CORS allowing `PUT` from the site origin. IAM credentials limited to `s3:PutObject` and `s3:GetObject` on that bucket.
 - SES in the same region: a verified identity, production access, and `SES_FROM_EMAIL`.
-- A Node host that can run Next.js server-side (Amplify Hosting SSR, ECS, or a similar service). This app uses server actions, webhooks, and a Postgres session, so a static export will not work.
-- Secrets for `DATABASE_URL`, `BETTER_AUTH_SECRET`, AWS keys, and Stripe keys.
+- App Runner (or another Node host) running the container in `Dockerfile`. See `DEPLOY.md` for the image, health check, migrations, and instance role. A static export will not work.
+- Secrets for `DATABASE_URL`, `AUTH_SECRET`, and Stripe keys when you turn Stripe on. S3 and SES use the instance role when access keys are unset.
 - Stripe webhook endpoint `https://<host>/api/webhooks/stripe`.
 - Stripe Connect Express is created per teacher when you add an onboarding flow on top of `stripeAccountId`. Checkout already sends `transfer_data.destination` when that id is set.
 

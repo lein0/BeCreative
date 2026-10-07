@@ -12,6 +12,7 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
   const response = NextResponse.next();
+  const secure = request.nextUrl.protocol === "https:" || request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https";
   const ref = searchParams.get("ref");
   const utmSource = searchParams.get("utm_source");
   const utmMedium = searchParams.get("utm_medium");
@@ -20,11 +21,11 @@ export function proxy(request: NextRequest) {
     response.cookies.set(
       "bc_attr",
       JSON.stringify({ ref, utm_source: utmSource, utm_medium: utmMedium, utm_campaign: utmCampaign }),
-      { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax" },
+      { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure },
     );
   }
   const code = searchParams.get("code");
-  if (code) response.cookies.set("bc_code", code.toUpperCase(), { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax" });
+  if (code) response.cookies.set("bc_code", code.toUpperCase(), { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
   return response;
 }
 

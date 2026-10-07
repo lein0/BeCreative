@@ -1,3 +1,5 @@
+import { appOrigin } from "@/lib/env";
+
 export type ShareQuery = {
   code?: string | null;
   ref?: string | null;
@@ -7,9 +9,7 @@ export type ShareQuery = {
   session?: string | null;
 };
 
-export function appOrigin() {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-}
+export { appOrigin };
 
 export function withQuery(path: string, query: ShareQuery = {}) {
   const params = new URLSearchParams();
