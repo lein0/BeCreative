@@ -1,0 +1,3 @@
+version: 1
+triggers:
+  drafts: true
