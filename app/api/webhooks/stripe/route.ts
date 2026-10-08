@@ -3,7 +3,7 @@ import { fulfillPaidCheckout, refundOrderByPaymentIntent } from "@/lib/booking-s
 import { handleEarlyFraud, recordDispute } from "@/lib/disputes";
 import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
-import { stripeEvents, teachers } from "@/lib/db/schema";
+import { membershipSubscriptions, orders, stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
 
 export async function POST(request: Request) {
@@ -50,6 +50,15 @@ export async function POST(request: Request) {
       paymentIntent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id ?? paymentIntent;
     }
     await handleEarlyFraud({ chargeId: chargeId ?? warning.id, paymentIntentId: paymentIntent, amountCents });
+  }
+  if (event.type === "invoice.payment_failed") {
+    const invoice = event.data.object;
+    const parent = invoice.parent?.subscription_details?.subscription;
+    const subscription = typeof parent === "string" ? parent : parent?.id;
+    if (subscription) {
+      const [order] = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, subscription)).limit(1);
+      if (order) await db.update(membershipSubscriptions).set({ status: "past_due" }).where(eq(membershipSubscriptions.orderId, order.id));
+    }
   }
   if (event.type === "account.updated") {
     const account = event.data.object;

@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 export function CookieNotice() {
   const [open, setOpen] = useState(false);
   useEffect(() => {
-    setOpen(window.localStorage.getItem("bc_cookie") !== "1");
+    const id = window.setTimeout(() => setOpen(window.localStorage.getItem("bc_cookie") !== "1"), 0);
+    return () => window.clearTimeout(id);
   }, []);
   if (!open) return null;
   return (

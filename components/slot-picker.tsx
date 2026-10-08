@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { bookVisitAction } from "@/lib/actions";
 
 export type PickerSlot = { startsAt: string; localDate: string; time: string; left?: number };
@@ -133,6 +134,14 @@ export function SlotPicker({
             <option key={item.id} value={item.id}>{item.label}</option>
           ))}
         </select>
+      </label>
+      <label className="block text-sm">
+        Mobile phone
+        <input name="phone" type="tel" className="mt-1 w-full rounded-2xl border border-line bg-white px-3 py-2" placeholder="+1…" />
+      </label>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="checkbox" name="smsOptIn" value="1" className="mt-1" />
+        <span>Text me reminders. Reply STOP to opt out. Msg & data rates may apply. <Link className="underline" href="/legal/sms">SMS terms</Link></span>
       </label>
       <label className="flex items-start gap-2 text-sm">
         <input type="checkbox" name="policyAccepted" value="1" required className="mt-1" />

@@ -12,11 +12,20 @@ export function defaultPrefs(event: NotificationEvent, audience: "teacher" | "st
   };
 }
 
-export function channelsFor(prefs: ChannelPrefs, input: { unsubscribed: boolean; webPushEnabled: boolean; smsConfigured: boolean }) {
+export function channelsFor(prefs: ChannelPrefs, input: {
+  unsubscribed: boolean;
+  webPushEnabled: boolean;
+  smsConfigured: boolean;
+  smsOptIn?: boolean;
+  emailSuppressed?: boolean;
+  consent?: "transactional" | "marketing";
+  marketingOptIn?: boolean;
+}) {
+  const marketingBlocked = input.consent === "marketing" && input.marketingOptIn !== true;
   return {
-    email: prefs.email && !input.unsubscribed,
+    email: prefs.email && !input.unsubscribed && !input.emailSuppressed && !marketingBlocked,
     inApp: prefs.inApp,
-    sms: prefs.sms && input.smsConfigured,
+    sms: prefs.sms && input.smsConfigured && input.smsOptIn !== false,
     push: prefs.push && input.webPushEnabled,
     digest: prefs.cadence === "daily",
   };

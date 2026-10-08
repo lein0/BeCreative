@@ -454,4 +454,16 @@ export async function featureClass(classId: string, featured: boolean) {
 
 export async function setTeacherStatus(teacherId: string, status: "approved" | "rejected" | "pending", reason?: string) {
   await db.update(teachers).set({ status, rejectionReason: reason ?? null, updatedAt: new Date() }).where(eq(teachers.id, teacherId));
+  if (status !== "approved") return;
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, teacherId)).limit(1);
+  if (!teacher) return;
+  const { emitNotification } = await import("@/lib/notifications");
+  await emitNotification({
+    userId: teacher.userId,
+    event: "teacher.approved",
+    audience: "teacher",
+    title: teacher.studioName || "your studio",
+    body: "Your studio is approved. Finish Stripe if you want card checkout.",
+    href: "/teach",
+  });
 }

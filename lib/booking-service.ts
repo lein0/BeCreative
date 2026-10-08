@@ -53,6 +53,7 @@ import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
+import { sameLocalDay } from "@/lib/messaging-rules";
 import { emitNotification } from "@/lib/notifications";
 import { grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
@@ -556,6 +557,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       title: `Cancelled ${klass.title}`,
       body: refunded ? "A full refund is on the way to your original payment method." : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
       href: `/c/${klass.slug}`,
+      textEligible: outcome !== "full_refund" && sameLocalDay(upcoming[0]!.startsAt, now),
     });
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
     if (teacher) {

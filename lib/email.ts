@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { emailOutbox } from "@/lib/db/schema";
+import { buildRawEmail } from "@/lib/email-mime";
 
 export type EmailMessage = {
   to: string[];
@@ -47,17 +48,7 @@ class SesEmailProvider implements EmailProvider {
     const { SESClient, SendRawEmailCommand } = await import("@aws-sdk/client-ses");
     // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
-    const headerLines = Object.entries(message.headers ?? {}).map(([key, value]) => `${key}: ${value}`);
-    const raw = [
-      `From: ${from}`,
-      `To: ${message.to.join(", ")}`,
-      `Subject: ${message.subject}`,
-      ...headerLines,
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      message.text,
-    ].join("\r\n");
+    const raw = buildRawEmail(message, from, process.env.SES_CONFIGURATION_SET || undefined);
     const result = await client.send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(raw) } }));
     return { providerMessageId: result.MessageId ?? null };
   }

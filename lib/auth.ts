@@ -6,6 +6,8 @@ import { ensureAdminByEmail, grantAdminRole } from "@/lib/admins";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
+import { renderEmail } from "@/lib/email-templates";
+import { triggerEnabled } from "@/lib/triggers";
 import { appOrigin, authSecret, googleAuthConfigured, isBootstrapAdminEmail, trustedProxyCidrs } from "@/lib/env";
 
 const origin = appOrigin();
@@ -43,24 +45,18 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION !== "false",
     sendResetPassword: async ({ user, url }) => {
-      await sendEmail({
-        to: [user.email],
-        subject: "Reset your BeCreative password",
-        text: `Reset your password: ${url}`,
-        html: `<p>Reset your password:</p><p><a href="${url}">${url}</a></p>`,
-      });
+      if (!(await authTriggerOn("auth.reset"))) return;
+      const rendered = await renderEmail("auth.reset", { name: user.name, href: url, title: "password" });
+      await sendEmail({ to: [user.email], subject: rendered.subject, text: `${rendered.text}\n${url}`, html: rendered.html });
     },
   },
   emailVerification: {
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }) => {
-      await sendEmail({
-        to: [user.email],
-        subject: "Verify your BeCreative email",
-        text: `Confirm your email: ${url}`,
-        html: `<p>Confirm your email to finish creating your BeCreative account.</p><p><a href="${url}">${url}</a></p>`,
-      });
+      if (!(await authTriggerOn("auth.verify"))) return;
+      const rendered = await renderEmail("auth.verify", { name: user.name, href: url, title: "email" });
+      await sendEmail({ to: [user.email], subject: rendered.subject, text: `${rendered.text}\n${url}`, html: rendered.html });
     },
   },
   ...(googleAuthConfigured() && googleClientId && googleClientSecret
@@ -104,3 +100,8 @@ export const auth = betterAuth({
 });
 
 export type SessionUser = typeof auth.$Infer.Session.user;
+
+async function authTriggerOn(id: string) {
+  const rows = await db.select().from(schema.triggerOverrides);
+  return triggerEnabled(id, Object.fromEntries(rows.map((row) => [row.id, row.enabled])));
+}
