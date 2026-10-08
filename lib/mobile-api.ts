@@ -224,6 +224,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       policyAccepted: body.policyAccepted,
       paymentSheet: body.paymentSheet,
       platform,
+      returnToApp: platform !== "web",
       ip: request.headers.get("x-forwarded-for"),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
@@ -253,13 +254,13 @@ export async function handleMobileApi(request: Request, path: string[]) {
 
   if (method === "POST" && root === "packs" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, returnToApp: platform !== "web" });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: platform !== "web" });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 

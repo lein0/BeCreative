@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { quotePrice } from "../../../lib/pricing";
-import { fixturePromos } from "../api/fixtures";
+import { DEMO_PROMO } from "../api/fixtures";
 import {
   calendarEvent,
   canReschedule,
@@ -92,7 +92,7 @@ describe("booking flow", () => {
   });
 
   it("lets a platform promo change the shared quote, and a free intro beats the code", () => {
-    const promo = fixturePromos()[0];
+    const promo = DEMO_PROMO;
     const discounted = priceBooking({
       listPriceCents: 3600,
       feePercent: 10,

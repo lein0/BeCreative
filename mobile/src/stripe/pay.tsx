@@ -1,20 +1,20 @@
 import { View } from "react-native";
-import type { PaymentSheetParams } from "../api/types";
 import { Button } from "../components/ui";
 
 export function PayActions({
+  clientSecret,
   onComplete,
   disabled,
 }: {
-  payment: PaymentSheetParams | null;
+  clientSecret: string | null;
+  publishableKey?: string | null;
   onComplete: (paymentIntentId: string) => void;
   disabled?: boolean;
 }) {
+  const ready = Boolean(clientSecret);
   return (
     <View style={{ gap: 10 }}>
-      <Button label="Pay with Apple Pay" disabled={disabled} onPress={() => onComplete("pi_mock_apple")} testID="pay-apple" />
-      <Button label="Pay with Google Pay" tone="ink" disabled={disabled} onPress={() => onComplete("pi_mock_google")} testID="pay-google" />
-      <Button label="Pay with card" tone="ghost" disabled={disabled} onPress={() => onComplete("pi_mock_card")} testID="pay-card" />
+      <Button label="Pay" disabled={disabled || !ready} onPress={() => onComplete(clientSecret || "pi_mock")} testID="pay-sheet" />
     </View>
   );
 }

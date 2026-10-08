@@ -9,7 +9,7 @@ import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Signup() {
   const router = useRouter();
-  const { api } = useSession();
+  const { api, acceptSession, track } = useSession();
   const { colors } = useAppTheme();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -19,8 +19,10 @@ export default function Signup() {
   async function submit() {
     setError(null);
     try {
-      await api.signup({ name, email, password });
-      router.push({ pathname: "/verify-email", params: { email } });
+      await track("signup_started", {});
+      const session = await api.signUp({ name, email, password });
+      await acceptSession(session);
+      router.replace("/explore");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the account.");
     }
@@ -30,7 +32,7 @@ export default function Signup() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={{ padding: 24, gap: 16 }}>
         <Display>Create your account</Display>
-        <Body muted>Students only. If you teach, use the website.</Body>
+        <Body muted>Students only. If you teach, use the website. You're signed in as soon as the account is created.</Body>
         {error ? <Notice>{error}</Notice> : null}
         <Field label="Name" value={name} onChangeText={setName} testID="signup-name" />
         <Field label="Email" value={email} onChangeText={setEmail} keyboard="email-address" />

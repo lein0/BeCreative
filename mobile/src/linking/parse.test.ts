@@ -20,6 +20,8 @@ describe("deep links", () => {
 
   it("accepts the app scheme and auth links", () => {
     expect(parseDeepLink("becreative://c/cold-read?code=MAYA10")).toMatchObject({ type: "class", slug: "cold-read", code: "MAYA10" });
+    expect(parseDeepLink("becreative://bookings?flow=membership&paid=1")).toMatchObject({ type: "bookings", flow: "membership", cancelled: false });
+    expect(hrefForDeepLink(parseDeepLink("becreative://bookings?flow=membership&cancelled=1")!)).toBe("/bookings?cancelled=1");
     expect(parseDeepLink("https://classes.becreative.app/reset?token=reset-demo")).toMatchObject({ type: "reset", token: "reset-demo" });
     expect(hrefForDeepLink(parseDeepLink("https://classes.becreative.app/verify-email?token=verify:sam@x.com&email=sam@x.com")!)).toBe(
       "/verify-email?token=verify%3Asam%40x.com&email=sam%40x.com",

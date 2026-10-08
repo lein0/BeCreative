@@ -1,359 +1,199 @@
-import type { PriceQuote } from "../../../lib/pricing";
-import type { ApiCategoryCore, ApiClassCore, ApiOrderMoney, ApiTeacherCore } from "./schema-types";
-
 export type Vertical = "creative" | "wellness";
-export type OfferingKind = "class" | "appointment" | "capacity";
-export type BookingKind = "session" | "series" | "appointment" | "capacity";
-export type BookingStatus = "pending" | "confirmed" | "waitlisted" | "cancelled";
-export type RefundKind = "full" | "credit" | "none";
-export type TrackPlatform = "ios" | "android";
+export type PlatformName = "ios" | "android" | "web";
 
 export type StudentUser = {
   id: string;
   name: string;
   email: string;
-  emailVerified: boolean;
-  phone: string | null;
-  smsOptIn: boolean;
-  imageUrl: string | null;
+  roles?: string[];
 };
 
-export type AuthSession = {
+export type AuthResult = {
   token: string;
-  expiresAt: string;
   user: StudentUser;
 };
 
-export type Category = ApiCategoryCore & { vertical: Vertical };
-
-export type Neighborhood = { name: string; lat: number; lng: number };
-
-export type Catalog = {
-  categories: Category[];
-  neighborhoods: Neighborhood[];
-  feePercent: number;
-  feeFixedCents: number;
-};
-
-export type ClassCard = Pick<
-  ApiClassCore,
-  | "id"
-  | "slug"
-  | "title"
-  | "skillLevel"
-  | "format"
-  | "delivery"
-  | "durationMinutes"
-  | "pricePerSessionCents"
-  | "pricePerSeriesCents"
-  | "firstClassFree"
-> & {
-  teacherName: string;
+export type PublicClass = {
+  id: string;
+  slug: string;
+  title: string;
+  priceCents: number | null;
+  delivery: string;
+  teacher: string;
   teacherSlug: string;
-  vertical: Vertical;
-  categorySlug: string;
-  categoryName: string;
-  neighborhood: string | null;
-  lat: number | null;
-  lng: number | null;
+  category?: string;
+  vertical?: Vertical;
   nextStartsAt: string | null;
-  offeringKind: OfferingKind;
-  coverHue: number;
+  spots: number | null;
 };
+
+export type Slot = { id: string; startsAt: string; spots: number | null };
+
+export type ClassDetail = {
+  class: PublicClass;
+  description: string;
+  slots: Slot[];
+  teacher: { slug: string; name: string };
+};
+
+export type TeacherProfile = {
+  teacher: { slug: string; name: string; bio: string | null };
+  classes: { id: string; slug: string; title: string }[];
+};
+
+export type ServiceHit = { id: string; slug: string; title: string; teacher: string };
 
 export type ExploreQuery = {
   q?: string;
   category?: string;
-  vertical?: Vertical;
-  date?: string;
-  maxPriceCents?: number;
-  neighborhood?: string;
-  free?: boolean;
-  firstClassFree?: boolean;
-  lat?: number;
-  lng?: number;
-  miles?: number;
+  vertical?: Vertical | string;
+  level?: string;
+  format?: string;
 };
 
-export type ExploreResult = { classes: ClassCard[]; nextCursor: string | null };
-
-export type ClassSession = {
-  id: string;
-  startsAt: string;
-  endsAt: string;
-  localDate: string;
-  status: "scheduled" | "cancelled" | "completed" | "paused";
-  capacity: number;
-  confirmedCount: number;
+export type PriceBreakdown = {
+  listPriceCents?: number;
+  discountCents?: number;
+  studentPaysCents?: number;
+  codeApplied?: string | null;
 };
 
-export type TimeSlot = {
-  id: string;
-  startsAt: string;
-  endsAt: string;
-  remaining: number;
-  priceCents: number;
+export type CheckoutResult = PriceBreakdown & {
+  error?: string;
+  orderId?: string;
+  clientSecret?: string;
+  publishableKey?: string;
+  checkoutUrl?: string;
+  waitlisted?: boolean;
+  alreadyBooked?: boolean;
+  ok?: boolean;
 };
 
-export type Addon = { id: string; name: string; priceCents: number; minutes: number };
+export type BookInput = {
+  sessionId?: string;
+  classId?: string;
+  series?: boolean;
+  code?: string;
+  payWith?: string;
+  policyAccepted?: boolean;
+  paymentSheet?: boolean;
+};
 
-export type Waiver = { required: boolean; title: string; body: string };
-
-export type Review = { id: string; rating: number; body: string; author: string };
-
-export type PackOffer = {
+export type BookingListItem = {
   id: string;
+  status: string;
+  title: string;
   slug: string;
-  name: string;
-  description: string;
-  creditCount: number;
-  priceCents: number;
-  expiryDays: number;
-};
-
-export type MembershipOffer = {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  termMonths: number;
-  priceCents: number;
-  classesPerPeriod: number | null;
-  unlimited: boolean;
-  pauseCancelPolicy: string;
-};
-
-export type ClassDetail = ApiClassCore & {
-  vertical: Vertical;
-  offeringKind: OfferingKind;
-  categorySlug: string;
-  categoryName: string;
-  coverHue: number;
-  teacher: ApiTeacherCore & { neighborhood: string | null };
-  location: { neighborhood: string; city: string; lat: number; lng: number; addressLine1: string } | null;
-  sessions: ClassSession[];
-  slots: TimeSlot[];
-  addons: Addon[];
-  waiver: Waiver;
-  reviews: Review[];
-  packs: PackOffer[];
-  memberships: MembershipOffer[];
-  introAlreadyUsed: boolean;
-};
-
-export type TeacherProfile = ApiTeacherCore & {
-  vertical: Vertical;
-  neighborhood: string | null;
-  classes: ClassCard[];
-  packs: PackOffer[];
-  memberships: MembershipOffer[];
-};
-
-export type QuoteRequest = {
-  classSlug: string;
-  kind: BookingKind;
-  sessionId?: string | null;
-  slotId?: string | null;
-  addonIds?: string[];
-  partySize?: number;
-  promoCode?: string | null;
-  usePackId?: string | null;
-  useMembershipId?: string | null;
-};
-
-export type QuoteResponse = {
-  quote: PriceQuote;
-  listPriceCents: number;
-  label: string;
-};
-
-export type PaymentSheetParams = {
-  paymentIntentClientSecret: string;
-  customerId: string;
-  customerEphemeralKeySecret: string;
-  merchantDisplayName: string;
-  publishableKey: string;
-  merchantCountryCode: string;
-  applePayMerchantId: string;
-  googlePayTestEnv: boolean;
-};
-
-export type BookingRecord = {
-  id: string;
-  classSlug: string;
-  classTitle: string;
-  teacherName: string;
-  kind: BookingKind;
-  status: BookingStatus;
-  startsAt: string;
-  endsAt: string;
-  location: string;
-  sessionId: string | null;
-  slotId: string | null;
-  partySize: number;
-  orderId: string | null;
-};
-
-export type OrderRecord = ApiOrderMoney & {
-  id: string;
-  bookingId: string | null;
-  classTitle: string;
-  kind: BookingKind;
-  promoCode: string | null;
-  payment: PaymentSheetParams | null;
   createdAt: string;
 };
 
-export type BookingResult = {
-  booking: BookingRecord;
-  order: OrderRecord;
-};
+export type WalletPack = { id: string; name: string; remaining: number; total: number };
+export type WalletMembership = { id: string; name: string; status: string; periodEnd: string };
+export type Wallet = { packs: WalletPack[]; memberships: WalletMembership[] };
 
-export type CreateBookingRequest = QuoteRequest & {
-  waiver?: { agreed: boolean; signedName: string };
-};
-
-export type CancelResult = {
-  booking: BookingRecord;
-  refund: RefundKind;
-  message: string;
-};
-
-export type WalletPack = {
-  id: string;
-  packId: string;
-  name: string;
-  teacherName: string;
-  creditsTotal: number;
-  creditsRemaining: number;
-  expiresAt: string | null;
-  classSlugs: string[];
-  categorySlugs: string[];
-};
-
-export type WalletMembership = {
-  id: string;
-  membershipId: string;
-  name: string;
-  teacherName: string;
-  status: "active" | "pending" | "cancelled";
-  currentPeriodEnd: string;
-  classesPerPeriod: number | null;
-  classesUsedThisPeriod: number;
-  unlimited: boolean;
-  classSlugs: string[];
-  categorySlugs: string[];
-};
-
-export type LedgerEntry = {
-  id: string;
-  direction: "credit" | "debit";
-  sourceType: string;
-  label: string;
-  createdAt: string;
-};
-
-export type Wallet = { packs: WalletPack[]; memberships: WalletMembership[]; ledger: LedgerEntry[] };
+export type WaiverState = { body: string | null; version: number | null; signed: boolean };
 
 export type AppNotification = {
   id: string;
+  event: string;
   title: string;
   body: string;
-  read: boolean;
-  createdAt: string;
   href: string | null;
-};
-
-export type NotificationPreferences = {
-  pushBookings: boolean;
-  pushReminders: boolean;
-  pushMarketing: boolean;
-  smsOptIn: boolean;
-};
-
-export type FaqItem = { id: string; question: string; answer: string };
-
-export type HelpAction = {
-  id: "cancel" | "reschedule" | "waiver_copy" | "ask_teacher" | "safety";
-  label: string;
-  enabled: boolean;
-  detail: string;
-};
-
-export type SupportTicket = {
-  id: string;
-  bookingId: string | null;
-  subject: string;
-  body: string;
-  status: "open" | "pending" | "closed";
+  readAt: string | null;
   createdAt: string;
 };
 
-export type TrackEvent = {
+export type PreferenceRow = {
+  id: string;
   event: string;
-  platform: TrackPlatform;
-  occurredAt: string;
-  anonymousId: string;
-  userId: string | null;
-  properties: Record<string, string | number | boolean | null>;
+  email: boolean;
+  inApp: boolean;
+  sms: boolean;
+  push: boolean;
+  cadence: string;
 };
 
-export type ExperimentAssignment = { key: string; variant: string };
+export type Preferences = {
+  preferences: PreferenceRow[];
+  smsOptIn: boolean;
+  marketingOptIn: boolean;
+  phone: string | null;
+};
 
-export type PushRegistration = {
-  expoPushToken: string;
-  platform: TrackPlatform;
+export type PreferenceUpdate = {
+  event?: string;
+  email?: boolean;
+  inApp?: boolean;
+  sms?: boolean;
+  push?: boolean;
+  cadence?: "instant" | "daily";
+  smsOptIn?: boolean;
+  marketingOptIn?: boolean;
+  phone?: string;
+};
+
+export type HelpArticleSummary = { slug: string; title: string; category: string };
+export type HelpArticle = HelpArticleSummary & { body: string };
+
+export type TicketSummary = { id: string; subject: string; status: string; category: string };
+
+export type TrackInput = {
+  name: string;
+  anonymousId?: string;
+  path?: string;
+  platform?: PlatformName;
+  consent?: boolean;
+  properties?: Record<string, string>;
+};
+
+export type ExperimentAssignment = {
+  key: string;
+  variant: string;
+  payload?: Record<string, string> | null;
+  goalEvent?: string;
+  status?: string;
 };
 
 export class ApiError extends Error {
   status: number;
-  code: string;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, message: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
-    this.code = code;
   }
 }
 
 export type StudentApi = {
   mode: "mock" | "live";
-  catalog(): Promise<Catalog>;
-  explore(query?: ExploreQuery): Promise<ExploreResult>;
+  signIn(input: { email: string; password: string; anonymousId?: string }): Promise<AuthResult>;
+  signUp(input: { name: string; email: string; password: string; phone?: string; smsOptIn?: boolean; marketingOptIn?: boolean; anonymousId?: string }): Promise<AuthResult>;
+  signOut(): Promise<{ ok: true }>;
+  me(): Promise<{ user: StudentUser }>;
+  explore(query?: ExploreQuery): Promise<{ classes: PublicClass[] }>;
+  search(query?: { q?: string; vertical?: string }): Promise<{ classes: PublicClass[]; services: ServiceHit[] }>;
   classDetail(slug: string): Promise<ClassDetail>;
+  slots(slug: string): Promise<{ slots: Slot[] }>;
   teacher(slug: string): Promise<TeacherProfile>;
-  quote(input: QuoteRequest): Promise<QuoteResponse>;
-  createBooking(input: CreateBookingRequest, idempotencyKey?: string): Promise<BookingResult>;
-  confirmPayment(orderId: string, paymentIntentId: string): Promise<OrderRecord>;
-  getOrder(orderId: string): Promise<OrderRecord>;
-  cancelBooking(id: string): Promise<CancelResult>;
-  rescheduleBooking(id: string, target: { sessionId?: string; slotId?: string }): Promise<BookingRecord>;
-  bookings(): Promise<{ bookings: BookingRecord[] }>;
-  booking(id: string): Promise<BookingRecord>;
+  book(input: BookInput): Promise<CheckoutResult>;
+  cancelBooking(id: string): Promise<{ ok?: boolean; outcome?: string; feeCents?: number; error?: string }>;
+  rescheduleBooking(id: string, sessionId: string): Promise<{ ok?: boolean; error?: string }>;
+  bookings(): Promise<{ bookings: BookingListItem[] }>;
   wallet(): Promise<Wallet>;
-  signup(input: { name: string; email: string; password: string }): Promise<{ verificationRequired: boolean; user: StudentUser }>;
-  login(input: { email: string; password: string }): Promise<AuthSession>;
-  loginWithGoogle(input: { idToken: string }): Promise<AuthSession>;
-  loginWithApple(input: { idToken: string; nonce?: string | null; fullName?: { givenName?: string | null; familyName?: string | null } | null }): Promise<AuthSession>;
-  verifyEmail(input: { email?: string; code?: string; token?: string }): Promise<AuthSession>;
-  resendVerification(email: string): Promise<{ sent: boolean }>;
-  forgotPassword(email: string): Promise<{ sent: boolean }>;
-  resetPassword(input: { token: string; password: string }): Promise<{ reset: boolean }>;
-  logout(): Promise<{ ok: true }>;
-  me(): Promise<StudentUser>;
-  updateMe(patch: { name?: string; phone?: string | null; smsOptIn?: boolean }): Promise<StudentUser>;
-  deleteMe(confirm: string): Promise<{ deleted: true }>;
-  registerPushToken(input: PushRegistration): Promise<{ registered: true }>;
-  unregisterPushToken(token: string): Promise<{ removed: true }>;
-  notifications(): Promise<{ items: AppNotification[] }>;
-  markNotificationRead(id: string): Promise<AppNotification>;
-  notificationPreferences(): Promise<NotificationPreferences>;
-  updateNotificationPreferences(patch: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
-  faq(): Promise<{ items: FaqItem[] }>;
-  helpActions(bookingId: string): Promise<{ actions: HelpAction[] }>;
-  tickets(): Promise<{ tickets: SupportTicket[] }>;
-  createTicket(input: { bookingId?: string | null; subject: string; body: string }): Promise<SupportTicket>;
-  track(event: TrackEvent): Promise<{ accepted: true }>;
-  experiments(): Promise<{ assignments: ExperimentAssignment[] }>;
+  purchasePack(input: { id: string; code?: string; paymentSheet?: boolean }): Promise<CheckoutResult>;
+  purchaseMembership(input: { id: string; code?: string }): Promise<CheckoutResult>;
+  waiver(teacherSlug: string): Promise<WaiverState>;
+  signWaiver(teacherSlug: string, signedName: string): Promise<{ ok?: boolean; error?: string }>;
+  notifications(): Promise<{ notifications: AppNotification[] }>;
+  markNotificationsRead(id?: string): Promise<{ ok: true }>;
+  preferences(): Promise<Preferences>;
+  updatePreferences(body: PreferenceUpdate): Promise<{ ok: true }>;
+  registerPushToken(input: { token: string; platform?: PlatformName; provider?: "expo" | "apns" | "fcm" }): Promise<{ ok: true }>;
+  unregisterPushToken(token: string): Promise<{ ok: true }>;
+  help(): Promise<{ articles: HelpArticleSummary[] }>;
+  helpArticle(slug: string): Promise<HelpArticle>;
+  tickets(): Promise<{ tickets: TicketSummary[] }>;
+  createTicket(input: { category?: string; subject: string; body: string; teacherId?: string; bookingId?: string }): Promise<{ id: string }>;
+  track(input: TrackInput): Promise<{ ok: true }>;
+  experiment(key: string, subject?: string): Promise<ExperimentAssignment>;
 };

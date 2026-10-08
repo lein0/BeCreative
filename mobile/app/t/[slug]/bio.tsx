@@ -11,13 +11,13 @@ export default function Bio() {
   const router = useRouter();
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   useEffect(() => {
-    if (slug) void api.teacher(slug).then(setProfile);
+    if (slug) void api.teacher(slug).then(setProfile).catch(() => undefined);
   }, [api, slug]);
   if (!profile) return <Screen><Body>Loading…</Body></Screen>;
   return (
     <Screen>
-      <Display>{profile.studioName}</Display>
-      <Body>{profile.bio}</Body>
+      <Display>{profile.teacher.name}</Display>
+      <Body>{profile.teacher.bio}</Body>
       <View style={{ gap: 8 }}>
         {profile.classes.map((item) => (
           <Button key={item.id} label={item.title} onPress={() => router.push(`/c/${item.slug}`)} />

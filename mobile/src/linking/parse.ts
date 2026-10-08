@@ -15,7 +15,8 @@ export type DeepLink =
   | ({ type: "membership"; teacherSlug: string; membershipSlug: string } & PromoQuery)
   | { type: "reset"; token: string | null }
   | { type: "verify"; token: string | null; email: string | null }
-  | { type: "login" };
+  | { type: "login" }
+  | { type: "bookings"; flow: string | null; cancelled: boolean };
 
 const BLOCKED = new Set(["teach", "admin", "manage", "crm", "api", "studio"]);
 
@@ -79,6 +80,9 @@ export function parseDeepLink(raw: string): DeepLink | null {
     return { type: "verify", token: url.searchParams.get("token"), email: url.searchParams.get("email") };
   }
   if ((parts[0] === "login" || parts[0] === "signup") && parts.length === 1) return { type: "login" };
+  if (parts[0] === "bookings" && parts.length === 1) {
+    return { type: "bookings", flow: url.searchParams.get("flow"), cancelled: url.searchParams.get("cancelled") === "1" };
+  }
   return null;
 }
 
@@ -114,6 +118,8 @@ export function hrefForDeepLink(link: DeepLink): string {
     }
     case "login":
       return "/login";
+    case "bookings":
+      return link.cancelled ? "/bookings?cancelled=1" : "/bookings";
     default:
       return "/explore";
   }

@@ -159,6 +159,23 @@ async function priorWithTeacher(userId: string, teacherId: string) {
   return Number(row?.count ?? 0) > 0;
 }
 
+function priceFields(quote: { listPriceCents: number; discountCents: number; studentPaysCents: number; codeApplied: string | null }) {
+  return {
+    listPriceCents: quote.listPriceCents,
+    discountCents: quote.discountCents,
+    studentPaysCents: quote.studentPaysCents,
+    codeApplied: quote.codeApplied,
+  };
+}
+
+function checkoutPaths(returnToApp: boolean | undefined, flow: string, successPath: string, cancelPath: string) {
+  if (!returnToApp) return { successPath, cancelPath };
+  return {
+    successPath: `/mobile/return?flow=${encodeURIComponent(flow)}`,
+    cancelPath: `/mobile/return?flow=${encodeURIComponent(flow)}&cancelled=1`,
+  };
+}
+
 export async function bookSession(input: {
   userId: string;
   email: string;
@@ -172,7 +189,8 @@ export async function bookSession(input: {
   ip?: string | null;
   paymentSheet?: boolean;
   platform?: string;
-}): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
+  returnToApp?: boolean;
+}): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
   const attr = await attribution();
   const codeInput = normalizeCodes([input.code ?? "", attr.code]);
   if (codeInput.error) return { error: codeInput.error };
@@ -456,23 +474,24 @@ export async function bookSession(input: {
         });
         if (intent?.client_secret) {
           await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, created.orderId));
-          return { orderId: created.orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+          return { orderId: created.orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "", ...priceFields(created.quote) };
         }
       }
+      const paths = checkoutPaths(input.returnToApp, "booking", `/bookings?paid=1`, `/c/${created.klass.slug}?cancelled=1`);
       const session = await createCheckout({
         name: created.klass.title,
         amountCents: created.quote.studentPaysCents,
         applicationFeeCents: created.quote.platformFeeCents,
         destinationAccountId: created.teacher.stripeAccountId,
         customerEmail: input.email,
-        successPath: `/bookings?paid=1`,
-        cancelPath: `/c/${created.klass.slug}?cancelled=1`,
+        successPath: paths.successPath,
+        cancelPath: paths.cancelPath,
         metadata: { type: "order", orderId: created.orderId, userId: input.userId },
         statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       });
       if (session?.id) {
         await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
-        if (session.url) return { orderId: created.orderId, checkoutUrl: session.url };
+        if (session.url) return { orderId: created.orderId, checkoutUrl: session.url, ...priceFields(created.quote) };
       }
       const offline = orderMoney(created.quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));
@@ -486,7 +505,7 @@ export async function bookSession(input: {
     await notifyTeacherOfBooking({ teacherUserId: created.teacher.userId, studentName: input.name, title: created.klass.title, href: `/teach` });
     await notifyStudentConfirmed({ userId: input.userId, title: created.klass.title, href: `/c/${created.klass.slug}` });
     await capture({ name: "checkout_completed", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId, classId: created.klass.id, teacherId: created.teacher.id } });
-    return { orderId: created.orderId };
+    return { orderId: created.orderId, ...priceFields(created.quote) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
   }
@@ -710,7 +729,7 @@ async function recordPromoRedemption(promoId: string, userId: string, orderId: s
   });
 }
 
-export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean }) {
+export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; returnToApp?: boolean }): Promise<{ error?: string; ok?: boolean; orderId?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
   const fee = await fees();
   const attr = await attribution();
   const normalized = normalizeCodes([input.code ?? "", attr.code]);
@@ -794,7 +813,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       });
       if (intent?.client_secret) {
         await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, orderId));
-        return { orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+        return { orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "", ...priceFields(quote) };
       }
     }
     if (status === "pending" && teacher) {
@@ -804,21 +823,21 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
         applicationFeeCents: money.platformFeeCents,
         destinationAccountId: teacher.stripeAccountId,
         customerEmail: input.email,
-        successPath: "/bookings?pack=1",
-        cancelPath: `/t/${teacher.slug}`,
+        successPath: checkoutPaths(input.returnToApp, "pack", "/bookings?pack=1", `/t/${teacher.slug}`).successPath,
+        cancelPath: checkoutPaths(input.returnToApp, "pack", "/bookings?pack=1", `/t/${teacher.slug}`).cancelPath,
         metadata: { type: "order", orderId, userId: input.userId },
         statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       });
       if (session?.url) {
         await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
-        return { checkoutUrl: session.url };
+        return { orderId, checkoutUrl: session.url, ...priceFields(quote) };
       }
       const offline = orderMoney(quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
       await db.update(packPurchases).set({ creditsRemaining: packCreditsOnPayment(pack.creditCount) }).where(eq(packPurchases.id, purchaseId));
     }
     if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: pack.name, href: "/teach/billing" });
-    return { ok: true };
+    return { ok: true, orderId, ...priceFields(quote) };
   }
   const [plan] = await db.select().from(memberships).where(eq(memberships.id, input.id)).limit(1);
   if (!plan || !plan.active) return { error: "That membership is unavailable." };
@@ -896,20 +915,20 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       applicationFeeCents: money.platformFeeCents,
       destinationAccountId: teacher.stripeAccountId,
       customerEmail: input.email,
-      successPath: "/bookings?membership=1",
-      cancelPath: `/t/${teacher.slug}`,
+      successPath: checkoutPaths(input.returnToApp, "membership", "/bookings?membership=1", `/t/${teacher.slug}`).successPath,
+      cancelPath: checkoutPaths(input.returnToApp, "membership", "/bookings?membership=1", `/t/${teacher.slug}`).cancelPath,
       metadata: { type: "order", orderId, userId: input.userId },
       statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
     });
     if (session?.url) {
       await db.update(orders).set({ stripeCheckoutSessionId: session.id, status: "pending" }).where(eq(orders.id, orderId));
-      return { checkoutUrl: session.url };
+      return { orderId, checkoutUrl: session.url, ...priceFields(quote) };
     }
     const offline = orderMoney(quote, false);
     await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, subId));
   }
   if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
-  return { ok: true };
+  return { ok: true, orderId, ...priceFields(quote) };
 }

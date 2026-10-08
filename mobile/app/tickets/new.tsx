@@ -16,7 +16,7 @@ export default function NewTicket() {
   async function submit() {
     setError(null);
     try {
-      const ticket = await api.createTicket({ bookingId: typeof params.bookingId === "string" ? params.bookingId : null, subject, body });
+      const ticket = await api.createTicket({ bookingId: typeof params.bookingId === "string" ? params.bookingId : undefined, category: "class", subject, body });
       setSent(ticket.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send that.");

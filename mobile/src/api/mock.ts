@@ -1,632 +1,317 @@
-import { validatePromo, type ProductScope } from "../../../lib/pricing";
-import {
-  canReschedule,
-  cancelDecision,
-  entitlementCovers,
-  helpActions,
-  needsPaymentSheet,
-  normalizePromoInput,
-  priceBooking,
-  rescheduleTargetSession,
-  rescheduleTargetSlot,
-  selectionListPrice,
-  waiverReady,
-  type SessionChoice,
-} from "../booking/flow";
-import {
-  DEMO_EMAIL,
-  DEMO_PASSWORD,
-  DEMO_TOKEN,
-  DEMO_USER_ID,
-  VERIFY_CODE,
-  buildFixtures,
-  teacherProfile,
-  toCard,
-  type FixtureWorld,
-} from "./fixtures";
-import {
-  ApiError,
-  type AuthSession,
-  type BookingRecord,
-  type ClassDetail,
-  type ClassSession,
-  type CreateBookingRequest,
-  type ExploreQuery,
-  type OrderRecord,
-  type QuoteRequest,
-  type StudentApi,
-  type StudentUser,
-  type TrackEvent,
-} from "./types";
+import { quotePrice } from "../../../lib/pricing";
+import { DEMO_EMAIL, DEMO_PASSWORD, DEMO_PROMO } from "./fixtures";
+import { ApiError, type AppNotification, type BookingListItem, type ClassDetail, type Preferences, type PublicClass, type StudentApi, type StudentUser, type TrackInput, type Wallet } from "./types";
 
-type UserRecord = StudentUser & { password: string; verifiedCode: string | null; resetToken: string | null };
+type MockClass = PublicClass & { description: string; seriesCents: number | null };
 
-function cloneWorld(now?: Date): { world: FixtureWorld; users: UserRecord[] } {
-  const world = buildFixtures(now);
-  const users: UserRecord[] = [{ ...world.user, password: DEMO_PASSWORD, verifiedCode: null, resetToken: null }];
-  return { world, users };
+const NOW = Date.now();
+const day = 86_400_000;
+
+function iso(offsetDays: number, hour: number) {
+  const date = new Date(NOW + offsetDays * day);
+  date.setUTCHours(hour, 0, 0, 0);
+  return date.toISOString();
 }
 
-function paymentFor(orderId: string, userId: string) {
+const CLASSES: MockClass[] = [
+  {
+    id: "class-scene",
+    slug: "scene-study",
+    title: "Scene Study",
+    priceCents: 3600,
+    delivery: "in_person",
+    teacher: "Maya Alvarez",
+    teacherSlug: "maya-alvarez",
+    category: "acting",
+    vertical: "creative",
+    nextStartsAt: iso(3, 19),
+    spots: 8,
+    description: "Hold a scene without indicating. Bring the sides, water, and shoes you can move in.",
+    seriesCents: 24000,
+  },
+  {
+    id: "class-flow",
+    slug: "morning-flow",
+    title: "Morning Flow",
+    priceCents: 2800,
+    delivery: "in_person",
+    teacher: "Lena Ortiz",
+    teacherSlug: "lena-ortiz",
+    category: "yoga",
+    vertical: "wellness",
+    nextStartsAt: iso(1, 15),
+    spots: 6,
+    description: "A calm vinyasa hour. Not medical care.",
+    seriesCents: null,
+  },
+  {
+    id: "class-sauna",
+    slug: "cedar-sauna",
+    title: "Cedar Sauna",
+    priceCents: 4000,
+    delivery: "in_person",
+    teacher: "Lena Ortiz",
+    teacherSlug: "lena-ortiz",
+    category: "sauna",
+    vertical: "wellness",
+    nextStartsAt: iso(2, 18),
+    spots: 4,
+    description: "A shared sauna hour. Stop if you feel unwell.",
+    seriesCents: null,
+  },
+];
+
+const DEMO_USER: StudentUser = { id: "user-student", name: "Jules Navarro", email: DEMO_EMAIL, roles: ["student"] };
+
+function publicOf(item: MockClass): PublicClass {
+  const { description: _description, seriesCents: _series, ...card } = item;
+  return card;
+}
+
+type State = {
+  token: string | null;
+  bookings: BookingListItem[];
+  wallet: Wallet;
+  signed: Set<string>;
+  notifications: AppNotification[];
+  preferences: Preferences;
+  tickets: { id: string; subject: string; status: string; category: string }[];
+  events: TrackInput[];
+};
+
+function fresh(): State {
   return {
-    paymentIntentClientSecret: `pi_mock_secret_${orderId}`,
-    customerId: `cus_mock_${userId}`,
-    customerEphemeralKeySecret: `ek_mock_${orderId}`,
-    merchantDisplayName: "BeCreative",
-    publishableKey: "pk_test_mock",
-    merchantCountryCode: "US",
-    applePayMerchantId: "merchant.com.becreative.students",
-    googlePayTestEnv: true,
+    token: null,
+    bookings: [
+      { id: "book-scene", status: "confirmed", title: "Scene Study", slug: "scene-study", createdAt: new Date(NOW - day).toISOString() },
+    ],
+    wallet: {
+      packs: [{ id: "pack-1", name: "Scene 5-pack", remaining: 4, total: 5 }],
+      memberships: [{ id: "mem-1", name: "BeWell monthly", status: "active", periodEnd: iso(28, 12) }],
+    },
+    signed: new Set(),
+    notifications: [
+      { id: "note-1", event: "booking.confirmed", title: "You're booked for Scene Study", body: "See you in class.", href: "/bookings", readAt: null, createdAt: new Date(NOW - 3_600_000).toISOString() },
+    ],
+    preferences: { preferences: [], smsOptIn: false, marketingOptIn: false, phone: null },
+    tickets: [],
+    events: [],
   };
 }
 
-function choice(session: ClassSession): SessionChoice {
-  return {
-    id: session.id,
-    startsAt: new Date(session.startsAt),
-    endsAt: new Date(session.endsAt),
-    status: session.status,
-    capacity: session.capacity,
-    confirmedCount: session.confirmedCount,
-  };
-}
+export type MockApi = StudentApi & { recordedEvents: TrackInput[] };
 
-function milesBetween(aLat: number, aLng: number, bLat: number, bLng: number) {
-  const rad = (value: number) => (value * Math.PI) / 180;
-  const dLat = rad(bLat - aLat);
-  const dLng = rad(bLng - aLng);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
-  return 3958.8 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-}
+export function createMockApi(): MockApi {
+  const state = fresh();
 
-function ymd(iso: string) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
-}
+  function user(): StudentUser {
+    if (state.token !== `bc_${DEMO_USER.id}`) throw new ApiError(401, "Sign in required.");
+    return DEMO_USER;
+  }
 
-export type MockStudentApi = StudentApi & { recordedEvents: TrackEvent[] };
+  function findClass(slugOrId: string) {
+    return CLASSES.find((item) => item.slug === slugOrId || item.id === slugOrId) ?? null;
+  }
 
-export function createMockApi(now = new Date(), getToken?: () => string | null): MockStudentApi {
-  const state = cloneWorld(now);
-  const orders = new Map<string, OrderRecord>();
-  const tokens = new Map<string, string>([[DEMO_TOKEN, DEMO_USER_ID]]);
-  const idempotency = new Map<string, BookingRecord["id"]>();
-  const pushTokens: { token: string; userId: string; platform: "ios" | "android" }[] = [];
-  const recordedEvents: TrackEvent[] = [];
-  let sequence = 1;
-  const nextId = (prefix: string) => `${prefix}-${sequence++}`;
-
-  orders.set("order-cold", {
-    id: "order-cold",
-    bookingId: "book-cold",
-    classTitle: "Cold Read Lab",
-    kind: "session",
-    status: "paid",
-    listPriceCents: 2800,
-    discountCents: 0,
-    studentPaysCents: 2800,
-    platformFeeCents: 280,
-    teacherAmountCents: 2520,
-    paymentPath: "cash",
-    promoCode: null,
-    payment: null,
-    createdAt: new Date(now.getTime() - 86400000).toISOString(),
-  });
-
-  const api: MockStudentApi = {
+  const api: MockApi = {
     mode: "mock",
-    recordedEvents,
-    async catalog() {
-      return state.world.catalog;
+    recordedEvents: state.events,
+    async signIn(input) {
+      if (input.email.toLowerCase() !== DEMO_EMAIL || input.password !== DEMO_PASSWORD) throw new ApiError(401, "Check the email and password.");
+      state.token = `bc_${DEMO_USER.id}`;
+      return { token: state.token, user: DEMO_USER };
     },
-    async explore(query: ExploreQuery = {}) {
-      const q = query.q?.trim().toLowerCase() ?? "";
-      const classes = state.world.classes.filter((detail) => {
-        const card = toCard(detail);
-        if (query.vertical && card.vertical !== query.vertical) return false;
-        if (query.category && card.categorySlug !== query.category) return false;
-        if (query.neighborhood && card.neighborhood !== query.neighborhood) return false;
-        if (q && !`${card.title} ${card.teacherName} ${card.categoryName}`.toLowerCase().includes(q)) return false;
-        const price = card.pricePerSessionCents ?? card.pricePerSeriesCents ?? 0;
-        if (query.maxPriceCents != null && price > query.maxPriceCents) return false;
-        const isFree = price === 0;
-        if (query.free && query.firstClassFree) {
-          if (!isFree && !card.firstClassFree) return false;
-        } else if (query.free && !isFree) return false;
-        else if (query.firstClassFree && !card.firstClassFree) return false;
-        if (query.date) {
-          const dates = [...detail.sessions.map((item) => item.localDate), ...detail.slots.map((item) => ymd(item.startsAt))];
-          if (!dates.includes(query.date)) return false;
-        }
-        if (query.lat != null && query.lng != null && query.miles != null && card.lat != null && card.lng != null && card.delivery !== "virtual") {
-          if (milesBetween(query.lat, query.lng, card.lat, card.lng) > query.miles) return false;
-        }
-        return true;
-      });
-      return { classes: classes.map(toCard), nextCursor: null };
+    async signUp(input) {
+      if (!input.email || input.password.length < 8) throw new ApiError(400, "Could not create the account.");
+      state.token = `bc_${DEMO_USER.id}`;
+      return { token: state.token, user: { ...DEMO_USER, name: input.name || DEMO_USER.name, email: input.email } };
     },
-    async classDetail(slug: string) {
-      const detail = classBySlug(slug);
-      const user = optionalUser();
-      return {
-        ...detail,
-        introAlreadyUsed: Boolean(user && state.world.introUsed.has(`${user.id}:${detail.teacher.id}`)),
-      };
-    },
-    async teacher(slug: string) {
-      const profile = teacherProfile(state.world, slug);
-      if (!profile) throw new ApiError(404, "not_found", "That teacher is not on BeCreative.");
-      return profile;
-    },
-    async quote(input: QuoteRequest) {
-      return price(input);
-    },
-    async createBooking(input: CreateBookingRequest, idempotencyKey?: string) {
-      const user = requireUser();
-      if (idempotencyKey) {
-        const existingId = idempotency.get(idempotencyKey);
-        const existing = existingId ? state.world.bookings.find((item) => item.id === existingId) : undefined;
-        if (existing) {
-          const order = existing.orderId ? orders.get(existing.orderId) : undefined;
-          if (order) return { booking: existing, order };
-        }
-      }
-      const detail = classBySlug(input.classSlug);
-      const signed = waiverReady({
-        required: detail.waiver.required,
-        agreed: input.waiver?.agreed ?? false,
-        signedName: input.waiver?.signedName ?? "",
-        accountName: user.name,
-      });
-      if (!signed.ok) throw new ApiError(422, "waiver_required", signed.reason);
-      const priced = price(input);
-      const orderId = nextId("order");
-      const bookingId = nextId("book");
-      const sheet = needsPaymentSheet(priced.quote) ? paymentFor(orderId, user.id) : null;
-      const when = timing(detail, input);
-      const booking: BookingRecord = {
-        id: bookingId,
-        classSlug: detail.slug,
-        classTitle: detail.title,
-        teacherName: detail.teacher.studioName || "Teacher",
-        kind: input.kind,
-        status: sheet ? "pending" : priced.label === "Waitlist" ? "waitlisted" : "confirmed",
-        startsAt: when.startsAt,
-        endsAt: when.endsAt,
-        location: detail.location?.neighborhood ?? "Los Angeles",
-        sessionId: input.sessionId ?? null,
-        slotId: input.slotId ?? null,
-        partySize: input.partySize ?? 1,
-        orderId,
-      };
-      const order: OrderRecord = {
-        id: orderId,
-        bookingId,
-        classTitle: detail.title,
-        kind: input.kind,
-        status: sheet ? "pending" : "paid",
-        listPriceCents: priced.quote.listPriceCents,
-        discountCents: priced.quote.discountCents,
-        studentPaysCents: priced.quote.studentPaysCents,
-        platformFeeCents: priced.quote.platformFeeCents,
-        teacherAmountCents: priced.quote.teacherAmountCents,
-        paymentPath: priced.quote.paymentPath,
-        promoCode: priced.quote.codeApplied,
-        payment: sheet,
-        createdAt: new Date().toISOString(),
-      };
-      if (!sheet && input.usePackId) {
-        const pack = state.world.packs.find((item) => item.id === input.usePackId);
-        if (pack) pack.creditsRemaining -= 1;
-      }
-      if (!sheet && input.useMembershipId) {
-        const plan = state.world.memberships.find((item) => item.id === input.useMembershipId);
-        if (plan) plan.classesUsedThisPeriod += 1;
-      }
-      if (!sheet && priced.quote.paymentPath === "first_class_free") {
-        state.world.introUsed.add(`${user.id}:${detail.teacher.id}`);
-      }
-      state.world.bookings.unshift(booking);
-      orders.set(orderId, order);
-      if (idempotencyKey) idempotency.set(idempotencyKey, bookingId);
-      return { booking, order };
-    },
-    async confirmPayment(orderId: string, paymentIntentId: string) {
-      requireUser();
-      const order = orders.get(orderId);
-      if (!order) throw new ApiError(404, "not_found", "That order is not on this account.");
-      if (order.status === "paid") return order;
-      if (!paymentIntentId) throw new ApiError(422, "validation", "Payment did not complete.");
-      order.status = "paid";
-      order.payment = null;
-      const booking = state.world.bookings.find((item) => item.id === order.bookingId);
-      if (booking && booking.status === "pending") booking.status = "confirmed";
-      return order;
-    },
-    async getOrder(orderId: string) {
-      requireUser();
-      const order = orders.get(orderId);
-      if (!order) throw new ApiError(404, "not_found", "That order is not on this account.");
-      return order;
-    },
-    async cancelBooking(id: string) {
-      const booking = requireBooking(id);
-      const decision = cancelDecision({ now: new Date(), startsAt: new Date(booking.startsAt), status: booking.status, kind: booking.kind });
-      if (!decision.allowed) throw new ApiError(409, "policy", decision.reason);
-      booking.status = "cancelled";
-      const order = booking.orderId ? orders.get(booking.orderId) : undefined;
-      if (order && decision.refund !== "none") order.status = "cancelled";
-      if (decision.refund === "credit") {
-        state.world.ledger.unshift({
-          id: nextId("led"),
-          direction: "credit",
-          sourceType: "cancel",
-          label: `Credit for ${booking.classTitle}`,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      return { booking, refund: decision.refund, message: decision.message };
-    },
-    async rescheduleBooking(id: string, target: { sessionId?: string; slotId?: string }) {
-      const booking = requireBooking(id);
-      const detail = classBySlug(booking.classSlug);
-      const allowed = canReschedule({ now: new Date(), startsAt: new Date(booking.startsAt), status: booking.status, kind: booking.kind });
-      if (!allowed.ok) throw new ApiError(409, "policy", allowed.reason);
-      if (target.sessionId) {
-        const session = detail.sessions.find((item) => item.id === target.sessionId);
-        if (!session) throw new ApiError(404, "not_found", "That date is not on this class.");
-        const check = rescheduleTargetSession({ now: new Date(), target: choice(session) });
-        if (!check.ok) throw new ApiError(409, "policy", check.reason);
-        booking.sessionId = session.id;
-        booking.startsAt = session.startsAt;
-        booking.endsAt = session.endsAt;
-        return booking;
-      }
-      if (target.slotId) {
-        const slot = detail.slots.find((item) => item.id === target.slotId);
-        if (!slot) throw new ApiError(404, "not_found", "That time is not open.");
-        const check = rescheduleTargetSlot({
-          now: new Date(),
-          slot: { ...slot, startsAt: new Date(slot.startsAt), endsAt: new Date(slot.endsAt) },
-          partySize: booking.partySize,
-        });
-        if (!check.ok) throw new ApiError(409, "policy", check.reason);
-        booking.slotId = slot.id;
-        booking.startsAt = slot.startsAt;
-        booking.endsAt = slot.endsAt;
-        return booking;
-      }
-      throw new ApiError(422, "validation", "Choose a new time.");
-    },
-    async bookings() {
-      requireUser();
-      return { bookings: state.world.bookings };
-    },
-    async booking(id: string) {
-      return requireBooking(id);
-    },
-    async wallet() {
-      requireUser();
-      return { packs: state.world.packs, memberships: state.world.memberships, ledger: state.world.ledger };
-    },
-    async signup(input) {
-      const email = input.email.trim().toLowerCase();
-      if (!email.includes("@") || input.password.length < 8 || input.name.trim().length < 2) {
-        throw new ApiError(422, "validation", "Use your name, a real email, and a password of at least 8 characters.");
-      }
-      if (state.users.some((user) => user.email === email)) throw new ApiError(409, "conflict", "An account with that email already exists.");
-      const user: UserRecord = {
-        id: nextId("user"),
-        name: input.name.trim(),
-        email,
-        emailVerified: false,
-        phone: null,
-        smsOptIn: false,
-        imageUrl: null,
-        password: input.password,
-        verifiedCode: VERIFY_CODE,
-        resetToken: null,
-      };
-      state.users.push(user);
-      return { verificationRequired: true, user: publicUser(user) };
-    },
-    async login(input) {
-      const user = state.users.find((item) => item.email === input.email.trim().toLowerCase());
-      if (!user || user.password !== input.password) throw new ApiError(401, "unauthorized", "Email or password is wrong.");
-      if (!user.emailVerified) throw new ApiError(403, "unverified", "Verify your email before you sign in.");
-      return sessionFor(user);
-    },
-    async loginWithGoogle(input) {
-      if (!input.idToken) throw new ApiError(422, "validation", "Google did not return a token.");
-      const user = state.users.find((item) => item.id === DEMO_USER_ID)!;
-      return sessionFor(user);
-    },
-    async loginWithApple(input) {
-      if (!input.idToken) throw new ApiError(422, "validation", "Apple did not return a token.");
-      const user = state.users.find((item) => item.id === DEMO_USER_ID)!;
-      return sessionFor(user);
-    },
-    async verifyEmail(input) {
-      const email = input.email?.trim().toLowerCase();
-      const match = state.users.find((item) => (email && item.email === email) || (input.token && input.token === `verify:${item.email}`));
-      if (!match) throw new ApiError(400, "validation", "That verification code is not valid.");
-      if (!input.code && !input.token) throw new ApiError(422, "validation", "Enter the code from your email.");
-      if (input.code && input.code !== (match.verifiedCode ?? VERIFY_CODE)) {
-        throw new ApiError(400, "validation", "That verification code is not valid.");
-      }
-      match.emailVerified = true;
-      match.verifiedCode = null;
-      return sessionFor(match);
-    },
-    async resendVerification() {
-      return { sent: true };
-    },
-    async forgotPassword(email) {
-      const user = state.users.find((item) => item.email === email.trim().toLowerCase());
-      if (user) user.resetToken = user.email === DEMO_EMAIL ? "reset-demo" : `reset-${user.email}`;
-      return { sent: true };
-    },
-    async resetPassword(input) {
-      const user = state.users.find((item) => item.resetToken === input.token);
-      if (!user || input.password.length < 8) throw new ApiError(400, "validation", "That reset link is not valid.");
-      user.password = input.password;
-      user.resetToken = null;
-      return { reset: true };
-    },
-    async logout() {
-      return { ok: true as const };
+    async signOut() {
+      state.token = null;
+      return { ok: true };
     },
     async me() {
-      return publicUser(requireUser());
+      return { user: user() };
     },
-    async updateMe(patch) {
-      const user = requireUser();
-      if (patch.name != null) user.name = patch.name.trim();
-      if (patch.phone !== undefined) user.phone = patch.phone;
-      if (patch.smsOptIn != null) {
-        if (patch.smsOptIn && !user.phone) throw new ApiError(422, "validation", "Add a mobile number before opting into texts.");
-        user.smsOptIn = patch.smsOptIn;
-        state.world.preferences.smsOptIn = patch.smsOptIn;
-      }
-      return publicUser(user);
+    async explore(query = {}) {
+      const q = (query.q || "").toLowerCase();
+      const classes = CLASSES.filter((item) => {
+        if (query.vertical && item.vertical !== query.vertical) return false;
+        if (query.category && item.category !== query.category) return false;
+        if (q && !`${item.title} ${item.teacher} ${item.category}`.toLowerCase().includes(q)) return false;
+        return true;
+      }).map(publicOf);
+      return { classes };
     },
-    async deleteMe(confirm) {
-      const user = requireUser();
-      if (confirm !== "DELETE") throw new ApiError(422, "validation", "Type DELETE to confirm.");
-      state.users = state.users.filter((item) => item.id !== user.id);
-      for (const [token, userId] of tokens) if (userId === user.id) tokens.delete(token);
-      return { deleted: true as const };
+    async search(query = {}) {
+      const found = await api.explore(query);
+      return { classes: found.classes, services: query.vertical === "creative" ? [] : [{ id: "svc-sauna", slug: "cedar-sauna", title: "Cedar Sauna", teacher: "Lena Ortiz" }] };
     },
-    async registerPushToken(input) {
-      const user = requireUser();
-      if (!input.expoPushToken.startsWith("ExponentPushToken")) throw new ApiError(422, "validation", "That is not an Expo push token.");
-      pushTokens.push({ token: input.expoPushToken, userId: user.id, platform: input.platform });
-      return { registered: true as const };
+    async classDetail(slug) {
+      const item = findClass(slug);
+      if (!item) throw new ApiError(404, "Class not found.");
+      const detail: ClassDetail = {
+        class: publicOf(item),
+        description: item.description,
+        slots: [0, 1, 2].map((index) => ({ id: `${item.slug}-slot-${index}`, startsAt: iso(index + 1, 19), spots: 6 })),
+        teacher: { slug: item.teacherSlug, name: item.teacher },
+      };
+      return detail;
     },
-    async unregisterPushToken(token) {
-      const index = pushTokens.findIndex((item) => item.token === token);
-      if (index >= 0) pushTokens.splice(index, 1);
-      return { removed: true as const };
+    async slots(slug) {
+      const detail = await api.classDetail(slug);
+      return { slots: detail.slots };
+    },
+    async teacher(slug) {
+      const owned = CLASSES.filter((item) => item.teacherSlug === slug);
+      if (!owned.length) throw new ApiError(404, "Teacher not found.");
+      return {
+        teacher: { slug, name: owned[0]!.teacher, bio: "Independent teacher on BeCreative." },
+        classes: owned.map((item) => ({ id: item.id, slug: item.slug, title: item.title })),
+      };
+    },
+    async book(input) {
+      user();
+      if (!input.policyAccepted) throw new ApiError(400, "Accept the cancellation policy.");
+      const item = findClass(input.classId || input.sessionId?.split("-slot")[0] || "scene-study") || CLASSES[0]!;
+      const list = input.series ? item.seriesCents ?? item.priceCents ?? 0 : item.priceCents ?? 0;
+      const code = input.code?.trim().toUpperCase();
+      if (code && code !== DEMO_PROMO.code) throw new ApiError(400, "That code isn't recognized.");
+      const quote = quotePrice({ listPriceCents: list, feePercent: 10, feeFixedCents: 0, promo: code ? DEMO_PROMO : null });
+      const orderId = `order-${state.bookings.length + 1}`;
+      state.bookings.unshift({ id: `book-${state.bookings.length + 1}`, status: "confirmed", title: item.title, slug: item.slug, createdAt: new Date().toISOString() });
+      if (quote.studentPaysCents === 0) return { orderId, ...quoteFields(quote) };
+      return {
+        orderId,
+        clientSecret: `pi_mock_secret_${orderId}`,
+        publishableKey: "pk_test_mock",
+        ...quoteFields(quote),
+      };
+    },
+    async cancelBooking(id) {
+      user();
+      const row = state.bookings.find((item) => item.id === id);
+      if (!row || row.status === "cancelled") throw new ApiError(400, "Booking not found.");
+      row.status = "cancelled";
+      return { ok: true, outcome: "full_refund", feeCents: 0 };
+    },
+    async rescheduleBooking(id, sessionId) {
+      user();
+      if (!sessionId) throw new ApiError(400, "That date is not open.");
+      const row = state.bookings.find((item) => item.id === id);
+      if (!row || row.status !== "confirmed") throw new ApiError(400, "Booking not found.");
+      return { ok: true };
+    },
+    async bookings() {
+      user();
+      return { bookings: state.bookings };
+    },
+    async wallet() {
+      user();
+      return state.wallet;
+    },
+    async purchasePack(input) {
+      user();
+      const quote = quotePrice({ listPriceCents: 15000, feePercent: 10, feeFixedCents: 0, promo: input.code ? DEMO_PROMO : null });
+      return { orderId: "order-pack", clientSecret: "pi_mock_secret_pack", publishableKey: "pk_test_mock", ...quoteFields(quote) };
+    },
+    async purchaseMembership() {
+      user();
+      const quote = quotePrice({ listPriceCents: 8900, feePercent: 10, feeFixedCents: 0 });
+      return { orderId: "order-membership", checkoutUrl: "https://checkout.stripe.test/c/mock_membership", ...quoteFields(quote) };
+    },
+    async waiver(teacherSlug) {
+      user();
+      return { body: "I understand this class is taught by an independent teacher.", version: 1, signed: state.signed.has(teacherSlug) };
+    },
+    async signWaiver(teacherSlug, signedName) {
+      user();
+      if (!signedName.trim()) throw new ApiError(400, "Type your name to sign.");
+      state.signed.add(teacherSlug);
+      return { ok: true };
     },
     async notifications() {
-      requireUser();
-      return { items: state.world.notifications };
+      user();
+      return { notifications: state.notifications };
     },
-    async markNotificationRead(id: string) {
-      const note = state.world.notifications.find((item) => item.id === id);
-      if (!note) throw new ApiError(404, "not_found", "That notification is gone.");
-      note.read = true;
-      return note;
+    async markNotificationsRead(id) {
+      user();
+      for (const item of state.notifications) {
+        if (!id || item.id === id) item.readAt = new Date().toISOString();
+      }
+      return { ok: true };
     },
-    async notificationPreferences() {
-      requireUser();
-      return state.world.preferences;
+    async preferences() {
+      user();
+      return state.preferences;
     },
-    async updateNotificationPreferences(patch) {
-      requireUser();
-      state.world.preferences = { ...state.world.preferences, ...patch };
-      return state.world.preferences;
+    async updatePreferences(body) {
+      user();
+      state.preferences = {
+        ...state.preferences,
+        smsOptIn: body.smsOptIn ?? state.preferences.smsOptIn,
+        marketingOptIn: body.marketingOptIn ?? state.preferences.marketingOptIn,
+        phone: body.phone === undefined ? state.preferences.phone : body.phone || null,
+      };
+      return { ok: true };
     },
-    async faq() {
+    async registerPushToken(input) {
+      user();
+      if (!input.token) throw new ApiError(400, "Token required.");
+      return { ok: true };
+    },
+    async unregisterPushToken() {
+      user();
+      return { ok: true };
+    },
+    async help() {
       return {
-        items: [
-          { id: "faq-book", question: "How do I book?", answer: "Pick a date, a series, or a time slot. Add a promo if you have one, sign the waiver, then pay with Apple Pay, Google Pay, or a card." },
-          { id: "faq-cancel", question: "Can I cancel?", answer: "More than 24 hours ahead is a full refund. Between 2 and 24 hours becomes account credit. Inside 2 hours the seat is released with no refund. A series cancel is not prorated." },
-          { id: "faq-iap", question: "Why isn't this an in-app purchase?", answer: "You are paying an independent teacher for a real-world class or wellness session. Those charges use Stripe, not Apple in-app purchase." },
-          { id: "faq-bewell", question: "What is BeWell?", answer: "BeWell is the wellness side of BeCreative: yoga, sound baths, massage, meditation, sauna, cold plunge, and stretching." },
+        articles: [
+          { slug: "how-booking-works", title: "How booking works", category: "booking" },
+          { slug: "refunds-and-cancellations", title: "Refunds and cancellations", category: "refunds" },
         ],
       };
     },
-    async helpActions(bookingId: string) {
-      const booking = requireBooking(bookingId);
-      return { actions: helpActions({ now: new Date(), startsAt: new Date(booking.startsAt), status: booking.status, kind: booking.kind }) };
+    async helpArticle(slug) {
+      const list = await api.help();
+      const article = list.articles.find((item) => item.slug === slug);
+      if (!article) throw new ApiError(404, "Article not found.");
+      return { ...article, body: "Pick a class, accept the policy, and pay by card or at the studio." };
     },
     async tickets() {
-      requireUser();
-      return { tickets: state.world.tickets };
+      user();
+      return { tickets: state.tickets };
     },
     async createTicket(input) {
-      const user = requireUser();
-      if (input.subject.trim().length < 3 || input.body.trim().length < 3) throw new ApiError(422, "validation", "Add a subject and a short note.");
-      const ticket = {
-        id: nextId("ticket"),
-        bookingId: input.bookingId ?? null,
-        subject: input.subject.trim(),
-        body: input.body.trim(),
-        status: "open" as const,
-        createdAt: new Date().toISOString(),
-      };
-      state.world.tickets.unshift(ticket);
-      void user;
-      return ticket;
+      user();
+      const id = `ticket-${state.tickets.length + 1}`;
+      state.tickets.unshift({ id, subject: input.subject, status: "open", category: input.category || "class" });
+      return { id };
     },
-    async track(event: TrackEvent) {
-      if (!event.event || (event.platform !== "ios" && event.platform !== "android")) {
-        throw new ApiError(422, "validation", "Track events need a name and platform ios or android.");
-      }
-      recordedEvents.push(event);
-      return { accepted: true as const };
+    async track(input) {
+      if (input.platform !== "ios" && input.platform !== "android" && input.platform !== "web") throw new ApiError(400, "Unknown event.");
+      state.events.push(input);
+      return { ok: true };
     },
-    async experiments() {
-      return { assignments: [{ key: "explore_density", variant: "comfortable" }] };
+    async experiment(key) {
+      if (key !== "class_cta") throw new ApiError(404, "Experiment not found.");
+      return { key, variant: "book_this", payload: { label: "Book this session" }, goalEvent: "checkout_completed", status: "running" };
     },
   };
-
-  function classBySlug(slug: string): ClassDetail {
-    const detail = state.world.classes.find((item) => item.slug === slug);
-    if (!detail) throw new ApiError(404, "not_found", "That class is not on BeCreative.");
-    return detail;
-  }
-
-  function optionalUser(): UserRecord | null {
-    if (!getToken) return state.users.find((item) => item.id === DEMO_USER_ID) ?? null;
-    const token = getToken();
-    if (!token) return null;
-    const userId = tokens.get(token);
-    return state.users.find((item) => item.id === userId) ?? null;
-  }
-
-  function requireUser(): UserRecord {
-    const user = optionalUser();
-    if (!user) throw new ApiError(401, "unauthorized", "Sign in to continue.");
-    return user;
-  }
-
-  function requireBooking(id: string): BookingRecord {
-    requireUser();
-    const booking = state.world.bookings.find((item) => item.id === id);
-    if (!booking) throw new ApiError(404, "not_found", "That booking is not on this account.");
-    return booking;
-  }
-
-  function publicUser(user: UserRecord): StudentUser {
-    const { password: _password, verifiedCode: _code, resetToken: _reset, ...rest } = user;
-    return rest;
-  }
-
-  function sessionFor(user: UserRecord): AuthSession {
-    const token = user.id === DEMO_USER_ID ? DEMO_TOKEN : `mock:${user.id}`;
-    tokens.set(token, user.id);
-    return { token, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), user: publicUser(user) };
-  }
-
-  function price(input: QuoteRequest) {
-    const detail = classBySlug(input.classSlug);
-    const user = optionalUser();
-    const session = detail.sessions.find((item) => item.id === input.sessionId) ?? detail.sessions[0];
-    const slot = detail.slots.find((item) => item.id === input.slotId) ?? (input.kind === "appointment" || input.kind === "capacity" ? detail.slots[0] : undefined);
-    const addons = detail.addons.filter((item) => (input.addonIds ?? []).includes(item.id));
-    const selected = selectionListPrice({
-      kind: input.kind,
-      now: new Date(),
-      sessionPriceCents: detail.pricePerSessionCents ?? 0,
-      seriesPriceCents: detail.pricePerSeriesCents,
-      session: session ? choice(session) : null,
-      seriesSessions: detail.sessions.map(choice),
-      slot: slot ? { ...slot, startsAt: new Date(slot.startsAt), endsAt: new Date(slot.endsAt) } : null,
-      addons,
-      partySize: input.partySize,
-      alreadyBooked: Boolean(session && state.world.bookings.some((item) => item.sessionId === session.id && item.status === "confirmed")),
-      waitlistEnabled: false,
-    });
-    if (!selected.ok) throw new ApiError(409, "conflict", selected.reason);
-    const codes = input.promoCode ? [input.promoCode] : [];
-    const normalized = codes.length ? normalizePromoInput(codes) : { code: null, error: null };
-    const promo = normalized.code ? state.world.promos.find((item) => item.code === normalized.code) ?? null : null;
-    let promoError = normalized.error;
-    if (normalized.code && !promo) promoError = "That code isn't valid.";
-    if (promo) {
-      const category = state.world.catalog.categories.find((item) => item.slug === detail.categorySlug);
-      const product: ProductScope = {
-        kind: "class",
-        teacherId: detail.teacher.id,
-        classId: detail.id,
-        categoryId: category?.id,
-        city: detail.location?.city,
-      };
-      const check = validatePromo({
-        promo,
-        now: new Date(),
-        listPriceCents: selected.cents,
-        totalRedemptions: 0,
-        customerRedemptions: 0,
-        isFirstTimeStudent: false,
-        product,
-      });
-      if (!check.ok) promoError = check.reason;
-    }
-    const pack = input.usePackId ? state.world.packs.find((item) => item.id === input.usePackId) : undefined;
-    const membership = input.useMembershipId ? state.world.memberships.find((item) => item.id === input.useMembershipId) : undefined;
-    let entitlement = false;
-    if (pack || membership) {
-      const category = state.world.catalog.categories.find((item) => item.slug === detail.categorySlug);
-      const covered = entitlementCovers({
-        classId: detail.id,
-        categoryId: category?.id ?? "",
-        now: new Date(),
-        kind: input.kind,
-        pack: pack
-          ? {
-              type: "pack",
-              creditsRemaining: pack.creditsRemaining,
-              expiresAt: pack.expiresAt ? new Date(pack.expiresAt) : null,
-              classIds: pack.classSlugs.map((slug) => `class-${slug}`),
-              categoryIds: pack.categorySlugs.map((slug) => state.world.catalog.categories.find((item) => item.slug === slug)?.id ?? slug),
-            }
-          : undefined,
-        membership: membership
-          ? {
-              type: "membership",
-              status: membership.status,
-              periodEnd: new Date(membership.currentPeriodEnd),
-              unlimited: membership.unlimited,
-              classesPerPeriod: membership.classesPerPeriod,
-              classesUsed: membership.classesUsedThisPeriod,
-              classIds: membership.classSlugs.map((slug) => `class-${slug}`),
-              categoryIds: membership.categorySlugs.map((slug) => state.world.catalog.categories.find((item) => item.slug === slug)?.id ?? slug),
-            }
-          : undefined,
-      });
-      if (!covered.ok) throw new ApiError(409, "conflict", covered.reason);
-      entitlement = true;
-      if (normalized.code) promoError = "Codes don't apply when you pay with a credit.";
-    }
-    const quote = priceBooking({
-      listPriceCents: selected.cents,
-      feePercent: state.world.catalog.feePercent,
-      feeFixedCents: state.world.catalog.feeFixedCents,
-      promo: promoError ? null : promo,
-      promoError,
-      kind: input.kind,
-      firstClassFreeEnabled: detail.firstClassFree,
-      introAlreadyUsed: state.world.introUsed.has(`${user?.id ?? ""}:${detail.teacher.id}`),
-      entitlement,
-    });
-    return { quote, listPriceCents: selected.cents, label: selected.label };
-  }
-
-  function timing(detail: ClassDetail, input: QuoteRequest) {
-    const session = detail.sessions.find((item) => item.id === input.sessionId) ?? detail.sessions[0];
-    const slot = detail.slots.find((item) => item.id === input.slotId) ?? detail.slots[0];
-    if (input.kind === "series" && detail.sessions.length) {
-      const last = detail.sessions[detail.sessions.length - 1];
-      return { startsAt: detail.sessions[0].startsAt, endsAt: last.endsAt };
-    }
-    if (slot && (input.kind === "appointment" || input.kind === "capacity")) return { startsAt: slot.startsAt, endsAt: slot.endsAt };
-    if (session) return { startsAt: session.startsAt, endsAt: session.endsAt };
-    return { startsAt: new Date().toISOString(), endsAt: new Date().toISOString() };
-  }
-
   return api;
 }
 
-let shared: MockStudentApi | null = null;
-let tokenReader: () => string | null = () => null;
-
-export function bindMockToken(reader: () => string | null) {
-  tokenReader = reader;
+function quoteFields(quote: { listPriceCents: number; discountCents: number; studentPaysCents: number; codeApplied: string | null }) {
+  return {
+    listPriceCents: quote.listPriceCents,
+    discountCents: quote.discountCents,
+    studentPaysCents: quote.studentPaysCents,
+    codeApplied: quote.codeApplied,
+  };
 }
 
-export function sharedMockApi(): MockStudentApi {
-  if (!shared) shared = createMockApi(new Date(), () => tokenReader());
+let shared: MockApi | null = null;
+export function sharedMockApi(): MockApi {
+  shared ??= createMockApi();
   return shared;
 }

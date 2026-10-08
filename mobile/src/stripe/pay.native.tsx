@@ -1,7 +1,6 @@
 import { useStripe } from "@stripe/stripe-react-native";
 import { useState } from "react";
 import { View } from "react-native";
-import type { PaymentSheetParams } from "../api/types";
 import { Button, Notice } from "../components/ui";
 
 function intentId(secret: string) {
@@ -11,11 +10,12 @@ function intentId(secret: string) {
 }
 
 export function PayActions({
-  payment,
+  clientSecret,
   onComplete,
   disabled,
 }: {
-  payment: PaymentSheetParams | null;
+  clientSecret: string | null;
+  publishableKey?: string | null;
   onComplete: (paymentIntentId: string) => void;
   disabled?: boolean;
 }) {
@@ -23,19 +23,16 @@ export function PayActions({
   const [error, setError] = useState<string | null>(null);
   const liveKey = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   async function pay() {
-    if (!liveKey || !payment) {
-      onComplete("pi_mock_card");
+    if (!clientSecret) return;
+    if (!liveKey) {
+      onComplete(intentId(clientSecret));
       return;
     }
     const init = await stripe.initPaymentSheet({
-      merchantDisplayName: payment.merchantDisplayName,
-      customerId: payment.customerId,
-      customerEphemeralKeySecret: payment.customerEphemeralKeySecret,
-      paymentIntentClientSecret: payment.paymentIntentClientSecret,
+      merchantDisplayName: "BeCreative",
+      paymentIntentClientSecret: clientSecret,
       allowsDelayedPaymentMethods: false,
-      returnURL: "becreative://checkout",
-      applePay: { merchantCountryCode: payment.merchantCountryCode },
-      googlePay: { merchantCountryCode: payment.merchantCountryCode, testEnv: payment.googlePayTestEnv, currencyCode: "USD" },
+      returnURL: "becreative://bookings",
     });
     if (init.error) {
       setError(init.error.message);
@@ -47,12 +44,12 @@ export function PayActions({
       setError(presented.error.message);
       return;
     }
-    onComplete(intentId(payment.paymentIntentClientSecret));
+    onComplete(intentId(clientSecret));
   }
   return (
     <View style={{ gap: 10 }}>
       {error ? <Notice>{error}</Notice> : null}
-      <Button label="Pay with Apple Pay or Google Pay" disabled={disabled} onPress={() => void pay()} testID="pay-sheet" />
+      <Button label="Pay" disabled={disabled || !clientSecret} onPress={() => void pay()} testID="pay-sheet" />
     </View>
   );
 }

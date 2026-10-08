@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform } from "react-native";
+import { isCatalogEvent } from "../../lib/analytics-events";
 import { createStudentApi, resolveApiMode, type StudentApi } from "./api";
-import type { AuthSession, ExperimentAssignment, StudentUser, TrackEvent, Vertical } from "./api/types";
+import type { AuthResult, ExperimentAssignment, PlatformName, StudentUser, Vertical } from "./api/types";
 import { readStored, writeStored } from "./storage";
 import type { DeepLink } from "./linking/parse";
 
@@ -24,16 +25,18 @@ type SessionValue = {
   assignments: ExperimentAssignment[];
   attribution: DeepLink | null;
   setAttribution: (link: DeepLink | null) => void;
-  acceptSession: (session: AuthSession) => Promise<void>;
+  acceptSession: (session: AuthResult) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUser: (user: StudentUser) => void;
-  track: (event: string, properties?: TrackEvent["properties"]) => Promise<void>;
+  track: (event: string, properties?: Record<string, string | number | boolean | null | undefined>) => Promise<void>;
 };
 
 const SessionContext = createContext<SessionValue | null>(null);
 
-function platform(): "ios" | "android" {
-  return Platform.OS === "android" ? "android" : "ios";
+function platform(): PlatformName {
+  if (Platform.OS === "android") return "android";
+  if (Platform.OS === "ios") return "ios";
+  return "web";
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -43,9 +46,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const api = useMemo(
     () =>
       createStudentApi({
-        mode: resolveApiMode(process.env.EXPO_PUBLIC_API_MODE),
-        baseUrl: process.env.EXPO_PUBLIC_API_URL || "http://localhost:3000",
+        mode: resolveApiMode(process.env.EXPO_PUBLIC_API_MODE, process.env.EXPO_PUBLIC_API_URL),
+        baseUrl: process.env.EXPO_PUBLIC_API_URL,
         getToken: () => tokenRef.current,
+        getPlatform: platform,
       }),
     [],
   );
@@ -68,7 +72,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (!cancelled && (savedVertical === "creative" || savedVertical === "wellness")) setVerticalState(savedVertical);
       if (token) {
         try {
-          const me = await api.me();
+          const { user: me } = await api.me();
           if (!cancelled) {
             userRef.current = me;
             setUser(me);
@@ -79,8 +83,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }
       try {
-        const experiments = await api.experiments();
-        if (!cancelled) setAssignments(experiments.assignments);
+        const assigned = await api.experiment("class_cta", anonRef.current);
+        if (!cancelled) setAssignments([assigned]);
       } catch {
         // Experiments are optional. The app still books.
       }
@@ -91,7 +95,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [api]);
 
-  const acceptSession = useCallback(async (session: AuthSession) => {
+  const acceptSession = useCallback(async (session: AuthResult) => {
     tokenRef.current = session.token;
     userRef.current = session.user;
     setUser(session.user);
@@ -100,7 +104,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     try {
-      await api.logout();
+      await api.signOut();
     } catch {
       // Local sign-out still stands if the network is down.
     }
@@ -126,15 +130,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const track = useCallback(
-    async (event: string, properties: TrackEvent["properties"] = {}) => {
+    async (event: string, properties: Record<string, string | number | boolean | null | undefined> = {}) => {
+      if (!isCatalogEvent(event)) return;
+      const strings: Record<string, string> = {};
+      for (const [key, value] of Object.entries(properties)) {
+        if (value === undefined || value === null) continue;
+        strings[key] = String(value);
+      }
       try {
         await api.track({
-          event,
+          name: event,
           platform: platform(),
-          occurredAt: new Date().toISOString(),
           anonymousId: anonRef.current,
-          userId: userRef.current?.id ?? null,
-          properties,
+          path: undefined,
+          properties: strings,
         });
       } catch {
         // Analytics must not block booking.

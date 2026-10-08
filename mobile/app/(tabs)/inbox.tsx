@@ -11,18 +11,17 @@ import { useAppTheme } from "@mobile/theme/theme";
 export default function Inbox() {
   const { api, track, ready, user } = useSession();
   const router = useRouter();
-  const { colors, fonts } = useAppTheme();
+  const { colors } = useAppTheme();
   const [items, setItems] = useState<AppNotification[]>([]);
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => {
     if (!ready || !user) return;
-    void api.notifications().then((result) => setItems(result.items));
+    void api.notifications().then((result) => setItems(result.notifications));
     void track("screen_view", { screen: "inbox" });
   }, [api, ready, track, user]);
 
   async function enable() {
     const result = await registerPush(api);
-    await track("push_permission", { status: result.status });
     setNote(result.status === "denied" ? "Notifications stay off until you allow them in system settings." : "This device is registered for booking reminders.");
   }
 
@@ -30,20 +29,19 @@ export default function Inbox() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
       <View style={{ padding: 20, gap: 14 }}>
         <Display>Inbox</Display>
-        <Body muted>Booking updates and reminders. Marketing stays off unless you opt in.</Body>
+        <Body muted>Booking updates and reminders.</Body>
         {note ? <Body>{note}</Body> : null}
         <Button label="Allow notifications" onPress={() => void enable()} testID="enable-push" />
         <Button label="Notification preferences" tone="ghost" onPress={() => router.push("/preferences")} />
         {items.map((item) => (
-          <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={item.title} onPress={() => { void api.markNotificationRead(item.id); if (item.href) router.push(item.href as "/bookings"); }}>
+          <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={item.title} onPress={() => { void api.markNotificationsRead(item.id); void track("notification_opened", { id: item.id }); }}>
             <Card>
               <Title>{item.title}</Title>
               <Body>{item.body}</Body>
-              <Body muted>{item.read ? "Read" : "New"}</Body>
+              <Body muted>{item.readAt ? "Read" : "New"}</Body>
             </Card>
           </Pressable>
         ))}
-        <Body muted>{fonts.body ? "" : ""}</Body>
       </View>
     </SafeAreaView>
   );

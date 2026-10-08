@@ -3,7 +3,7 @@ import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Wallet } from "@mobile/api/types";
 import { Body, Card, Display, Title } from "@mobile/components/ui";
-import { money, whenLabel } from "@mobile/format";
+import { whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -13,36 +13,31 @@ export default function WalletScreen() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   useEffect(() => {
     if (!ready || !user) return;
-    void api.wallet().then(setWallet);
+    void api.wallet().then(setWallet).catch(() => setWallet({ packs: [], memberships: [] }));
     void track("screen_view", { screen: "wallet" });
   }, [api, ready, track, user]);
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
       <View style={{ padding: 20, gap: 14 }} testID="wallet-screen">
         <Display testID="wallet-title">Wallet</Display>
-        <Body muted>Packs, memberships, and credits. There is no credit subscription.</Body>
+        <Body muted>Packs and memberships you already have.</Body>
         <Title>Packs</Title>
         {(wallet?.packs ?? []).map((pack) => (
           <Card key={pack.id}>
             <Title>{pack.name}</Title>
-            <Body>{pack.creditsRemaining} of {pack.creditsTotal} credits left</Body>
-            <Body muted>{pack.teacherName}{pack.expiresAt ? ` · expires ${whenLabel(pack.expiresAt)}` : ""}</Body>
+            <Body>{pack.remaining} of {pack.total} credits left</Body>
           </Card>
         ))}
-        {!wallet?.packs.length ? <Body muted>No packs yet.</Body> : null}
+        {wallet && !wallet.packs.length ? <Body muted>No packs yet.</Body> : null}
         <Title>Memberships</Title>
         {(wallet?.memberships ?? []).map((plan) => (
           <Card key={plan.id}>
             <Title>{plan.name}</Title>
-            <Body>{plan.status}{plan.unlimited ? " · unlimited" : ` · ${plan.classesUsedThisPeriod} of ${plan.classesPerPeriod ?? 0} used`}</Body>
-            <Body muted>{plan.teacherName} · renews {whenLabel(plan.currentPeriodEnd)}</Body>
+            <Body>{plan.status}</Body>
+            <Body muted>Through {whenLabel(plan.periodEnd)}</Body>
           </Card>
         ))}
-        <Title>Credits</Title>
-        {(wallet?.ledger ?? []).map((entry) => (
-          <Body key={entry.id}>{entry.direction === "credit" ? "Added" : "Spent"} · {entry.label}</Body>
-        ))}
-        {wallet?.packs[0] ? <Body muted>A drop-in spends one pack credit. A series is still {money(24000)} if the teacher sells it that way.</Body> : null}
+        {wallet && !wallet.memberships.length ? <Body muted>No memberships yet.</Body> : null}
       </View>
     </SafeAreaView>
   );

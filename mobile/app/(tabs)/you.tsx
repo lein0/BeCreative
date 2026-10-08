@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
@@ -8,35 +8,40 @@ import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function You() {
-  const { user, api, refreshUser, signOut, schemePreference, setSchemePreference, apiMode } = useSession();
+  const { user, api, signOut, schemePreference, setSchemePreference, apiMode, ready } = useSession();
   const router = useRouter();
   const { colors } = useAppTheme();
-  const [phone, setPhone] = useState(user?.phone ?? "");
-  const [sms, setSms] = useState(Boolean(user?.smsOptIn));
-  const [confirm, setConfirm] = useState("");
+  const [phone, setPhone] = useState("");
+  const [sms, setSms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!ready || !user) return;
+    void api.preferences().then((prefs) => {
+      setPhone(prefs.phone ?? "");
+      setSms(prefs.smsOptIn);
+    }).catch(() => undefined);
+  }, [api, ready, user]);
 
   async function saveSms(next: boolean) {
     setError(null);
     try {
-      const updated = await api.updateMe({ phone, smsOptIn: next });
-      setSms(updated.smsOptIn);
-      refreshUser(updated);
+      await api.updatePreferences({ phone, smsOptIn: next });
+      setSms(next);
       setNote(next ? "Texts are on for booking updates." : "Texts are off.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not update texts.");
     }
   }
 
-  async function removeAccount() {
+  async function requestDeletion() {
     setError(null);
     try {
-      await api.deleteMe(confirm);
-      await signOut();
-      router.replace("/welcome");
+      const ticket = await api.createTicket({ category: "account", subject: "Delete my account", body: "Please delete my student account." });
+      setNote(`Deletion request ${ticket.id} is open. You can also delete the account on the website under Privacy.`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not delete the account.");
+      setError(err instanceof ApiError ? err.message : "Could not send that.");
     }
   }
 
@@ -57,14 +62,13 @@ export default function You() {
           <Title>Appearance</Title>
           <Button label={schemePreference === "system" ? "Theme: system" : schemePreference === "dark" ? "Theme: dark" : "Theme: light"} tone="ghost" onPress={() => setSchemePreference(schemePreference === "system" ? "dark" : schemePreference === "dark" ? "light" : "system")} />
         </Card>
-        <Button label="Help and FAQ" tone="ghost" onPress={() => router.push("/help")} />
+        <Button label="Help" tone="ghost" onPress={() => router.push("/help")} />
         <Button label="Support tickets" tone="ghost" onPress={() => router.push("/tickets/new")} />
         <Button label="Sign out" tone="ink" onPress={() => void signOut().then(() => router.replace("/welcome"))} />
         <Card>
           <Title>Delete account</Title>
-          <Body muted>This removes your student account and signs you out. Required by the App Store. Type DELETE to confirm.</Body>
-          <Field label="Type DELETE" value={confirm} onChangeText={setConfirm} testID="delete-confirm" />
-          <Button label="Delete my account" onPress={() => void removeAccount()} />
+          <Body muted>The student API does not delete accounts directly. This opens a request, and the website Privacy page can delete it now.</Body>
+          <Button label="Request deletion" onPress={() => void requestDeletion()} />
         </Card>
         <Body muted>API mode: {apiMode}. Teachers use the website.</Body>
       </View>

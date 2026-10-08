@@ -9,7 +9,14 @@ import {
   type PriceQuote,
   type PromoRule,
 } from "../../../lib/pricing";
-import type { BookingKind, HelpAction, RefundKind } from "../api/types";
+export type BookingKind = "session" | "series" | "appointment" | "capacity";
+export type RefundKind = "full" | "credit" | "none";
+export type HelpAction = {
+  id: "cancel" | "reschedule" | "waiver_copy" | "ask_teacher" | "safety";
+  label: string;
+  enabled: boolean;
+  detail: string;
+};
 
 export type SessionChoice = {
   id: string;

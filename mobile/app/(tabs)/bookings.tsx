@@ -1,13 +1,11 @@
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
-import type { BookingRecord, ClassDetail } from "@mobile/api/types";
-import { calendarEvent, canReschedule, cancelDecision } from "@mobile/booking/flow";
+import type { BookingListItem, Slot } from "@mobile/api/types";
 import { Body, Button, Card, ConfirmDialog, Display, Notice, Sheet, Title } from "@mobile/components/ui";
-import { addToCalendar } from "@mobile/device/calendar";
-import { money, whenLabel } from "@mobile/format";
+import { whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -15,14 +13,12 @@ export default function Bookings() {
   const { api, track, ready, user } = useSession();
   const router = useRouter();
   const { colors } = useAppTheme();
-  const [rows, setRows] = useState<BookingRecord[]>([]);
+  const [rows, setRows] = useState<BookingListItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [moveId, setMoveId] = useState<string | null>(null);
-  const [options, setOptions] = useState<ClassDetail | null>(null);
-  const cancelTarget = rows.find((item) => item.id === cancelId) ?? null;
-  const cancelCopy = cancelTarget ? cancelDecision({ now: new Date(), startsAt: new Date(cancelTarget.startsAt), status: cancelTarget.status, kind: cancelTarget.kind }) : null;
+  const [options, setOptions] = useState<Slot[]>([]);
 
   const load = useCallback(() => {
     void api.bookings().then((result) => setRows(result.bookings)).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load bookings."));
@@ -38,8 +34,8 @@ export default function Bookings() {
     if (!cancelId) return;
     try {
       const result = await api.cancelBooking(cancelId);
-      setMessage(result.message);
-      await track("booking_cancelled", { bookingId: cancelId, refund: result.refund });
+      setMessage(result.outcome === "full_refund" ? "Cancelled. A refund is on the way." : result.outcome === "credit" ? "Cancelled. Studio credit was added." : "Cancelled.");
+      await track("booking_cancelled", { bookingId: cancelId });
       setCancelId(null);
       load();
     } catch (err) {
@@ -48,22 +44,20 @@ export default function Bookings() {
     }
   }
 
-  async function openMove(row: BookingRecord) {
-    const allowed = canReschedule({ now: new Date(), startsAt: new Date(row.startsAt), status: row.status, kind: row.kind });
-    if (!allowed.ok) {
-      setError(allowed.reason);
+  async function openMove(row: BookingListItem) {
+    if (row.status !== "confirmed") {
+      setError("Only a confirmed booking can move.");
       return;
     }
-    const detail = await api.classDetail(row.classSlug);
-    setOptions(detail);
+    const detail = await api.classDetail(row.slug);
+    setOptions(detail.slots);
     setMoveId(row.id);
   }
 
-  async function moveTo(sessionId?: string, slotId?: string) {
+  async function moveTo(sessionId: string) {
     if (!moveId) return;
     try {
-      await api.rescheduleBooking(moveId, { sessionId, slotId });
-      await track("booking_rescheduled", { bookingId: moveId });
+      await api.rescheduleBooking(moveId, sessionId);
       setMessage("You're moved. The old time is released.");
       setMoveId(null);
       load();
@@ -74,37 +68,32 @@ export default function Bookings() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
-      <ScrollView contentContainerStyle={{ padding: 20, gap: 12, paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ padding: 20, gap: 12, paddingBottom: 40 }} testID="bookings-screen">
         <Display testID="bookings-title">My bookings</Display>
         {message ? <Body>{message}</Body> : null}
         {error ? <Notice>{error}</Notice> : null}
         {rows.map((row) => (
           <Card key={row.id}>
-            <Title>{row.classTitle}</Title>
-            <Body muted>{row.status} · {row.kind} · {whenLabel(row.startsAt)}</Body>
-            <Body muted>{row.teacherName} · {row.location}</Body>
-            <Button label="Add to calendar" tone="ghost" onPress={() => void addToCalendar(calendarEvent({ title: row.classTitle, teacherName: row.teacherName, startsAt: new Date(row.startsAt), endsAt: new Date(row.endsAt), location: row.location }))} />
+            <Title>{row.title}</Title>
+            <Body muted>{row.status}</Body>
             <Button label="Get help with this booking" tone="ghost" onPress={() => router.push(`/help/${row.id}`)} />
-            {row.status === "confirmed" || row.status === "waitlisted" || row.status === "pending" ? <Button label="Cancel" tone="ghost" onPress={() => setCancelId(row.id)} /> : null}
-            <Button label="Reschedule" tone="ink" onPress={() => void openMove(row)} />
+            {row.status !== "cancelled" ? <Button label="Cancel" tone="ghost" onPress={() => setCancelId(row.id)} testID={`cancel-${row.id}`} /> : null}
+            {row.status === "confirmed" ? <Button label="Reschedule" tone="ink" onPress={() => void openMove(row)} /> : null}
           </Card>
         ))}
         {!rows.length ? <Body muted>No bookings yet. Explore is a good place to start.</Body> : null}
       </ScrollView>
       <ConfirmDialog
-        visible={Boolean(cancelTarget && cancelCopy && cancelCopy.allowed)}
+        visible={Boolean(cancelId)}
         title="Cancel booking"
-        body={cancelCopy && cancelCopy.allowed ? cancelCopy.message : ""}
+        body="The studio's cancellation policy decides the refund."
         confirmLabel="Cancel booking"
         onConfirm={() => void confirmCancel()}
         onClose={() => setCancelId(null)}
       />
       <Sheet visible={Boolean(moveId)} title="Move this booking" onClose={() => setMoveId(null)}>
-        {(options?.sessions ?? []).map((session) => (
-          <Button key={session.id} label={whenLabel(session.startsAt)} tone="ghost" onPress={() => void moveTo(session.id)} />
-        ))}
-        {(options?.slots ?? []).map((slot) => (
-          <Button key={slot.id} label={`${whenLabel(slot.startsAt)} · ${slot.remaining} left · ${money(slot.priceCents)}`} tone="ghost" onPress={() => void moveTo(undefined, slot.id)} />
+        {options.map((slot) => (
+          <Button key={slot.id} label={whenLabel(slot.startsAt)} tone="ghost" onPress={() => void moveTo(slot.id)} />
         ))}
       </Sheet>
     </SafeAreaView>

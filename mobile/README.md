@@ -1,8 +1,8 @@
 # BeCreative student app
 
-iOS and Android app for students. Teachers stay on the website. The app shares the website's backend once `/api/v1` exists. Until that ships, it runs on fixtures in mock mode, which is the default.
+iOS and Android app for students. Teachers stay on the website. The client calls the student API in `docs/openapi.yaml`. Mock fixtures stay available for demos and tests.
 
-The API the app expects is written down in [API_CONTRACT.md](./API_CONTRACT.md). Do not invent a second client. The typed client is `src/api`.
+The contract notes are in [API_CONTRACT.md](./API_CONTRACT.md). The typed client is `src/api`.
 
 ## Run it
 
@@ -16,11 +16,11 @@ npx expo start
 
 Press `w` for the web preview, `i` for the iOS simulator (Mac), or `a` for Android. The preview signs in with **Continue with demo student** (`student@becreative.demo` / `DemoPass123!`).
 
-Mock mode is on unless you set:
+The real API is used when `EXPO_PUBLIC_API_URL` is set. Set `EXPO_PUBLIC_API_MODE=mock` to force fixtures even if that URL is present.
 
 ```bash
-EXPO_PUBLIC_API_MODE=live
-EXPO_PUBLIC_API_URL=https://your-domain.example
+EXPO_PUBLIC_API_URL=http://localhost:3000
+# EXPO_PUBLIC_API_MODE=mock
 ```
 
 Copy `.env.example` to `.env` when you have store and Stripe values. Expo reads `EXPO_PUBLIC_*` at bundle time.

@@ -1,67 +1,87 @@
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
-import { View } from "react-native";
+import { useRouter } from "expo-router";
+import { useState } from "react";
+import { Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ApiError } from "@mobile/api";
-import type { OrderRecord } from "@mobile/api/types";
 import { Body, Button, Card, Display, Notice } from "@mobile/components/ui";
+import { openCheckoutSession } from "@mobile/checkout/browser";
+import { readCheckoutDraft } from "@mobile/checkout/draft";
 import { money } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { PayActions } from "@mobile/stripe/pay";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Checkout() {
-  const { orderId } = useLocalSearchParams<{ orderId: string }>();
-  const { api, track } = useSession();
+  const draft = readCheckoutDraft();
+  const { track } = useSession();
   const router = useRouter();
   const { colors } = useAppTheme();
-  const [order, setOrder] = useState<OrderRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [opening, setOpening] = useState(false);
 
-  useEffect(() => {
-    if (!orderId) return;
-    void api.getOrder(orderId).then(setOrder).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load checkout."));
-  }, [api, orderId]);
+  async function finishSheet(paymentIntentId: string) {
+    setDone(true);
+    await track("checkout_completed", { orderId: draft?.orderId ?? "", paymentIntentId });
+  }
 
-  async function complete(paymentIntentId: string) {
-    if (!order) return;
+  async function finishBrowser() {
+    if (!draft?.checkoutUrl) return;
+    setOpening(true);
     setError(null);
     try {
-      const paid = order.payment ? await api.confirmPayment(order.id, paymentIntentId) : order;
-      setOrder(paid);
+      const result = await openCheckoutSession(draft.checkoutUrl);
+      if (result === "cancel") {
+        setError("Checkout was cancelled. You can try again.");
+        return;
+      }
       setDone(true);
-      await track("checkout_completed", { orderId: order.id, platformPay: paymentIntentId });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Payment did not complete.");
+      setError(err instanceof Error ? err.message : "Could not open checkout.");
+    } finally {
+      setOpening(false);
     }
   }
+
+  const total = draft?.studentPaysCents ?? 0;
+  const discount = draft?.discountCents ?? 0;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]} testID="checkout-screen">
       <View style={{ padding: 20, gap: 14 }}>
         <Display>Checkout</Display>
         {error ? <Notice>{error}</Notice> : null}
-        {!order ? <Body>Loading payment…</Body> : null}
-        {order ? (
+        {!draft ? <Body>Start from a class to see the price.</Body> : null}
+        {draft ? (
           <Card>
-            <Body>{order.classTitle}</Body>
-            <Body muted>{order.kind}{order.promoCode ? ` · code ${order.promoCode}` : ""}</Body>
-            <Body>List {money(order.listPriceCents)}</Body>
-            {order.discountCents ? <Body>Discount {money(order.discountCents)}</Body> : null}
-            <Display>{money(order.studentPaysCents)}</Display>
-            <Body muted>Paid to the teacher through BeCreative. Real-world classes use Stripe, not Apple in-app purchase.</Body>
+            <Body>{draft.title}</Body>
+            {draft.codeApplied ? <Body muted>Code {draft.codeApplied}</Body> : null}
+            <Body>Price {money(draft.listPriceCents)}</Body>
+            {discount > 0 ? <Body>Promo discount −{money(discount)}</Body> : null}
+            <Display testID="checkout-total">{money(total)}</Display>
           </Card>
         ) : null}
+        {draft?.waitlisted ? <Body>You're on the waitlist. Nothing is charged yet.</Body> : null}
         {done ? (
           <View style={{ gap: 12 }}>
             <Body>You're booked. A receipt is on its way.</Body>
             <Button label="See my bookings" onPress={() => router.replace("/bookings")} testID="see-bookings" />
           </View>
-        ) : order && order.studentPaysCents === 0 ? (
-          <Button label="Confirm free booking" onPress={() => void complete("free")} />
-        ) : order ? (
-          <PayActions payment={order.payment} onComplete={(id) => void complete(id)} />
+        ) : draft?.checkoutUrl ? (
+          <Button label={opening ? "Opening checkout…" : "Continue"} disabled={opening} onPress={() => void finishBrowser()} testID="open-checkout" />
+        ) : draft?.clientSecret ? (
+          Platform.OS === "web" && !draft.clientSecret.startsWith("pi_mock") ? (
+            <View style={{ gap: 12 }}>
+              <Body>Your total is ready. The payment sheet opens in the iOS and Android app.</Body>
+              <Button label="Pay" disabled onPress={() => undefined} testID="pay-sheet" />
+            </View>
+          ) : (
+            <PayActions clientSecret={draft.clientSecret} publishableKey={draft.publishableKey} onComplete={(id) => void finishSheet(id)} />
+          )
+        ) : draft && !draft.waitlisted ? (
+          <View style={{ gap: 12 }}>
+            <Body>{total === 0 ? "Nothing to pay today." : "You're booked. Pay the teacher when you arrive."}</Body>
+            <Button label="See my bookings" onPress={() => router.replace("/bookings")} testID="see-bookings" />
+          </View>
         ) : null}
       </View>
     </SafeAreaView>

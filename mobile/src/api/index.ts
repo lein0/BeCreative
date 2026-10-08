@@ -1,29 +1,36 @@
 import { createLiveApi } from "./live";
-import { bindMockToken, sharedMockApi } from "./mock";
-import type { StudentApi } from "./types";
+import { sharedMockApi } from "./mock";
+import type { PlatformName, StudentApi } from "./types";
 
 export type ApiMode = "mock" | "live";
 
-export function resolveApiMode(value: string | undefined | null): ApiMode {
-  return value === "live" ? "live" : "mock";
+export function resolveApiMode(mode: string | undefined | null, apiUrl?: string | undefined | null): ApiMode {
+  if (mode === "mock") return "mock";
+  if (apiUrl && apiUrl.trim()) return "live";
+  return "mock";
 }
 
 export function createStudentApi(options: {
   mode?: ApiMode;
   baseUrl?: string;
   getToken?: () => string | null;
+  getPlatform?: () => PlatformName;
   fetchImpl?: typeof fetch;
-}): StudentApi {
+} = {}): StudentApi {
   const mode = options.mode ?? "mock";
   if (mode === "live") {
     if (!options.baseUrl) throw new Error("A live API needs EXPO_PUBLIC_API_URL.");
-    return createLiveApi({ baseUrl: options.baseUrl, getToken: options.getToken ?? (() => null), fetchImpl: options.fetchImpl });
+    return createLiveApi({
+      baseUrl: options.baseUrl,
+      getToken: options.getToken ?? (() => null),
+      getPlatform: options.getPlatform,
+      fetchImpl: options.fetchImpl,
+    });
   }
-  if (options.getToken) bindMockToken(options.getToken);
   return sharedMockApi();
 }
 
 export { createMockApi, sharedMockApi } from "./mock";
-export { paths, API_PREFIX } from "./paths";
+export { paths, API_PREFIX, documentedPaths } from "./paths";
 export { ApiError } from "./types";
-export type { StudentApi, TrackEvent, ClassCard, ClassDetail, BookingRecord } from "./types";
+export type { StudentApi, PublicClass, ClassDetail, CheckoutResult, BookingListItem } from "./types";
