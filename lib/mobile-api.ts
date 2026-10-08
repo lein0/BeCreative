@@ -1,4 +1,5 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { deleteAccount } from "@/lib/account-data";
 import { hashToken, parseBearer, tokenUsable } from "@/lib/api-token";
 import { capture, stitchAnonymous } from "@/lib/analytics";
 import { auth } from "@/lib/auth";
@@ -6,16 +7,20 @@ import { bookSession, cancelBooking, purchaseOffer, rescheduleBooking } from "@/
 import { db } from "@/lib/db";
 import {
   apiTokens,
+  bookingSessions,
   bookings,
   classes,
   deviceTokens,
   faqArticles,
+  locations,
   membershipSubscriptions,
   memberships,
   notificationPreferences,
   notifications,
   packPurchases,
   packs,
+  recurrences,
+  sessions,
   teachers,
   tickets,
   user,
@@ -23,6 +28,7 @@ import {
   waivers,
   waiverSignatures,
 } from "@/lib/db/schema";
+import { socialIdTokenReady } from "@/lib/env";
 import { exposeExperiment, subjectFromCookies } from "@/lib/experiments";
 import { FAQ_ARTICLES } from "@/lib/faq";
 import { hitRateLimit } from "@/lib/rate-limit";
@@ -31,6 +37,8 @@ import { isCatalogEvent, platformName } from "@/lib/analytics-events";
 import { openTicket } from "@/lib/support";
 import { signWaiver } from "@/lib/wellness-service";
 import { applyContactPrefs } from "@/lib/contact-prefs";
+import { bookingTimezone, classNeedsSignature, pickBookingSession, placeFields, reauthMethod, teacherOffers, type ReauthBody } from "@/lib/student-api";
+import { confirmAppEmailVerification, confirmAppPasswordReset, exchangeSocialToken, reauthMatches, requestAppEmailVerification, requestAppPasswordReset } from "@/lib/student-auth";
 
 type Actor = { id: string; name: string; email: string; roles: string[] };
 
@@ -112,6 +120,68 @@ export async function handleMobileApi(request: Request, path: string[]) {
     return json({ ok: true });
   }
 
+  if (method === "POST" && root === "auth" && second === "social") {
+    const body = await request.json().catch(() => null) as { provider?: string; idToken?: string; nonce?: string; firstName?: string; lastName?: string; anonymousId?: string } | null;
+    if (!body || (body.provider !== "apple" && body.provider !== "google") || !body.idToken) return json({ error: "provider and idToken are required." }, 400);
+    if (!socialIdTokenReady(body.provider)) return json({ error: `${body.provider === "apple" ? "Apple" : "Google"} sign-in is not configured.` }, 503);
+    const limit = await hitRateLimit(`api-social:${request.headers.get("x-forwarded-for") || "api"}`, 10, 60_000);
+    if (!limit.ok) return json({ error: "Too many attempts." }, 429);
+    const exchanged = await exchangeSocialToken({ provider: body.provider, idToken: body.idToken, nonce: body.nonce, firstName: body.firstName, lastName: body.lastName });
+    if ("error" in exchanged) return json({ error: exchanged.error }, exchanged.status);
+    await stitchAnonymous(exchanged.user.id, body.anonymousId || null);
+    const token = await issueToken(exchanged.user.id);
+    return json({ token, user: exchanged.user });
+  }
+
+  if (method === "POST" && root === "auth" && second === "password" && third === "request") {
+    const body = await request.json().catch(() => null) as { email?: string } | null;
+    if (!body?.email) return json({ error: "Email is required." }, 400);
+    const limit = await hitRateLimit(`api-reset:${request.headers.get("x-forwarded-for") || "api"}`, 5, 60_000);
+    if (!limit.ok) return json({ error: "Too many attempts." }, 429);
+    try {
+      await requestAppPasswordReset(body.email);
+    } catch {
+      return json({ error: "Could not send the reset email." }, 400);
+    }
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && root === "auth" && second === "password" && third === "confirm") {
+    const body = await request.json().catch(() => null) as { token?: string; password?: string } | null;
+    if (!body?.token || !body.password) return json({ error: "Token and password are required." }, 400);
+    if (body.password.length < 8) return json({ error: "Password must be at least 8 characters." }, 400);
+    try {
+      await confirmAppPasswordReset(body.token, body.password);
+    } catch {
+      return json({ error: "That reset link is not valid." }, 400);
+    }
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && root === "auth" && second === "email" && third === "request") {
+    const body = await request.json().catch(() => null) as { email?: string } | null;
+    if (!body?.email) return json({ error: "Email is required." }, 400);
+    const limit = await hitRateLimit(`api-verify:${request.headers.get("x-forwarded-for") || "api"}`, 5, 60_000);
+    if (!limit.ok) return json({ error: "Too many attempts." }, 429);
+    try {
+      await requestAppEmailVerification(body.email);
+    } catch {
+      return json({ error: "Could not send the verification email." }, 400);
+    }
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && root === "auth" && second === "email" && third === "confirm") {
+    const body = await request.json().catch(() => null) as { token?: string } | null;
+    if (!body?.token) return json({ error: "Token is required." }, 400);
+    try {
+      await confirmAppEmailVerification(body.token);
+    } catch {
+      return json({ error: "That verification link is not valid." }, 400);
+    }
+    return json({ ok: true });
+  }
+
   if (method === "POST" && root === "track") {
     const limit = await hitRateLimit(`api-track:${request.headers.get("x-forwarded-for") || "track"}`, 120, 60_000);
     if (!limit.ok) return json({ error: "Too many events." }, 429);
@@ -161,7 +231,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
     await capture({ name: "search", platform, properties: { q } });
     return json({
       classes: rows.map(publicClass),
-      services: visits.map((row) => ({ id: row.service.id, slug: row.service.slug, title: row.service.title, teacher: row.teacher.studioName || row.teacher.slug })),
+      services: visits.map((row) => {
+        const place = placeFields(row.location);
+        return { id: row.service.id, slug: row.service.slug, title: row.service.title, teacher: row.teacher.studioName || row.teacher.slug, lat: place?.lat ?? null, lng: place?.lng ?? null, neighborhood: place?.neighborhood ?? null, location: place };
+      }),
     });
   }
 
@@ -169,9 +242,12 @@ export async function handleMobileApi(request: Request, path: string[]) {
     const detail = await classDetail(decodeURIComponent(second));
     if (!detail) return json({ error: "Class not found." }, 404);
     await capture({ name: "class_viewed", platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
+    const [waiver] = await db.select({ body: waivers.body }).from(waivers).where(eq(waivers.teacherId, detail.teacher.id)).limit(1);
     return json({
       class: publicClass(detail),
       description: detail.class.description,
+      signatureRequired: classNeedsSignature(waiver?.body),
+      policyAcknowledgementRequired: true,
       slots: detail.upcoming.map((session) => ({ id: session.id, startsAt: session.startsAt, spots: session.spots })),
       teacher: { slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
     });
@@ -180,9 +256,12 @@ export async function handleMobileApi(request: Request, path: string[]) {
   if (method === "GET" && root === "teachers" && second) {
     const profile = await teacherProfile(decodeURIComponent(second));
     if (!profile) return json({ error: "Teacher not found." }, 404);
+    const offers = teacherOffers(profile.packs, profile.memberships);
     return json({
       teacher: { slug: profile.teacher.slug, name: profile.teacher.studioName || profile.person?.name, bio: profile.teacher.bio },
       classes: profile.offerings.map((klass) => ({ id: klass.id, slug: klass.slug, title: klass.title })),
+      packs: offers.packs,
+      memberships: offers.memberships,
     });
   }
 
@@ -205,9 +284,67 @@ export async function handleMobileApi(request: Request, path: string[]) {
 
   if (method === "GET" && root === "auth" && second === "me") return json({ user: actor });
 
+  if (method === "DELETE" && root === "me" && !second) {
+    const body = await request.json().catch(() => ({})) as ReauthBody;
+    if (!reauthMethod(body)) return json({ error: "Confirm your password or sign in with Apple or Google again." }, 400);
+    if ((body.provider === "apple" || body.provider === "google") && body.idToken && !body.password && !socialIdTokenReady(body.provider)) {
+      return json({ error: `${body.provider === "apple" ? "Apple" : "Google"} sign-in is not configured.` }, 503);
+    }
+    const limit = await hitRateLimit(`api-delete:${actor.id}`, 5, 60 * 60 * 1000);
+    if (!limit.ok) return json({ error: "Too many attempts." }, 429);
+    if (!(await reauthMatches(actor, body))) return json({ error: "That sign-in does not match this account." }, 401);
+    await deleteAccount(actor.id);
+    return json({ ok: true });
+  }
+
   if (method === "GET" && root === "bookings" && !second) {
-    const rows = await db.select({ booking: bookings, klass: classes }).from(bookings).innerJoin(classes, eq(classes.id, bookings.classId)).where(eq(bookings.userId, actor.id)).orderBy(desc(bookings.createdAt));
-    return json({ bookings: rows.map((row) => ({ id: row.booking.id, status: row.booking.status, title: row.klass.title, slug: row.klass.slug, createdAt: row.booking.createdAt })) });
+    const rows = await db
+      .select({ booking: bookings, klass: classes, location: locations })
+      .from(bookings)
+      .innerJoin(classes, eq(classes.id, bookings.classId))
+      .leftJoin(locations, eq(locations.id, classes.locationId))
+      .where(eq(bookings.userId, actor.id))
+      .orderBy(desc(bookings.createdAt));
+    const bookingIds = rows.map((row) => row.booking.id);
+    const classIds = [...new Set(rows.map((row) => row.klass.id))];
+    const sessionRows = bookingIds.length
+      ? await db
+        .select({ bookingId: bookingSessions.bookingId, startsAt: sessions.startsAt, endsAt: sessions.endsAt })
+        .from(bookingSessions)
+        .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
+        .where(inArray(bookingSessions.bookingId, bookingIds))
+      : [];
+    const rules = classIds.length
+      ? await db.select({ classId: recurrences.classId, timezone: recurrences.timezone }).from(recurrences).where(inArray(recurrences.classId, classIds))
+      : [];
+    const sessionsByBooking = new Map<string, { startsAt: Date; endsAt: Date }[]>();
+    for (const row of sessionRows) {
+      const list = sessionsByBooking.get(row.bookingId) ?? [];
+      list.push(row);
+      sessionsByBooking.set(row.bookingId, list);
+    }
+    const zonesByClass = new Map<string, string[]>();
+    for (const rule of rules) {
+      const list = zonesByClass.get(rule.classId) ?? [];
+      list.push(rule.timezone);
+      zonesByClass.set(rule.classId, list);
+    }
+    return json({
+      bookings: rows.map((row) => {
+        const when = pickBookingSession(sessionsByBooking.get(row.booking.id) ?? []);
+        return {
+          id: row.booking.id,
+          status: row.booking.status,
+          title: row.klass.title,
+          slug: row.klass.slug,
+          createdAt: row.booking.createdAt,
+          startsAt: when?.startsAt ?? null,
+          endsAt: when?.endsAt ?? null,
+          timezone: bookingTimezone(zonesByClass.get(row.klass.id) ?? []),
+          location: placeFields(row.location),
+        };
+      }),
+    });
   }
 
   if (method === "POST" && root === "bookings" && !second) {
@@ -269,7 +406,13 @@ export async function handleMobileApi(request: Request, path: string[]) {
     if (!teacher) return json({ error: "Teacher not found." }, 404);
     const [waiver] = await db.select().from(waivers).where(eq(waivers.teacherId, teacher.id)).limit(1);
     const [signed] = waiver ? await db.select().from(waiverSignatures).where(and(eq(waiverSignatures.userId, actor.id), eq(waiverSignatures.waiverId, waiver.id), eq(waiverSignatures.version, waiver.version))).limit(1) : [];
-    return json({ body: waiver?.body ?? null, version: waiver?.version ?? null, signed: Boolean(signed) });
+    return json({
+      body: waiver?.body ?? null,
+      version: waiver?.version ?? null,
+      signed: Boolean(signed),
+      required: classNeedsSignature(waiver?.body),
+      policyAcknowledgementRequired: true,
+    });
   }
 
   if (method === "POST" && root === "waivers" && second && third === "sign") {
@@ -368,7 +511,8 @@ export async function handleMobileApi(request: Request, path: string[]) {
   return json({ error: "Not found." }, 404);
 }
 
-function publicClass(row: { class: { id: string; slug: string; title: string; pricePerSessionCents: number | null; delivery: string }; teacher: { slug: string; studioName: string | null }; category?: { slug: string; vertical: string; name: string }; next?: { startsAt: Date } | null; price?: number; spots?: number | null }) {
+function publicClass(row: { class: { id: string; slug: string; title: string; pricePerSessionCents: number | null; delivery: string }; teacher: { slug: string; studioName: string | null }; category?: { slug: string; vertical: string; name: string }; next?: { startsAt: Date } | null; price?: number; spots?: number | null; location?: { lat: number; lng: number; neighborhood: string; name?: string | null; city?: string | null } | null }) {
+  const place = placeFields(row.location);
   return {
     id: row.class.id,
     slug: row.class.slug,
@@ -381,5 +525,9 @@ function publicClass(row: { class: { id: string; slug: string; title: string; pr
     vertical: row.category?.vertical,
     nextStartsAt: row.next?.startsAt ?? null,
     spots: row.spots ?? null,
+    lat: place?.lat ?? null,
+    lng: place?.lng ?? null,
+    neighborhood: place?.neighborhood ?? null,
+    location: place,
   };
 }

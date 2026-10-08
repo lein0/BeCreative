@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { bookings, notifications, orders, session, user } from "@/lib/db/schema";
+import { apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
 
 export async function exportAccount(userId: string) {
   const [person] = await db.select().from(user).where(eq(user.id, userId)).limit(1);
@@ -25,4 +25,5 @@ export async function deleteAccount(userId: string) {
     emailUnsubscribed: true,
   }).where(eq(user.id, userId));
   await db.delete(session).where(eq(session.userId, userId));
+  await db.update(apiTokens).set({ revokedAt: new Date() }).where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
 }
