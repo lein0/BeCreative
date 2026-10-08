@@ -863,7 +863,7 @@ async function seedAnalytics(input: { now: Date; teacherId: string; classId: str
   for (let i = 200; i < 400; i += 1) {
     const anon = `anon-f-${i}`;
     rows.push({ id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta", variant: "save_seat" }, isDemo: true, createdAt: at(i % 12) });
-    if (i < 256) rows.push({ id: crypto.randomUUID(), name: "checkout_completed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta" }, isDemo: true, createdAt: at(i % 12) });
+    if (i < 270) rows.push({ id: crypto.randomUUID(), name: "checkout_completed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta" }, isDemo: true, createdAt: at(i % 12) });
   }
   rows.push({
     id: crypto.randomUUID(),
