@@ -26,6 +26,7 @@ import {
   userRoles,
 } from "@/lib/db/schema";
 import { releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { publicListingVisible } from "@/lib/review-rules";
 import { ymdInZone } from "@/lib/time";
 
 export async function categoryTree() {
@@ -115,7 +116,7 @@ export async function classDetail(slug: string) {
     .leftJoin(locations, eq(locations.id, classes.locationId))
     .where(eq(classes.slug, slug))
     .limit(1);
-  if (!row) return null;
+  if (!row || !publicListingVisible({ classStatus: row.class.status, teacherStatus: row.teacher.status })) return null;
   const [media, upcoming, reviewRows, teacherPacks, teacherMemberships, subs] = await Promise.all([
     db.select().from(classMedia).where(eq(classMedia.classId, row.class.id)).orderBy(asc(classMedia.sortOrder)),
     db.select().from(sessions).where(and(eq(sessions.classId, row.class.id), gte(sessions.startsAt, new Date()))).orderBy(asc(sessions.startsAt)),

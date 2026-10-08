@@ -18,6 +18,7 @@ import {
   promoRedemptions,
   sessions,
   teachers,
+  user,
   waitlistEntries,
 } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
@@ -45,6 +46,7 @@ import {
   refundCancelsBooking,
   sessionLockOrder,
 } from "@/lib/checkout-rules";
+import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
 
@@ -496,6 +498,19 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
   }
+  if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
+    const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
+    const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
+    const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
+    if (person?.email && klass) {
+      await sendEmail({
+        to: [person.email],
+        subject: `You're booked: ${klass.title}`,
+        text: "Your spot is reserved.",
+        teacherId: order.teacherId ?? undefined,
+      });
+    }
+  }
 }
 
 export async function refundOrderByPaymentIntent(intent: string) {
@@ -557,6 +572,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     const [pack] = await db.select().from(packs).where(eq(packs.id, input.id)).limit(1);
     if (!pack || !pack.active) return { error: "That pack is unavailable." };
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, pack.teacherId)).limit(1);
+    if (!teacher || !studioCanSell(teacher.status)) return { error: "This teacher isn't bookable yet." };
     let promoError: string | null = null;
     let promo: typeof promoCodes.$inferSelect | null = null;
     if (normalized.code) {
@@ -640,6 +656,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   const [plan] = await db.select().from(memberships).where(eq(memberships.id, input.id)).limit(1);
   if (!plan || !plan.active) return { error: "That membership is unavailable." };
   const [teacher] = await db.select().from(teachers).where(eq(teachers.id, plan.teacherId)).limit(1);
+  if (!teacher || !studioCanSell(teacher.status)) return { error: "This teacher isn't bookable yet." };
   let promoError: string | null = null;
   let promo: typeof promoCodes.$inferSelect | null = null;
   if (normalized.code) {

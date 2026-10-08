@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   auditLog,
@@ -314,22 +314,27 @@ export async function manualBook(input: { classId: string; sessionId: string; na
   const [session] = await db.select().from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
   if (!session) return { error: "Session not found." };
   await releaseExpiredCheckoutHolds();
-  const decision = decideManualBooking({ capacity: session.capacity, confirmedCount: await confirmedCount(session.id), override: input.override });
-  if (!decision.ok) return { error: "This session is full. Check override capacity to add someone anyway." };
   const bookingId = crypto.randomUUID();
-  await db.insert(bookings).values({
-    id: bookingId,
-    classId: klass.id,
-    kind: "session",
-    status: "confirmed",
-    guestName: input.name,
-    guestEmail: input.email,
-    source: "manual",
-    notes: input.payment,
+  const saved = await db.transaction(async (tx) => {
+    await tx.execute(sql`select id from sessions where id = ${input.sessionId} for update`);
+    const decision = decideManualBooking({ capacity: session.capacity, confirmedCount: await confirmedCount(session.id, tx as unknown as typeof db), override: input.override });
+    if (!decision.ok) return { error: "This session is full. Check override capacity to add someone anyway." };
+    await tx.insert(bookings).values({
+      id: bookingId,
+      classId: klass.id,
+      kind: "session",
+      status: "confirmed",
+      guestName: input.name,
+      guestEmail: input.email,
+      source: "manual",
+      notes: input.payment,
+    });
+    await tx.insert(bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId: input.sessionId });
+    return { ok: true as const };
   });
-  await db.insert(bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId: input.sessionId });
+  if ("error" in saved) return saved;
   await audit({ actorUserId: input.actorUserId, teacherId: klass.teacherId, delegated: input.delegated, action: "booking.manual", entityType: "booking", entityId: bookingId, summary: `Added ${input.name} by hand (${input.payment})` });
-  return { ok: true };
+  return saved;
 }
 
 export async function setCheckin(bookingSessionId: string, checkedIn: boolean, teacherId: string) {

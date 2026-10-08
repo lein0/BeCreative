@@ -8,7 +8,7 @@ import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
-import { bookingResultPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
+import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
@@ -106,7 +106,7 @@ export async function buyOfferAction(formData: FormData) {
     id: text(formData, "id"),
     code: text(formData, "code"),
   });
-  if (result.error) redirect(`${text(formData, "back") || "/"}?error=${encodeURIComponent(result.error)}`);
+  if (result.error) redirect(errorRedirectPath(text(formData, "back"), result.error));
   if (result.checkoutUrl) redirect(result.checkoutUrl);
   redirect("/bookings?offer=1");
 }
@@ -289,7 +289,7 @@ export async function rosterAction(formData: FormData) {
       body: text(formData, "body"),
       teacherId: teacher.id,
     });
-    if (result && "error" in result && result.error) redirect(`${text(formData, "back")}?error=${encodeURIComponent(result.error)}`);
+    if (result && "error" in result && result.error) redirect(errorRedirectPath(text(formData, "back"), result.error, "/teach"));
   }
   revalidatePath("/teach");
 }
@@ -416,7 +416,10 @@ export async function leadAction(formData: FormData) {
   const command = text(formData, "command");
   if (command === "activity") await logLeadActivity(text(formData, "leadId"), actor.id, text(formData, "type") || "note", text(formData, "body"));
   if (command === "status") await db.update(leads).set({ outreachStatus: text(formData, "status"), updatedAt: new Date() }).where(eq(leads.id, text(formData, "leadId")));
-  if (command === "convert") await convertLead(text(formData, "leadId"));
+  if (command === "convert") {
+    const converted = await convertLead(text(formData, "leadId"));
+    if ("error" in converted && converted.error) redirect(errorRedirectPath(`/crm/${text(formData, "leadId")}`, converted.error, "/crm"));
+  }
   if (command === "import") {
     const file = formData.get("file");
     if (!(file instanceof File)) return;

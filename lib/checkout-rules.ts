@@ -7,6 +7,12 @@ export function safeNextPath(next: string | null | undefined, fallback = "/explo
   return value;
 }
 
+export function errorRedirectPath(back: string | null | undefined, error: string, fallback = "/") {
+  const path = safeNextPath(back, fallback);
+  const joiner = path.includes("?") ? "&" : "?";
+  return `${path}${joiner}error=${encodeURIComponent(error)}`;
+}
+
 export type AttributionCookie = {
   ref?: string | null;
   utm_source?: string | null;

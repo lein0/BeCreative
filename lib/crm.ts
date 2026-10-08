@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { account, leadActivities, leads, teachers, user, userRoles, verification } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
 import { inviteActivityNote, inviteSetPasswordUrl, teacherInviteEmail } from "@/lib/invites";
+import { passwordResetIdentifier } from "@/lib/review-rules";
 import { offersOnlineOf, planLeadImport, priorityOf, rowsFromCsv, statusOf, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
 import { uniqueSlug } from "@/lib/utils";
 import { OUTREACH_LABELS, type OutreachStatus } from "@/lib/constants";
@@ -140,7 +141,7 @@ export async function convertLead(leadId: string) {
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await db.insert(verification).values({
       id: crypto.randomUUID(),
-      identifier: `reset-password:${token}`,
+      identifier: passwordResetIdentifier(token),
       value: userId,
       expiresAt,
       createdAt: new Date(),

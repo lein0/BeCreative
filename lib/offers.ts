@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
-import { platformSettings, promoCodes } from "@/lib/db/schema";
-import { quotePrice, validatePromo, type PromoRule } from "@/lib/pricing";
+import { bookings, classes, platformSettings, promoCodes, promoRedemptions } from "@/lib/db/schema";
+import { quotePrice, type PromoRule } from "@/lib/pricing";
+import { classPromoDecision } from "@/lib/review-rules";
 import { recordClick } from "@/lib/queries";
 import { one } from "@/lib/utils";
 
@@ -36,21 +37,42 @@ export function toPromo(row: typeof promoCodes.$inferSelect): PromoRule {
   };
 }
 
-export async function quoteCode(input: { code?: string; listPriceCents: number; classId: string; categoryId: string; teacherId: string | null; city?: string }) {
+export async function quoteCode(input: { code?: string; listPriceCents: number; classId: string; categoryId: string; teacherId: string | null; city?: string; userId?: string | null }) {
   const fee = await platformFee();
   const code = input.code?.trim().toUpperCase();
   if (!code || input.listPriceCents <= 0) return quotePrice({ listPriceCents: input.listPriceCents, ...fee });
   const [row] = await db.select().from(promoCodes).where(eq(promoCodes.code, code)).limit(1);
   if (!row) return quotePrice({ listPriceCents: input.listPriceCents, ...fee, promoError: "That code is not active." });
   const promo = toPromo(row);
-  const check = validatePromo({
+  const [totals] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(promoRedemptions)
+    .where(and(eq(promoRedemptions.promoCodeId, row.id), eq(promoRedemptions.reversed, false)));
+  let customerRedemptions = 0;
+  if (input.userId) {
+    const [mine] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(promoRedemptions)
+      .where(and(eq(promoRedemptions.promoCodeId, row.id), eq(promoRedemptions.userId, input.userId), eq(promoRedemptions.reversed, false)));
+    customerRedemptions = Number(mine?.count ?? 0);
+  }
+  let isFirstTimeStudent = true;
+  if (input.userId && input.teacherId) {
+    const [prior] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(bookings)
+      .innerJoin(classes, eq(classes.id, bookings.classId))
+      .where(and(eq(bookings.userId, input.userId), eq(classes.teacherId, input.teacherId), eq(bookings.status, "confirmed")));
+    isFirstTimeStudent = Number(prior?.count ?? 0) === 0;
+  }
+  const check = classPromoDecision({
     promo,
     now: new Date(),
     listPriceCents: input.listPriceCents,
     product: { kind: "class", classId: input.classId, categoryId: input.categoryId, teacherId: input.teacherId, city: input.city ?? "Los Angeles" },
-    totalRedemptions: 0,
-    customerRedemptions: 0,
-    isFirstTimeStudent: true,
+    totalRedemptions: Number(totals?.count ?? 0),
+    customerRedemptions,
+    isFirstTimeStudent,
   });
   return quotePrice({ listPriceCents: input.listPriceCents, ...fee, promo: check.ok ? promo : null, promoError: check.ok ? null : check.reason });
 }

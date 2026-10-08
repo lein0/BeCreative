@@ -7,12 +7,13 @@ import { OUTREACH_LABELS, OUTREACH_STATUSES, type OutreachStatus } from "@/lib/c
 import { db } from "@/lib/db";
 import { leadActivities, leads, user } from "@/lib/db/schema";
 
-export default function LeadPage({ params }: { params: Promise<{ id: string }> }) {
-  return <Suspense fallback={null}><Body params={params} /></Suspense>;
+export default function LeadPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
+  return <Suspense fallback={null}><Body params={params} searchParams={searchParams} /></Suspense>;
 }
 
-async function Body({ params }: { params: Promise<{ id: string }> }) {
+async function Body({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   const { id } = await params;
+  const error = (await searchParams).error;
   const [lead] = await db.select().from(leads).where(eq(leads.id, id)).limit(1);
   if (!lead) notFound();
   const activities = await db.select().from(leadActivities).where(eq(leadActivities.leadId, id)).orderBy(desc(leadActivities.createdAt));
@@ -23,6 +24,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
       <div>
         <p className="text-xs uppercase tracking-[0.14em] text-clay">{lead.priority} · {OUTREACH_LABELS[lead.outreachStatus as OutreachStatus]}</p>
         <h1 className="display text-5xl">{lead.businessName}</h1>
+        {error ? <p className="mt-3 rounded-2xl bg-clay/10 px-4 py-3 text-sm text-clay">{error}</p> : null}
         <p className="mt-2 text-ink/70">{lead.category} {lead.subcategory} · {lead.neighborhood}, {lead.city}</p>
         <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
           <Panel>Contact {lead.contactName} · {lead.contactRole}<br />{lead.email}<br />{lead.phone}</Panel>

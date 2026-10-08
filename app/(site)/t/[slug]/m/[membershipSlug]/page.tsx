@@ -4,6 +4,7 @@ import { buyOfferAction } from "@/lib/actions";
 import { Panel } from "@/components/bits";
 import { ShareButton } from "@/components/share-button";
 import { teacherProfile } from "@/lib/queries";
+import { studioCanSell } from "@/lib/review-rules";
 import { money } from "@/lib/utils";
 
 export default function MembershipPage({ params }: { params: Promise<{ slug: string; membershipSlug: string }> }) {
@@ -18,7 +19,7 @@ async function Body({ params }: { params: Promise<{ slug: string; membershipSlug
   const { slug, membershipSlug } = await params;
   const profile = await teacherProfile(slug);
   const plan = profile?.memberships.find((item) => item.slug === membershipSlug);
-  if (!profile || !plan) notFound();
+  if (!profile || !studioCanSell(profile.teacher.status) || !plan) notFound();
   return (
     <div className="mx-auto max-w-xl px-5 py-10">
       <Panel>

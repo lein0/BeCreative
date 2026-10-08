@@ -43,7 +43,7 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
   const actor = await getActor();
   const code = one(sp.code);
   const list = detail.class.pricePerSessionCents ?? 0;
-  const quote = await quoteCode({ code, listPriceCents: list, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city });
+  const quote = await quoteCode({ code, listPriceCents: list, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city, userId: actor?.id ?? null });
   const wallet = actor ? await walletForClass(actor.id, detail.teacher.id) : null;
   const focus = one(sp.session);
   const sessions = detail.upcoming.filter((session) => session.status === "scheduled" && (!focus || session.localDate === focus || session.id === focus));
