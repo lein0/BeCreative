@@ -62,6 +62,13 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
       .where(and(inArray(bookingSessions.sessionId, existing.map((session) => session.id)), eq(bookings.status, "confirmed")));
     for (const link of links) booked.add(link.sessionId);
   }
+  if (ruleRow.paused) {
+    for (const session of existing) {
+      if (session.localDate < today || session.status !== "scheduled") continue;
+      await db.update(sessions).set({ status: "paused" }).where(eq(sessions.id, session.id));
+    }
+    return;
+  }
   const diff = diffSessions(
     existing.map((session) => ({
       id: session.id,
@@ -69,7 +76,7 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
       hasBookings: booked.has(session.id),
       exception: session.exception === "moved" || session.exception === "skipped" ? session.exception : null,
     })),
-    ruleRow.paused ? [] : desired.map((item) => item.date),
+    desired.map((item) => item.date),
   );
   const byDate = new Map(desired.map((item) => [item.date, item]));
   for (const id of diff.deleteIds) await db.delete(sessions).where(eq(sessions.id, id));
@@ -80,10 +87,15 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
   for (const id of diff.keepIds) {
     const session = existing.find((item) => item.id === id);
     const next = session ? byDate.get(session.localDate) : undefined;
-    if (!session || !next || session.exception) continue;
-    if (session.startsAt.getTime() !== next.startsAt.getTime()) {
+    if (!session || !next) continue;
+    if (session.exception) {
+      if (session.status === "paused") await db.update(sessions).set({ status: "scheduled" }).where(eq(sessions.id, id));
+      continue;
+    }
+    const timeChanged = session.startsAt.getTime() !== next.startsAt.getTime();
+    if (session.status === "paused" || timeChanged) {
       await db.update(sessions).set({ startsAt: next.startsAt, endsAt: next.endsAt, status: "scheduled" }).where(eq(sessions.id, id));
-      if (booked.has(id)) await notifySession(id, "A session time changed", `Your class moved to ${next.date} at ${next.time}.`);
+      if (booked.has(id) && timeChanged) await notifySession(id, "A session time changed", `Your class moved to ${next.date} at ${next.time}.`);
     }
   }
   const [klass] = await db.select().from(classes).where(eq(classes.id, ruleRow.classId)).limit(1);
@@ -101,10 +113,6 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
       status: "scheduled",
       isDemo: klass.isDemo,
     });
-  }
-  if (ruleRow.paused) {
-    const future = existing.filter((session) => session.localDate >= today && session.status === "scheduled" && !booked.has(session.id));
-    for (const session of future) await db.update(sessions).set({ status: "paused" }).where(eq(sessions.id, session.id));
   }
 }
 
@@ -308,11 +316,12 @@ export async function moveSession(sessionId: string, date: string, time: string,
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: "session.move", entityType: "session", entityId: sessionId, summary: `Moved a session to ${date} ${time}` });
 }
 
-export async function manualBook(input: { classId: string; sessionId: string; name: string; email: string; payment: "paid" | "pay_at_studio" | "unpaid"; override: boolean; actorUserId: string; delegated: boolean }) {
+export async function manualBook(input: { classId: string; sessionId: string; teacherId: string; name: string; email: string; payment: "paid" | "pay_at_studio" | "unpaid"; override: boolean; actorUserId: string; delegated: boolean }) {
   const [klass] = await db.select().from(classes).where(eq(classes.id, input.classId)).limit(1);
   if (!klass) return { error: "Class not found." };
+  if (!studioOwnsResource(klass.teacherId, input.teacherId)) return { error: "That class belongs to another studio." };
   const [session] = await db.select().from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
-  if (!session) return { error: "Session not found." };
+  if (!session || session.classId !== klass.id) return { error: "That session is not part of this class." };
   await releaseExpiredCheckoutHolds();
   const bookingId = crypto.randomUUID();
   const saved = await db.transaction(async (tx) => {

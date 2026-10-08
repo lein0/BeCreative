@@ -29,7 +29,7 @@ import {
   canSpendMembership,
   canSpendPack,
   firstClassFreeEligible,
-  normalizeCodes,
+  checkoutPromoCode,
   offerCoversClass,
   quotePrice,
   shouldRestoreEntitlement,
@@ -172,7 +172,7 @@ export async function bookSession(input: {
   ip?: string | null;
 }): Promise<{ error?: string; checkoutUrl?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
   const attr = await attribution();
-  const codeInput = normalizeCodes([input.code ?? "", attr.code]);
+  const codeInput = checkoutPromoCode(input.code, attr.code);
   if (codeInput.error) return { error: codeInput.error };
   const fee = await fees();
   const now = new Date();
@@ -435,22 +435,30 @@ export async function bookSession(input: {
       });
     }
     const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(created.teacher.stripeChargesEnabled) });
-    if (created.status === "pending" && !ready.ok) return { error: ready.reason };
+    if (created.status === "pending" && !ready.ok) {
+      await abandonFailedCheckout(created.orderId);
+      return { error: ready.reason };
+    }
     if (created.status === "pending") {
-      const session = await createCheckout({
-        name: created.klass.title,
-        amountCents: created.quote.studentPaysCents,
-        applicationFeeCents: created.quote.platformFeeCents,
-        destinationAccountId: created.teacher.stripeAccountId,
-        customerEmail: input.email,
-        successPath: `/bookings?paid=1`,
-        cancelPath: `/c/${created.klass.slug}?cancelled=1`,
-        metadata: { type: "order", orderId: created.orderId, userId: input.userId },
-        statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-      });
-      if (session?.id) {
-        await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
-        if (session.url) return { orderId: created.orderId, checkoutUrl: session.url };
+      try {
+        const session = await createCheckout({
+          name: created.klass.title,
+          amountCents: created.quote.studentPaysCents,
+          applicationFeeCents: created.quote.platformFeeCents,
+          destinationAccountId: created.teacher.stripeAccountId,
+          customerEmail: input.email,
+          successPath: `/bookings?paid=1`,
+          cancelPath: `/c/${created.klass.slug}?cancelled=1`,
+          metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+          statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        });
+        if (session?.id) {
+          await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
+          if (session.url) return { orderId: created.orderId, checkoutUrl: session.url };
+        }
+      } catch (error) {
+        await abandonFailedCheckout(created.orderId);
+        return { error: error instanceof Error ? error.message : "Could not book." };
       }
       const offline = orderMoney(created.quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));
@@ -467,6 +475,14 @@ export async function bookSession(input: {
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
   }
+}
+
+export async function abandonFailedCheckout(orderId: string) {
+  const now = new Date();
+  const held = await db.select().from(bookings).where(and(eq(bookings.orderId, orderId), eq(bookings.status, "confirmed")));
+  for (const booking of held) await releaseBookingSeat(booking, now);
+  await db.update(orders).set({ status: "cancelled", updatedAt: now }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
+  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, orderId));
 }
 
 async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Date) {
@@ -669,7 +685,7 @@ async function recordPromoRedemption(promoId: string, userId: string, orderId: s
 export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string }) {
   const fee = await fees();
   const attr = await attribution();
-  const normalized = normalizeCodes([input.code ?? "", attr.code]);
+  const normalized = checkoutPromoCode(input.code, attr.code);
   if (normalized.error) return { error: normalized.error };
   const now = new Date();
   await releaseExpiredCheckoutHolds(now);
