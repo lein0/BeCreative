@@ -500,6 +500,79 @@ export const leadViews = pgTable("lead_views", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+export type FeedbackViewport = { w: number; h: number; dpr: number; scroll_x: number; scroll_y: number };
+
+export type FeedbackMark =
+  | { type: "box"; x: number; y: number; w: number; h: number }
+  | { type: "circle"; x: number; y: number; r: number }
+  | { type: "arrow"; x1: number; y1: number; x2: number; y2: number }
+  | { type: "freehand"; points: { x: number; y: number }[] };
+
+export type FeedbackTarget = { selector: string; text: string };
+
+export const feedback = pgTable(
+  "feedback",
+  {
+    id: text("id").primaryKey(),
+    authorUserId: text("author_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    authorRole: text("author_role").notNull(),
+    type: text("type").notNull(),
+    priority: text("priority").notNull(),
+    title: text("title"),
+    body: text("body").notNull(),
+    url: text("url").notNull(),
+    route: text("route").notNull(),
+    selector: text("selector"),
+    elementText: text("element_text"),
+    targets: jsonb("targets").$type<FeedbackTarget[]>().notNull().default(sql`'[]'::jsonb`),
+    marks: jsonb("marks").$type<FeedbackMark[]>().notNull().default(sql`'[]'::jsonb`),
+    viewport: jsonb("viewport").$type<FeedbackViewport>().notNull(),
+    device: text("device").notNull().default("desktop"),
+    screenshotKey: text("screenshot_key"),
+    sensitive: boolean("sensitive").notNull().default(false),
+    status: text("status").notNull(),
+    approvedBy: text("approved_by").references(() => user.id, { onDelete: "set null" }),
+    approvedAt: ts("approved_at"),
+    fixPrUrl: text("fix_pr_url"),
+    fixNotes: text("fix_notes"),
+    mergedIntoId: text("merged_into_id"),
+    authorReadAt: ts("author_read_at"),
+    inboxReadAt: ts("inbox_read_at"),
+    isDemo: boolean("is_demo").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("feedback_status").on(table.status),
+    index("feedback_author").on(table.authorUserId),
+    index("feedback_route").on(table.route),
+  ],
+);
+
+export const feedbackEvents = pgTable(
+  "feedback_events",
+  {
+    id: text("id").primaryKey(),
+    feedbackId: text("feedback_id").notNull().references(() => feedback.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    body: text("body").notNull().default(""),
+    actorUserId: text("actor_user_id").references(() => user.id, { onDelete: "set null" }),
+    actorName: text("actor_name"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("feedback_events_feedback").on(table.feedbackId, table.createdAt)],
+);
+
+export const feedbackDeliveries = pgTable("feedback_deliveries", {
+  id: text("id").primaryKey(),
+  feedbackId: text("feedback_id").notNull().references(() => feedback.id, { onDelete: "cascade" }),
+  attempt: integer("attempt").notNull(),
+  status: text("status").notNull(),
+  httpStatus: integer("http_status"),
+  error: text("error"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
 export const uploadTokens = pgTable("upload_tokens", {
   token: text("token").primaryKey(),
   key: text("key").notNull(),

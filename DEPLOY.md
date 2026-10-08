@@ -55,6 +55,10 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `GOOGLE_CLIENT_ID` | no | Google sign-in is off until both this and `GOOGLE_CLIENT_SECRET` are set |
 | `GOOGLE_CLIENT_SECRET` | no | Pair to the client id |
 | `CHECKOUT_HOLD_MINUTES` | no | How long an unpaid Stripe Checkout holds a seat. Default 30 |
+| `FEEDBACK_WEBHOOK_URL` | no | Where approved feedback is POSTed. Unset stores the attempt as undelivered |
+| `FEEDBACK_WEBHOOK_SECRET` | with the webhook | HMAC-SHA256 key for `X-Feedback-Signature: sha256=<hex>` over the raw JSON body |
+| `FEEDBACK_WEBHOOK_KEY` | with the webhook | Sent as `Authorization: Bearer <key>` on the same POST |
+| `FEEDBACK_CALLBACK_TOKEN` | no | Bearer token for `POST /api/feedback/:id/status` and `GET /api/feedback/queue`. Unset keeps both routes closed |
 | `STRIPE_SECRET_KEY` | no | Omit and bookings stay pay-at-studio |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | no | Required only when the secret key is set |
 | `STRIPE_WEBHOOK_SECRET` | no | Signing secret for `POST /api/webhooks/stripe` |

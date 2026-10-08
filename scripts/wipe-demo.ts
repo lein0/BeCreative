@@ -7,6 +7,9 @@ import {
   classes,
   creditLedger,
   introRedemptions,
+  feedback,
+  feedbackDeliveries,
+  feedbackEvents,
   leadActivities,
   leads,
   linkClicks,
@@ -39,6 +42,13 @@ export async function wipeDemo() {
   if (userIds.length) await db.delete(creditLedger).where(inArray(creditLedger.userId, userIds));
   if (orderIds.length) await db.delete(promoRedemptions).where(inArray(promoRedemptions.orderId, orderIds));
   if (userIds.length) await db.delete(introRedemptions).where(inArray(introRedemptions.userId, userIds));
+  const demoFeedback = await db.select({ id: feedback.id }).from(feedback).where(sql`${feedback.isDemo} = true`);
+  const feedbackIds = demoFeedback.map((row) => row.id);
+  if (feedbackIds.length) {
+    await db.delete(feedbackDeliveries).where(inArray(feedbackDeliveries.feedbackId, feedbackIds));
+    await db.delete(feedbackEvents).where(inArray(feedbackEvents.feedbackId, feedbackIds));
+    await db.delete(feedback).where(inArray(feedback.id, feedbackIds));
+  }
   await db.delete(waitlistEntries).where(sql`${waitlistEntries.isDemo} = true`);
   if (bookingIds.length) await db.delete(bookings).where(inArray(bookings.id, bookingIds));
   if (orderIds.length) await db.delete(orders).where(inArray(orders.id, orderIds));

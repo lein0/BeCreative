@@ -28,6 +28,14 @@ export function canManageLeads(roles: Role[]): boolean {
   return hasRole(roles, "admin") || hasRole(roles, "account_manager");
 }
 
+export function canUseFeedback(roles: Role[]): boolean {
+  return hasRole(roles, "admin") || hasRole(roles, "account_manager");
+}
+
+export function canReviewFeedback(roles: Role[]): boolean {
+  return hasRole(roles, "admin");
+}
+
 export function canEditTeacherContent(roles: Role[], isOwnTeacherProfile: boolean): boolean {
   if (hasRole(roles, "admin") || hasRole(roles, "account_manager")) return true;
   return hasRole(roles, "teacher") && isOwnTeacherProfile;

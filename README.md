@@ -80,6 +80,7 @@ Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `char
 - Maps are Leaflet and OpenStreetMap behind `components/studio-map.tsx`. Geocoding is `lib/geocode.ts` (`local`, `nominatim`, or `mapbox`).
 - Recurring classes store a rule plus generated session rows. A rolling window covers "never" (about eight weeks ahead). Instances with bookings are kept. Times are America/Los_Angeles, including DST.
 - Share links: `/t/[slug]`, `/c/[slug]`, `/t/[slug]/bio`, `/t/[slug]/p/[pack]`, `/t/[slug]/m/[membership]`, plus `?session=`, `?code=`, `?ref=`, and UTM params. `proxy.ts` stores attribution for 30 days. Clicks land in `link_clicks`.
+- Feedback is limited to admins and account managers. The ✎ button opens a full-page drawing overlay. Marks are stored in page coordinates. Screenshots go to object storage. Admin notes are approved and dispatched immediately. Account manager notes stay `pending_review` until an admin approves them. Dispatch is `createFeedbackDispatcher()` in `lib/feedback-webhook.ts`: a webhook by default, and a no-op that records `undelivered` when `FEEDBACK_WEBHOOK_URL` is unset. The POST never fails the user's submit.
 
 ## Environment
 
@@ -107,6 +108,11 @@ See `.env.example`.
 | `S3_FORCE_PATH_STYLE` | `true` for MinIO |
 | `S3_PUBLIC_URL_BASE` | Optional public base for object URLs |
 | `SES_FROM_EMAIL` | Verified SES sender |
+| `CHECKOUT_HOLD_MINUTES` | Unpaid Checkout hold. Default 30 |
+| `FEEDBACK_WEBHOOK_URL` | Approved feedback is POSTed here. Unset records the delivery as undelivered |
+| `FEEDBACK_WEBHOOK_SECRET` | HMAC-SHA256 secret for `X-Feedback-Signature` |
+| `FEEDBACK_WEBHOOK_KEY` | Bearer token sent as `Authorization` on the webhook |
+| `FEEDBACK_CALLBACK_TOKEN` | Bearer token for the fixer status and queue APIs |
 | `STRIPE_SECRET_KEY` | Secret key. Omit to run pay-at-studio |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Publishable key. Both keys are required before Checkout is used |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret |
@@ -141,6 +147,51 @@ npm run db:seed
 npm run db:wipe-demo
 ```
 
+## Feedback webhook
+
+Approved items POST `feedback.approved` to `FEEDBACK_WEBHOOK_URL`. The signature header is `X-Feedback-Signature: sha256=<hmac-sha256 of the raw body>` using `FEEDBACK_WEBHOOK_SECRET`. The same request sends `Authorization: Bearer <FEEDBACK_WEBHOOK_KEY>`. Retries are three attempts with 500ms and 1500ms backoff. Each attempt is stored on the feedback item.
+
+`sensitive` is true when the route, targets, title, or comment touch billing, checkout, Stripe, payouts, auth, roles, permissions, promo funding, or admin settings. The fixer should ask before changing those.
+
+The fix loop calls back with `Authorization: Bearer <FEEDBACK_CALLBACK_TOKEN>`:
+
+- `POST /api/feedback/:id/status` with `{ "status", "fix_pr_url", "fix_notes", "comment" }`. Status is one of `queued`, `in_progress`, `needs_info`, `fixed`, `deployed`, `wont_fix`.
+- `GET /api/feedback/queue?status=approved` returns `{ "items": [ ... ] }` using the same item shape.
+
+```json
+{
+  "event": "feedback.approved",
+  "sent_at": "2026-10-08T00:40:00.000Z",
+  "item": {
+    "id": "6d5c2a0e-0000-4000-8000-000000000001",
+    "title": "Neighborhood label sits under the pin",
+    "body": "On Explore, the Silver Lake label is hidden behind the map pin.",
+    "type": "bug",
+    "priority": "normal",
+    "status": "approved",
+    "sensitive": false,
+    "url": "https://classes.example/explore",
+    "route": "/explore",
+    "selector": "main > section:nth-of-type(1)",
+    "element_text": "Explore",
+    "targets": [{ "selector": "main > section:nth-of-type(1)", "text": "Explore" }],
+    "marks": [{ "type": "box", "x": 420, "y": 280, "w": 160, "h": 48 }],
+    "viewport": { "w": 1280, "h": 800, "dpr": 1.5, "scroll_x": 0, "scroll_y": 0 },
+    "device": "desktop",
+    "screenshot_url": "https://classes.example/api/media/feedback/2026/shot.jpg",
+    "author": { "id": "user_admin", "name": "Avery Chen", "email": "admin@becreative.demo", "role": "admin" },
+    "approved_by": "user_admin",
+    "approved_at": "2026-10-08T00:40:00.000Z",
+    "fix_pr_url": null,
+    "fix_notes": null,
+    "created_at": "2026-10-08T00:39:00.000Z",
+    "comments": []
+  }
+}
+```
+
+Screenshot URLs are absolute. Local storage uses the app origin. S3 uses a presigned GET that lasts seven days. The image bytes are not stored on the feedback row.
+
 ## Known gaps
 
 - A paid Stripe webhook that arrives after the hold expired does not reopen the seat. `CHECKOUT_HOLD_MINUTES` defaults to 30.
@@ -150,3 +201,4 @@ npm run db:wipe-demo
 - The local geocoder uses neighborhood centroids plus a small jitter. It is not a street-level geocoder.
 - A map provider other than Leaflet shows that maps are not configured.
 - Converting a lead with an existing password leaves that password in place and links the studio. A new teacher gets a set-password link.
+- Feedback webhook retries run in the request that follows submit. A crash mid-retry does not resume. Admins can resend from the feedback item.

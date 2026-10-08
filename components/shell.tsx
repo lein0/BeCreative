@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { FeedbackLaunchButton } from "@/components/feedback-widget";
+import { FeedbackSlot } from "@/components/feedback-slot";
 import { getActor } from "@/lib/actor";
+import { authorUnreadCount } from "@/lib/feedback-service";
+import { feedbackRole } from "@/lib/feedback-rules";
 import { canManageLeads, canViewPlatformStats } from "@/lib/permissions";
 
 export function SiteFrame({ children }: { children: React.ReactNode }) {
@@ -14,6 +18,7 @@ export function SiteFrame({ children }: { children: React.ReactNode }) {
         <p>BeCreative · independent teachers, direct bookings.</p>
         <p>Los Angeles</p>
       </footer>
+      <FeedbackSlot />
     </>
   );
 }
@@ -24,6 +29,8 @@ async function SiteHeader() {
   const admin = actor ? canViewPlatformStats(actor.roles) : false;
   const crm = actor ? canManageLeads(actor.roles) : false;
   const manage = actor?.roles.includes("account_manager") || admin;
+  const feedback = actor ? feedbackRole(actor.roles) : null;
+  const feedbackUnread = actor && feedback ? await authorUnreadCount(actor.id) : 0;
   return (
     <header className="sticky top-0 z-30 border-b border-line/80 bg-paper/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5">
@@ -37,6 +44,7 @@ async function SiteHeader() {
           {crm ? <Nav href="/crm">Leads</Nav> : null}
           {admin ? <Nav href="/admin">Admin</Nav> : null}
           {actor ? <Nav href="/bookings">Bookings</Nav> : null}
+          {feedback ? <FeedbackLaunchButton unread={feedbackUnread} /> : null}
           {actor ? (
             <span className="ml-2 hidden text-ink/70 sm:inline">{actor.name.split(" ")[0]}</span>
           ) : (

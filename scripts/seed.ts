@@ -12,6 +12,9 @@ import {
   classes,
   classMedia,
   creditLedger,
+  feedback,
+  feedbackDeliveries,
+  feedbackEvents,
   leads,
   leadActivities,
   linkClicks,
@@ -37,6 +40,7 @@ import { syncRule } from "@/lib/studio-service";
 import { zonedTimeToUtc } from "@/lib/time";
 import { slugify } from "@/lib/utils";
 import { ensureBootstrapAdmins } from "@/lib/admins";
+import { putStoredObject } from "@/lib/storage";
 import { wipeDemo } from "./wipe-demo";
 
 const PASSWORD = "DemoPass123!";
@@ -545,6 +549,144 @@ async function main() {
     }
     void place;
   }
+
+  const demoShot = Buffer.from(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhUQEhIVFRUVFRUVFRUVFRUWFxUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMtNygtLisBCgoKDg0OGhAQGy0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAoACgMBIgACEQEDEQH/xAAbAAACAgMBAAAAAAAAAAAAAAADBAECBQYAB//EAB4QAAIBAwUAAAAAAAAAAAAAAAECAwQFERIGITH/xAAXAQADAQAAAAAAAAAAAAAAAAAAAQID/8QAFREBAQAAAAAAAAAAAAAAAAAAAAH/2gAMAwEAAhEDEQA/AKp6m1t7i3uY4Y5Y0kkjVHU4A5J9qc0//9k=",
+    "base64",
+  );
+  await putStoredObject("feedback/demo/explore.jpg", demoShot, "image/jpeg");
+  const feedbackRows = [
+    {
+      id: "feedback-demo-map",
+      authorUserId: adminId,
+      authorRole: "admin",
+      type: "bug",
+      priority: "normal",
+      title: "Neighborhood label sits under the pin",
+      body: "On Explore, the Silver Lake label is hidden behind the map pin.",
+      url: "http://localhost:3000/explore",
+      route: "/explore",
+      selector: "main > section:nth-of-type(1)",
+      elementText: "Explore",
+      targets: [{ selector: "main > section:nth-of-type(1)", text: "Explore" }],
+      marks: [{ type: "box" as const, x: 420, y: 280, w: 160, h: 48 }],
+      viewport: { w: 1280, h: 800, dpr: 1.5, scroll_x: 0, scroll_y: 0 },
+      device: "desktop",
+      screenshotKey: "feedback/demo/explore.jpg",
+      sensitive: false,
+      status: "approved",
+      approvedBy: adminId,
+      approvedAt: new Date("2026-10-07T18:00:00Z"),
+      authorReadAt: new Date("2026-10-07T18:05:00Z"),
+      inboxReadAt: new Date("2026-10-07T18:05:00Z"),
+    },
+    {
+      id: "feedback-demo-copy",
+      authorUserId: managerId,
+      authorRole: "account_manager",
+      type: "copy",
+      priority: "high",
+      title: "Series price is easy to miss",
+      body: "The series price on Scene Study should sit next to the session price, not under the fold.",
+      url: "http://localhost:3000/c/scene-study",
+      route: "/c/scene-study",
+      selector: "main > h1",
+      elementText: "Scene Study",
+      targets: [{ selector: "main > h1", text: "Scene Study" }],
+      marks: [{ type: "circle" as const, x: 240, y: 180, r: 36 }],
+      viewport: { w: 390, h: 844, dpr: 1.5, scroll_x: 0, scroll_y: 120 },
+      device: "phone",
+      screenshotKey: null,
+      sensitive: false,
+      status: "pending_review",
+      authorReadAt: new Date("2026-10-07T19:00:00Z"),
+      inboxReadAt: null,
+    },
+    {
+      id: "feedback-demo-billing",
+      authorUserId: managerId,
+      authorRole: "account_manager",
+      type: "bug",
+      priority: "high",
+      title: null,
+      body: "The payout line on billing does not match the Stripe transfer.",
+      url: "http://localhost:3000/teach/billing",
+      route: "/teach/billing",
+      selector: "main > section:nth-of-type(1)",
+      elementText: "Payouts",
+      targets: [{ selector: "main > section:nth-of-type(1)", text: "Payouts" }],
+      marks: [{ type: "arrow" as const, x1: 80, y1: 200, x2: 220, y2: 260 }],
+      viewport: { w: 1280, h: 800, dpr: 1, scroll_x: 0, scroll_y: 0 },
+      device: "desktop",
+      screenshotKey: null,
+      sensitive: true,
+      status: "needs_info",
+      approvedBy: adminId,
+      approvedAt: new Date("2026-10-06T16:00:00Z"),
+      authorReadAt: new Date("2026-10-06T16:00:00Z"),
+      inboxReadAt: new Date("2026-10-06T16:30:00Z"),
+    },
+    {
+      id: "feedback-demo-hero",
+      authorUserId: adminId,
+      authorRole: "admin",
+      type: "design",
+      priority: "low",
+      title: "Name the city in the hero",
+      body: "The homepage hero should say Los Angeles before the first scroll.",
+      url: "http://localhost:3000/",
+      route: "/",
+      selector: null,
+      elementText: null,
+      targets: [],
+      marks: [],
+      viewport: { w: 1280, h: 800, dpr: 1, scroll_x: 0, scroll_y: 0 },
+      device: "desktop",
+      screenshotKey: null,
+      sensitive: false,
+      status: "deployed",
+      approvedBy: adminId,
+      approvedAt: new Date("2026-10-01T15:00:00Z"),
+      fixPrUrl: "https://github.com/lein0/BeCreative/pull/1",
+      fixNotes: "Hero now names Los Angeles.",
+      authorReadAt: new Date("2026-10-02T15:00:00Z"),
+      inboxReadAt: new Date("2026-10-02T15:00:00Z"),
+    },
+  ];
+  for (const row of feedbackRows) {
+    await db.insert(feedback).values({ ...row, isDemo: true });
+    await db.insert(feedbackEvents).values({
+      id: `${row.id}-created`,
+      feedbackId: row.id,
+      kind: "created",
+      body: row.body,
+      actorUserId: row.authorUserId,
+      actorName: row.authorUserId === adminId ? "Avery Chen" : "Sam Ortiz",
+    });
+  }
+  await db.insert(feedbackDeliveries).values({
+    id: "feedback-demo-map-delivery",
+    feedbackId: "feedback-demo-map",
+    attempt: 1,
+    status: "undelivered",
+    error: "FEEDBACK_WEBHOOK_URL is not set",
+  });
+  await db.insert(feedbackEvents).values({
+    id: "feedback-demo-map-dispatch",
+    feedbackId: "feedback-demo-map",
+    kind: "dispatch",
+    body: "Webhook not configured. Recorded as undelivered.",
+    actorName: "fix loop",
+    createdAt: new Date("2026-10-07T18:02:00Z"),
+  });
+  await db.insert(feedbackEvents).values({
+    id: "feedback-demo-billing-comment",
+    feedbackId: "feedback-demo-billing",
+    kind: "comment",
+    body: "Which payout date should I compare to Stripe?",
+    actorName: "fixer",
+    createdAt: new Date("2026-10-07T12:00:00Z"),
+  });
 
   await ensureBootstrapAdmins();
   console.log(`Seeded ${teacherSeeds.length} teachers, ${classSeeds.length} classes, ${leadsSeed.length} leads.`);

@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { appOrigin } from "@/lib/env";
 
@@ -77,6 +77,41 @@ class S3Storage implements StorageProvider {
 
 export function storageProvider(): StorageProvider {
   return process.env.STORAGE_PROVIDER === "s3" ? new S3Storage() : new LocalStorage();
+}
+
+function s3Client() {
+  return new S3Client({
+    region: process.env.AWS_REGION ?? "us-west-2",
+    endpoint: process.env.S3_ENDPOINT || undefined,
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
+    credentials: s3Credentials(),
+  });
+}
+
+export async function putStoredObject(key: string, bytes: Buffer, contentType: string) {
+  if (key.includes("..")) throw new Error("Invalid upload key.");
+  if (process.env.STORAGE_PROVIDER === "s3") {
+    const bucket = process.env.S3_BUCKET;
+    if (!bucket) throw new Error("S3_BUCKET is required when STORAGE_PROVIDER=s3.");
+    await s3Client().send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: contentType }));
+    return key;
+  }
+  await writeLocalObject(key, bytes);
+  return key;
+}
+
+/** Long-lived URL for a fixer. Local files use the app origin. S3 uses a presigned GET (7 days). */
+export async function signedObjectUrl(key: string, expiresIn = 60 * 60 * 24 * 7) {
+  if (process.env.STORAGE_PROVIDER !== "s3") return storageProvider().publicUrl(key);
+  const bucket = process.env.S3_BUCKET;
+  if (!bucket) throw new Error("S3_BUCKET is required when STORAGE_PROVIDER=s3.");
+  return getSignedUrl(s3Client(), new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn });
+}
+
+export function mediaPath(key: string | null) {
+  if (!key) return null;
+  if (process.env.STORAGE_PROVIDER === "s3") return storageProvider().publicUrl(key);
+  return `/api/media/${key}`;
 }
 
 export function uploadDir() {

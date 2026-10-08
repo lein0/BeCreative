@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { requireActor } from "@/lib/actor";
+import { adminInboxUnreadCount } from "@/lib/feedback-service";
 import { canViewPlatformStats } from "@/lib/permissions";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -15,7 +16,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 async function Guard({ children }: { children: React.ReactNode }) {
   const actor = await requireActor();
   if (!canViewPlatformStats(actor.roles)) redirect("/");
-  const links = [["Overview", "/admin"], ["Teachers", "/admin/teachers"], ["Classes", "/admin/classes"], ["Users", "/admin/users"], ["Promos", "/admin/promos"], ["Settings", "/admin/settings"]];
+  const unread = await adminInboxUnreadCount();
+  const links = [["Overview", "/admin"], ["Teachers", "/admin/teachers"], ["Classes", "/admin/classes"], ["Users", "/admin/users"], ["Promos", "/admin/promos"], ["Settings", "/admin/settings"], [`Feedback${unread ? ` (${unread})` : ""}`, "/admin/feedback"]];
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
       <nav className="mb-6 flex flex-wrap gap-2 text-sm">
