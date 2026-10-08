@@ -4,20 +4,27 @@ import { Money, Panel } from "@/components/bits";
 import { requireActor } from "@/lib/actor";
 import { myBookings } from "@/lib/queries";
 
-export default function BookingsPage() {
+export default function BookingsPage({ searchParams }: { searchParams: Promise<{ waitlisted?: string; reserved?: string }> }) {
   return (
     <Suspense fallback={<p className="px-5 py-10">Loading bookings…</p>}>
-      <Body />
+      <Body searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function Body() {
+async function Body({ searchParams }: { searchParams: Promise<{ waitlisted?: string; reserved?: string }> }) {
+  const query = await searchParams;
   const actor = await requireActor();
   const data = await myBookings(actor.id);
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">
       <h1 className="display text-5xl">My bookings</h1>
+      {query.waitlisted === "1" ? (
+        <p className="mt-4 rounded-2xl border border-clay/30 bg-clay/10 px-4 py-3 text-sm">You are on the waitlist. You do not have a reserved seat yet. We will email you if a spot opens.</p>
+      ) : null}
+      {query.reserved === "1" ? (
+        <p className="mt-4 rounded-2xl border border-ink/10 bg-paper px-4 py-3 text-sm">Your seat is reserved.</p>
+      ) : null}
       <div className="mt-6 space-y-3">
         {data.rows.map((row) => (
           <Panel key={row.booking.id}>

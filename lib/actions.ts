@@ -8,10 +8,11 @@ import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
+import { bookingResultPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
-import { classes, leads, leadViews, platformSettings, promoCodes, teachers, user, userRoles } from "@/lib/db/schema";
+import { bookingSessions, classes, leads, leadViews, platformSettings, promoCodes, recurrences, sessions, teachers, user, userRoles } from "@/lib/db/schema";
 import { canApproveTeachers, canEditTeacherContent, canManageLeads, canManagePlatformPromos, canManageRoles } from "@/lib/permissions";
 import type { RecurrenceRule } from "@/lib/recurrence";
 import { attachMedia, emailRoster, featureClass, manualBook, moveSession, saveClass, saveMembership, savePack, savePromo, setCheckin, setPaused, setTeacherStatus, skipSession, updateRecurrence } from "@/lib/studio-service";
@@ -42,7 +43,7 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
   } catch (error) {
     return { error: authFailure(error, "Check the email and password.") };
   }
-  redirect(next.startsWith("/") ? next : "/explore");
+  redirect(safeNextPath(next));
 }
 
 export async function signupAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -87,9 +88,7 @@ export async function bookAction(formData: FormData): Promise<void> {
     code: text(formData, "code"),
     payWith: text(formData, "payWith") || "cash",
   });
-  if (result.error) redirect(`/c/${text(formData, "slug")}?error=${encodeURIComponent(result.error)}`);
-  if (result.checkoutUrl) redirect(result.checkoutUrl);
-  redirect("/bookings?reserved=1");
+  redirect(bookingResultPath({ ...result, slug: text(formData, "slug") }));
 }
 
 export async function cancelBookingAction(formData: FormData) {
@@ -194,21 +193,74 @@ export async function scheduleCommandAction(formData: FormData) {
   if (!teacher || !canEditTeacherContent(actor.roles, teacher.userId === actor.id)) return;
   const delegated = teacher.userId !== actor.id;
   const command = text(formData, "command");
-  if (command === "pause") await setPaused(text(formData, "recurrenceId"), true, actor.id, delegated);
-  if (command === "resume") await setPaused(text(formData, "recurrenceId"), false, actor.id, delegated);
-  if (command === "skip") await skipSession(text(formData, "sessionId"), actor.id, delegated);
-  if (command === "move") await moveSession(text(formData, "sessionId"), text(formData, "date"), text(formData, "time"), actor.id, delegated);
+  if (command === "pause" || command === "resume") {
+    const recurrenceId = text(formData, "recurrenceId");
+    if (!(await teacherOwnsRecurrence(recurrenceId, teacherId))) return;
+    await setPaused(recurrenceId, command === "pause", actor.id, delegated, teacherId);
+  }
+  if (command === "skip") {
+    const sessionId = text(formData, "sessionId");
+    if (!(await teacherOwnsSession(sessionId, teacherId))) return;
+    await skipSession(sessionId, actor.id, delegated, teacherId);
+  }
+  if (command === "move") {
+    const sessionId = text(formData, "sessionId");
+    if (!(await teacherOwnsSession(sessionId, teacherId))) return;
+    await moveSession(sessionId, text(formData, "date"), text(formData, "time"), actor.id, delegated, teacherId);
+  }
   if (command === "reshape") {
+    const recurrenceId = text(formData, "recurrenceId");
+    if (!(await teacherOwnsRecurrence(recurrenceId, teacherId))) return;
     const rule = JSON.parse(text(formData, "rule") || "{}") as RecurrenceRule;
-    if (rule.days?.length) await updateRecurrence(text(formData, "recurrenceId"), { ...rule, timezone: LA_TIMEZONE }, actor.id, delegated);
+    if (rule.days?.length) await updateRecurrence(recurrenceId, { ...rule, timezone: LA_TIMEZONE }, actor.id, delegated, teacherId);
   }
   revalidatePath("/teach");
+}
+
+async function teacherOwnsSession(sessionId: string, teacherId: string) {
+  const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+  if (!session) return false;
+  const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
+  return studioOwnsResource(klass?.teacherId, teacherId);
+}
+
+async function teacherOwnsRecurrence(recurrenceId: string, teacherId: string) {
+  const [rule] = await db.select().from(recurrences).where(eq(recurrences.id, recurrenceId)).limit(1);
+  if (!rule) return false;
+  const [klass] = await db.select().from(classes).where(eq(classes.id, rule.classId)).limit(1);
+  return studioOwnsResource(klass?.teacherId, teacherId);
+}
+
+async function teacherForBookingLink(linkId: string) {
+  const [link] = await db.select().from(bookingSessions).where(eq(bookingSessions.id, linkId)).limit(1);
+  if (!link) return null;
+  const [session] = await db.select().from(sessions).where(eq(sessions.id, link.sessionId)).limit(1);
+  if (!session) return null;
+  const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
+  if (!klass) return null;
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
+  return teacher ?? null;
+}
+
+async function teacherForRoster(sessionId: string, classId: string) {
+  const classIdToUse = sessionId
+    ? (await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1))[0]?.classId
+    : classId;
+  if (!classIdToUse) return null;
+  const [klass] = await db.select().from(classes).where(eq(classes.id, classIdToUse)).limit(1);
+  if (!klass) return null;
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
+  return teacher ?? null;
 }
 
 export async function rosterAction(formData: FormData) {
   const actor = await requireActor();
   const command = text(formData, "command");
-  if (command === "checkin") await setCheckin(text(formData, "linkId"), formData.get("checked") === "1");
+  if (command === "checkin") {
+    const teacher = await teacherForBookingLink(text(formData, "linkId"));
+    if (!teacher || !canEditTeacherContent(actor.roles, teacher.userId === actor.id)) return;
+    await setCheckin(text(formData, "linkId"), formData.get("checked") === "1", teacher.id);
+  }
   if (command === "manual") {
     const [klass] = await db.select().from(classes).where(eq(classes.id, text(formData, "classId"))).limit(1);
     if (!klass) return;
@@ -227,13 +279,15 @@ export async function rosterAction(formData: FormData) {
     if (result?.error) redirect(`/teach/sessions/${text(formData, "sessionId")}?error=${encodeURIComponent(result.error)}`);
   }
   if (command === "email") {
+    const teacher = await teacherForRoster(text(formData, "sessionId"), text(formData, "classId"));
+    if (!teacher || !canEditTeacherContent(actor.roles, teacher.userId === actor.id)) return;
     const result = await emailRoster({
       sessionId: text(formData, "sessionId") || undefined,
       classId: text(formData, "classId") || undefined,
       includePast: formData.get("includePast") === "on",
       subject: text(formData, "subject"),
       body: text(formData, "body"),
-      teacherId: text(formData, "teacherId"),
+      teacherId: teacher.id,
     });
     if (result && "error" in result && result.error) redirect(`${text(formData, "back")}?error=${encodeURIComponent(result.error)}`);
   }

@@ -17,6 +17,7 @@ import {
 } from "@/lib/db/schema";
 import { confirmedCount, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { decideManualBooking } from "@/lib/booking-rules";
+import { studioOwnsResource } from "@/lib/checkout-rules";
 import { sendIndividually } from "@/lib/email";
 import { geocoder } from "@/lib/geocode";
 import { collectOccurrences, describeRecurrence, diffSessions, previewOccurrences, type RecurrenceRule } from "@/lib/recurrence";
@@ -243,9 +244,14 @@ export async function saveClass(input: {
   return { classId };
 }
 
-export async function updateRecurrence(recurrenceId: string, rule: RecurrenceRule, actorUserId: string, delegated: boolean) {
+async function classTeacherId(classId: string) {
+  const [klass] = await db.select({ teacherId: classes.teacherId }).from(classes).where(eq(classes.id, classId)).limit(1);
+  return klass?.teacherId ?? null;
+}
+
+export async function updateRecurrence(recurrenceId: string, rule: RecurrenceRule, actorUserId: string, delegated: boolean, teacherId: string) {
   const [existing] = await db.select().from(recurrences).where(eq(recurrences.id, recurrenceId)).limit(1);
-  if (!existing) return { error: "Series not found." };
+  if (!existing || !studioOwnsResource(await classTeacherId(existing.classId), teacherId)) return { error: "Series not found." };
   await db.update(recurrences).set({
     timezone: rule.timezone || existing.timezone,
     frequency: rule.frequency,
@@ -272,28 +278,29 @@ export async function updateRecurrence(recurrenceId: string, rule: RecurrenceRul
   return { ok: true };
 }
 
-export async function setPaused(recurrenceId: string, paused: boolean, actorUserId: string, delegated: boolean) {
+export async function setPaused(recurrenceId: string, paused: boolean, actorUserId: string, delegated: boolean, teacherId: string) {
   const [rule] = await db.select().from(recurrences).where(eq(recurrences.id, recurrenceId)).limit(1);
-  if (!rule) return;
+  if (!rule || !studioOwnsResource(await classTeacherId(rule.classId), teacherId)) return;
   await db.update(recurrences).set({ paused }).where(eq(recurrences.id, recurrenceId));
   await syncRule(recurrenceId);
   const [klass] = await db.select().from(classes).where(eq(classes.id, rule.classId)).limit(1);
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: paused ? "series.pause" : "series.resume", entityType: "recurrence", entityId: recurrenceId, summary: paused ? "Paused the series" : "Resumed the series" });
 }
 
-export async function skipSession(sessionId: string, actorUserId: string, delegated: boolean) {
+export async function skipSession(sessionId: string, actorUserId: string, delegated: boolean, teacherId: string) {
   const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-  if (!session) return;
+  if (!session || !studioOwnsResource(await classTeacherId(session.classId), teacherId)) return;
   await db.update(sessions).set({ status: "cancelled", exception: "skipped", cancellationReason: "Teacher skipped this date" }).where(eq(sessions.id, sessionId));
   await notifySession(sessionId, "Class cancelled", "Your teacher cancelled this date. If you paid online, the refund follows the class policy.");
   const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: "session.skip", entityType: "session", entityId: sessionId, summary: `Skipped ${session.localDate}` });
 }
 
-export async function moveSession(sessionId: string, date: string, time: string, actorUserId: string, delegated: boolean) {
+export async function moveSession(sessionId: string, date: string, time: string, actorUserId: string, delegated: boolean, teacherId: string) {
   const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
   if (!session) return;
   const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
+  if (!studioOwnsResource(klass?.teacherId, teacherId)) return;
   const startsAt = zonedTimeToUtc(date, time);
   const endsAt = new Date(startsAt.getTime() + (klass?.durationMinutes ?? 60) * 60_000);
   await db.update(sessions).set({ startsAt, endsAt, localDate: date, exception: "moved", status: "scheduled" }).where(eq(sessions.id, sessionId));
@@ -325,11 +332,25 @@ export async function manualBook(input: { classId: string; sessionId: string; na
   return { ok: true };
 }
 
-export async function setCheckin(bookingSessionId: string, checkedIn: boolean) {
+export async function setCheckin(bookingSessionId: string, checkedIn: boolean, teacherId: string) {
+  const [row] = await db
+    .select({ ownerId: classes.teacherId })
+    .from(bookingSessions)
+    .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
+    .innerJoin(classes, eq(classes.id, sessions.classId))
+    .where(eq(bookingSessions.id, bookingSessionId))
+    .limit(1);
+  if (!row || !studioOwnsResource(row.ownerId, teacherId)) return;
   await db.update(bookingSessions).set({ checkedIn, checkedInAt: checkedIn ? new Date() : null }).where(eq(bookingSessions.id, bookingSessionId));
 }
 
 export async function emailRoster(input: { sessionId?: string; classId?: string; includePast: boolean; subject: string; body: string; teacherId: string }) {
+  let classId = input.classId ?? "";
+  if (input.sessionId) {
+    const [session] = await db.select({ classId: sessions.classId }).from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
+    classId = session?.classId ?? "";
+  }
+  if (!studioOwnsResource(await classTeacherId(classId), input.teacherId)) return { error: "You can't email this roster." };
   const now = new Date();
   const sessionRows = input.sessionId
     ? await db.select().from(sessions).where(eq(sessions.id, input.sessionId))

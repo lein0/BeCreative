@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { LoginForm } from "@/components/auth-forms";
 import { Panel } from "@/components/bits";
+import { safeNextPath } from "@/lib/checkout-rules";
 import { googleAuthConfigured } from "@/lib/env";
 import { one } from "@/lib/utils";
 
@@ -13,7 +14,7 @@ export default function LoginPage({ searchParams }: { searchParams: Promise<Reco
 }
 
 async function Body({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const next = one((await searchParams).next) || "/explore";
+  const next = safeNextPath(one((await searchParams).next));
   return (
     <div className="mx-auto max-w-md px-5 py-12">
       <h1 className="display text-5xl">Welcome back</h1>
