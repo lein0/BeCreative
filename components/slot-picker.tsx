@@ -26,6 +26,7 @@ export function SlotPicker({
   slots,
   addons,
   payWith,
+  policy,
 }: {
   kind: "appointment" | "access";
   serviceId: string;
@@ -34,6 +35,7 @@ export function SlotPicker({
   slots: PickerSlot[];
   addons: PickerAddon[];
   payWith: { id: string; label: string }[];
+  policy: string;
 }) {
   const [optionId, setOptionId] = useState(options[0]?.id ?? "");
   const [pickedAddons, setPickedAddons] = useState<string[]>([]);
@@ -131,6 +133,10 @@ export function SlotPicker({
             <option key={item.id} value={item.id}>{item.label}</option>
           ))}
         </select>
+      </label>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="checkbox" name="policyAccepted" value="1" required className="mt-1" />
+        <span>{policy}</span>
       </label>
       <button className="min-h-11 w-full rounded-full bg-clay text-sm font-medium text-white" disabled={!startsAt}>
         {startsAt ? "Book this time" : "Choose a time"}

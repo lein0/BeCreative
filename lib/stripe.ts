@@ -20,6 +20,7 @@ export async function createCheckout(input: {
   successPath: string;
   cancelPath: string;
   metadata: Record<string, string>;
+  statementDescriptor?: string;
   recurring?: { interval: "month"; intervalCount: number } | null;
 }) {
   const stripe = getStripe();
@@ -53,7 +54,13 @@ export async function createCheckout(input: {
             ...(input.destinationAccountId ? { transfer_data: { destination: input.destinationAccountId }, application_fee_percent: feePercent(input) } : {}),
           },
         }
-      : { payment_intent_data: { metadata: input.metadata, ...transfer } }),
+      : {
+          payment_intent_data: {
+            metadata: input.metadata,
+            ...(input.statementDescriptor ? { statement_descriptor_suffix: input.statementDescriptor.replace(/[^a-zA-Z0-9]/g, "").slice(-10) || "STUDIO" } : {}),
+            ...transfer,
+          },
+        }),
   });
   return session;
 }

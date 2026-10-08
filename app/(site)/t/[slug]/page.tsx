@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
+import { followAction } from "@/lib/actions";
 import { fromPrice, Panel } from "@/components/bits";
+import { getActor } from "@/lib/actor";
 import { EmbedSnippet, ShareButton } from "@/components/share-button";
 import { trackView } from "@/lib/offers";
 import { teacherProfile } from "@/lib/queries";
@@ -60,6 +62,7 @@ async function TeacherBody({ params, searchParams }: { params: Promise<{ slug: s
             <div className="flex gap-2">
               <ShareButton path={`/t/${profile.teacher.slug}`} title={profile.teacher.studioName || "Teacher"} eyebrow="Teacher" priceLabel={from} when={next ? `Next ${next.localDate}` : undefined} imageUrl={profile.teacher.photoUrl} promos={profile.codes.map((code) => ({ code: code.code }))} />
               <Link href={`/t/${profile.teacher.slug}/bio`} className="rounded-full bg-ink px-4 py-2 text-sm text-paper">Link in bio</Link>
+              <FollowForm teacherId={profile.teacher.id} slug={profile.teacher.slug} />
             </div>
           </div>
           <p className="mt-5 max-w-2xl text-lg">{profile.teacher.bio}</p>
@@ -117,5 +120,17 @@ async function TeacherBody({ params, searchParams }: { params: Promise<{ slug: s
       ) : null}
       {next ? <p className="mt-6 text-sm text-ink/60">Next session {formatDateTimeInZone(next.startsAt)}</p> : null}
     </div>
+  );
+}
+
+async function FollowForm({ teacherId, slug }: { teacherId: string; slug: string }) {
+  const actor = await getActor();
+  if (!actor) return null;
+  return (
+    <form action={followAction}>
+      <input type="hidden" name="teacherId" value={teacherId} />
+      <input type="hidden" name="slug" value={slug} />
+      <button className="rounded-full bg-white px-4 py-2 text-sm ring-1 ring-line">Follow</button>
+    </form>
   );
 }

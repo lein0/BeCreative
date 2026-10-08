@@ -34,6 +34,7 @@ async function Body({ searchParams }: { searchParams: Promise<{ waitlisted?: str
               <div>
                 <p className="display text-2xl">{row.klass.title}</p>
                 <p className="text-sm text-ink/60">{row.booking.status} · {row.booking.kind}{row.order ? ` · paid ${row.order.status}` : ""}</p>
+                <a href={`/c/${row.klass.slug}`} className="mt-1 inline-block text-sm text-clay">Reschedule to another date</a>
               </div>
               {row.booking.status === "confirmed" ? (
                 <form action={cancelBookingAction}>

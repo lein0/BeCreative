@@ -80,6 +80,8 @@ export async function resetPasswordAction(_prev: ActionState, formData: FormData
 
 export async function bookAction(formData: FormData): Promise<void> {
   const actor = await requireActor();
+  const slug = text(formData, "slug");
+  if (formData.get("policyAccepted") !== "1") redirect(errorRedirectPath(`/c/${slug}`, "Accept the cancellation policy to book."));
   const result = await bookSession({
     userId: actor.id,
     email: actor.email,
@@ -89,8 +91,10 @@ export async function bookAction(formData: FormData): Promise<void> {
     series: formData.get("series") === "1",
     code: text(formData, "code"),
     payWith: text(formData, "payWith") || "cash",
+    policyAccepted: true,
+    ip: clientIp(await headers()),
   });
-  redirect(bookingResultPath({ ...result, slug: text(formData, "slug") }));
+  redirect(bookingResultPath({ ...result, slug }));
 }
 
 export async function cancelBookingAction(formData: FormData) {
@@ -492,6 +496,7 @@ export async function bookVisitAction(formData: FormData) {
   const actor = await requireActor();
   const slug = text(formData, "slug");
   const addonIds = formData.getAll("addonId").map(String).filter(Boolean);
+  if (formData.get("policyAccepted") !== "1") redirect(`/s/${slug}?error=${encodeURIComponent("Accept the cancellation policy to book.")}`);
   const result = await bookVisit({
     userId: actor.id,
     email: actor.email,
@@ -501,6 +506,8 @@ export async function bookVisitAction(formData: FormData) {
     startsAt: text(formData, "startsAt"),
     code: text(formData, "code"),
     payWith: text(formData, "payWith") || "cash",
+    policyAccepted: true,
+    ip: clientIp(await headers()),
   });
   if ("error" in result && result.error) redirect(`/s/${slug}?error=${encodeURIComponent(result.error)}`);
   if ("checkoutUrl" in result && result.checkoutUrl) redirect(result.checkoutUrl);
@@ -600,4 +607,143 @@ export async function verifyCredentialAction(formData: FormData) {
   if (!canApproveTeachers(actor.roles)) redirect("/admin");
   await verifyCredential(text(formData, "credentialId"), text(formData, "verified") === "1", actor.id);
   revalidatePath("/admin/teachers");
+}
+
+export async function teacherCancelAction(formData: FormData) {
+  const actor = await requireActor();
+  const { teacherCancelSession, teacherCancelUpcoming } = await import("@/lib/cancellations");
+  const { loadTeacherAccess } = await import("@/lib/actor");
+  const back = text(formData, "back") || "/teach";
+  const classId = text(formData, "classId");
+  const [klass] = await db.select().from(classes).where(eq(classes.id, classId)).limit(1);
+  if (!klass) redirect(back);
+  const access = await loadTeacherAccess(klass.teacherId);
+  if (!access) redirect(back);
+  const reason = text(formData, "reason");
+  const wantCredit = formData.get("wantCredit") === "1";
+  if (formData.get("mass") === "1") {
+    await teacherCancelUpcoming({ classId: text(formData, "classId"), actorUserId: actor.id, reason, wantCredit });
+    redirect(`${back}?cancelled=series`);
+  }
+  const result = await teacherCancelSession({ sessionId: text(formData, "sessionId"), actorUserId: actor.id, reason, wantCredit });
+  if ("error" in result && result.error) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
+  redirect(`${back}?cancelled=1`);
+}
+
+export async function teacherCancelVisitAction(formData: FormData) {
+  const actor = await requireActor();
+  const { teacherCancelVisit } = await import("@/lib/cancellations");
+  const { visitBookings, services } = await import("@/lib/db/schema");
+  const { loadTeacherAccess } = await import("@/lib/actor");
+  const back = text(formData, "back") || "/teach";
+  const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.id, text(formData, "visitId"))).limit(1);
+  const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
+  if (!service) redirect(back);
+  const access = await loadTeacherAccess(service.teacherId);
+  if (!access) redirect(back);
+  const result = await teacherCancelVisit({ visitId: text(formData, "visitId"), actorUserId: actor.id, reason: text(formData, "reason"), wantCredit: formData.get("wantCredit") === "1" });
+  if ("error" in result && result.error) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
+  redirect(back);
+}
+
+export async function connectAction() {
+  const actor = await requireActor();
+  const teacher = await teacherByUser(actor.id);
+  if (!teacher) redirect("/teach/onboarding");
+  const { startConnectOnboarding } = await import("@/lib/stripe-connect");
+  const result = await startConnectOnboarding({ teacherId: teacher.id, email: actor.email, studioName: teacher.studioName || actor.name });
+  if (result.url) redirect(result.url);
+  redirect(`/teach/billing?error=${encodeURIComponent(result.error || "Connect is unavailable.")}`);
+}
+
+export async function policySettingsAction(formData: FormData) {
+  const actor = await requireActor();
+  if (!canManageRoles(actor.roles)) return;
+  const dollars = (key: string) => Math.round(Number(text(formData, key) || 0) * 100);
+  await db.update(platformSettings).set({
+    studentFullRefundHours: Number(text(formData, "fullRefundHours") || 24),
+    studentCreditOnlyHours: Number(text(formData, "creditOnlyHours") || 2),
+    lateCancelFeeCents: dollars("lateCancelFee"),
+    noShowFeeCents: dollars("noShowFee"),
+    creditRequiresOptIn: formData.get("creditRequiresOptIn") === "1",
+    waitlistClaimHours: Number(text(formData, "waitlistClaimHours") || 4),
+    quietHoursStart: text(formData, "quietHoursStart") || "21:00",
+    quietHoursEnd: text(formData, "quietHoursEnd") || "08:00",
+    disputeAutoSubmit: formData.get("disputeAutoSubmit") === "1",
+    disputeSubmitLeadHours: Number(text(formData, "disputeSubmitLeadHours") || 48),
+    disputeFeeBearer: text(formData, "disputeFeeBearer") || "platform",
+    disputedAmountBearer: text(formData, "disputedAmountBearer") || "teacher",
+    earlyFraudRefundMaxCents: dollars("earlyFraudRefundMax"),
+    statementDescriptorPrefix: text(formData, "statementDescriptorPrefix") || "BECREATIVE",
+    ticketTeacherSlaHours: Number(text(formData, "ticketTeacherSlaHours") || 24),
+    webPushEnabled: formData.get("webPushEnabled") === "1",
+    mailingAddress: text(formData, "mailingAddress") || "BeCreative, Los Angeles, CA",
+    policyVersion: Number(text(formData, "policyVersion") || 1),
+    updatedAt: new Date(),
+    updatedBy: actor.id,
+  }).where(eq(platformSettings.id, 1));
+  revalidatePath("/admin/settings");
+}
+
+export async function adminRefundAction(formData: FormData) {
+  const actor = await requireActor();
+  if (!canManageRoles(actor.roles)) redirect("/admin");
+  const { issueRefund } = await import("@/lib/refunds");
+  const dollars = Math.round(Number(text(formData, "amount") || 0) * 100);
+  const result = await issueRefund({
+    orderId: text(formData, "orderId"),
+    amountCents: formData.get("full") === "1" ? undefined : dollars,
+    reasonCode: text(formData, "reason") || "admin_goodwill",
+    actorUserId: actor.id,
+    scope: `admin:${crypto.randomUUID()}`,
+  });
+  if ("error" in result && result.error) redirect(`/admin/refunds?error=${encodeURIComponent(result.error)}`);
+  revalidatePath("/admin/refunds");
+  redirect("/admin/refunds?ok=1");
+}
+
+export async function notificationPrefAction(formData: FormData) {
+  const actor = await requireActor();
+  const { notificationPreferences, user } = await import("@/lib/db/schema");
+  const { and } = await import("drizzle-orm");
+  const event = text(formData, "event");
+  const row = {
+    email: formData.get("email") === "1",
+    inApp: formData.get("inApp") === "1",
+    sms: formData.get("sms") === "1",
+    push: formData.get("push") === "1",
+    cadence: text(formData, "cadence") === "daily" ? "daily" : "instant",
+  };
+  const [existing] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, actor.id), eq(notificationPreferences.event, event))).limit(1);
+  if (existing) await db.update(notificationPreferences).set(row).where(eq(notificationPreferences.id, existing.id));
+  else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
+  await db.update(user).set({ creditOptIn: formData.get("creditOptIn") === "1" }).where(eq(user.id, actor.id));
+  revalidatePath("/settings/notifications");
+}
+
+export async function markNotificationsAction(formData: FormData) {
+  const actor = await requireActor();
+  const { markNotificationsRead } = await import("@/lib/notifications");
+  await markNotificationsRead(actor.id, text(formData, "id") || undefined);
+  revalidatePath("/notifications");
+}
+
+export async function followAction(formData: FormData) {
+  const actor = await requireActor();
+  const { follows, teachers } = await import("@/lib/db/schema");
+  const teacherId = text(formData, "teacherId");
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, teacherId)).limit(1);
+  if (!teacher) return;
+  const inserted = await db.insert(follows).values({ id: crypto.randomUUID(), userId: actor.id, teacherId }).onConflictDoNothing().returning();
+  if (!inserted.length) redirect(`/t/${text(formData, "slug")}?followed=1`);
+  const { emitNotification } = await import("@/lib/notifications");
+  await emitNotification({
+    userId: teacher.userId,
+    event: "signup.followed",
+    audience: "teacher",
+    title: `${actor.name} followed your studio`,
+    body: "A student asked to hear about new classes.",
+    href: `/t/${teacher.slug}`,
+  });
+  redirect(`/t/${text(formData, "slug")}?followed=1`);
 }

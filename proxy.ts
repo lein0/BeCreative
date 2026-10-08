@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm"];
+const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
 
 export function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;

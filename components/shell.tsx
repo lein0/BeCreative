@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Bell } from "lucide-react";
 import { Suspense } from "react";
 import { FeedbackLaunchButton } from "@/components/feedback-widget";
 import { FeedbackSlot } from "@/components/feedback-slot";
@@ -6,6 +7,7 @@ import { getActor } from "@/lib/actor";
 import { BECREATIVE, type Brand } from "@/lib/brand";
 import { authorUnreadCount } from "@/lib/feedback-service";
 import { feedbackRole } from "@/lib/feedback-rules";
+import { unreadCount } from "@/lib/notifications";
 import { canManageLeads, canViewPlatformStats } from "@/lib/permissions";
 
 export function SiteFrame({ children, brand = BECREATIVE }: { children: React.ReactNode; brand?: Brand }) {
@@ -32,6 +34,7 @@ async function SiteHeader({ brand }: { brand: Brand }) {
   const manage = actor?.roles.includes("account_manager") || admin;
   const feedback = actor ? feedbackRole(actor.roles) : null;
   const feedbackUnread = actor && feedback ? await authorUnreadCount(actor.id) : 0;
+  const alerts = actor ? await unreadCount(actor.id) : 0;
   return (
     <header className="sticky top-0 z-30 border-b border-line/80 bg-paper/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5">
@@ -46,6 +49,12 @@ async function SiteHeader({ brand }: { brand: Brand }) {
           {crm ? <Nav href="/crm">Leads</Nav> : null}
           {admin ? <Nav href="/admin">Admin</Nav> : null}
           {actor ? <Nav href="/bookings">Bookings</Nav> : null}
+          {actor ? (
+            <Link href="/notifications" aria-label={alerts ? `${alerts} unread notifications` : "Notifications"} className="relative rounded-full px-3 py-1.5 text-ink/80 hover:bg-sand hover:text-ink">
+              <Bell className="h-4 w-4" aria-hidden />
+              {alerts ? <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-clay px-1 text-center text-[10px] leading-4 text-white">{alerts}</span> : null}
+            </Link>
+          ) : null}
           {feedback ? <FeedbackLaunchButton unread={feedbackUnread} /> : null}
           {actor ? (
             <span className="ml-2 hidden text-ink/70 sm:inline">{actor.name.split(" ")[0]}</span>

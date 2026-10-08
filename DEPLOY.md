@@ -64,6 +64,12 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `STRIPE_WEBHOOK_SECRET` | no | Signing secret for `POST /api/webhooks/stripe` |
 | `TRUSTED_PROXY_CIDRS` | no | Extra proxy CIDRs for auth rate limits. Private ranges are already trusted, so App Runner's `X-Forwarded-For` chain resolves to the client |
 | `RUN_MIGRATIONS` | no | `1` (default) migrates on container start. `0` skips that and you run the one-off command |
+| `CRON_SECRET` | yes in production | Bearer token for `GET` or `POST /api/cron/tick`. Unset, the route returns 401 |
+| `TWILIO_ACCOUNT_SID` | no | SMS stays off until this, the auth token, and the from-number are all set |
+| `TWILIO_AUTH_TOKEN` | no | Pair to the Twilio account |
+| `TWILIO_FROM_NUMBER` | no | Sender number, E.164 |
+| `VAPID_PUBLIC_KEY` | no | Web push stays off until both VAPID keys are set and the admin flag is on |
+| `VAPID_PRIVATE_KEY` | no | Pair to the public key |
 
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are optional. When they are unset, S3 presigned uploads and SES use the instance role. The browser receives a presigned PUT URL, never the role credentials.
 
@@ -77,6 +83,16 @@ Instance role:
 Bucket CORS must allow `PUT` from `APP_URL`.
 
 RDS security group allows 5432 from the App Runner VPC connector.
+
+## Scheduled work
+
+App Runner does not run cron itself. Amazon EventBridge Scheduler calls the app on a one-minute rate:
+
+- Target: `https://<your-domain>/api/cron/tick`
+- Method: `POST`
+- Header: `Authorization: Bearer <CRON_SECRET>`
+
+That tick claims queued jobs with `FOR UPDATE SKIP LOCKED`, sends due notifications, and queues class reminders 24 hours and 2 hours before start. A replay of the same reminder does not send a second message.
 
 ## What the health check covers
 

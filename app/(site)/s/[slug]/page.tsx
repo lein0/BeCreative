@@ -5,6 +5,7 @@ import { signWaiverAction } from "@/lib/actions";
 import { Panel } from "@/components/bits";
 import { SlotPicker } from "@/components/slot-picker";
 import { getActor } from "@/lib/actor";
+import { checkoutPolicyText } from "@/lib/policy-copy";
 import { canSpendMembership, canSpendPack, offerCoversClass } from "@/lib/pricing";
 import { walletForClass } from "@/lib/queries";
 import { needsWaiver } from "@/lib/slots";
@@ -37,6 +38,7 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
   const detail = await serviceDetail(slug);
   if (!detail) notFound();
   const actor = await getActor();
+  const policy = await checkoutPolicyText();
   const signed = actor ? await signedWaiverVersion(detail.teacher.id, actor.id) : null;
   const waiverDue = needsWaiver({
     required: detail.service.waiverRequired,
@@ -125,6 +127,7 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
                 slots={open.kind === "access" ? open.slots.map(serialize) : []}
                 addons={detail.addons.map((addon) => ({ id: addon.id, name: addon.name, priceCents: addon.priceCents, minutes: addon.minutes }))}
                 payWith={payWith}
+                policy={policy}
               />
             </Panel>
           )}

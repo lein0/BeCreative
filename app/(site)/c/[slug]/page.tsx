@@ -6,6 +6,7 @@ import { formatLabel, fromPrice, levelLabel, Money, Panel } from "@/components/b
 import { ShareButton } from "@/components/share-button";
 import { getActor } from "@/lib/actor";
 import { quoteCode, trackView } from "@/lib/offers";
+import { checkoutPolicyText } from "@/lib/policy-copy";
 import { classDetail, walletForClass } from "@/lib/queries";
 import { formatDateTimeInZone } from "@/lib/time";
 import { money, one } from "@/lib/utils";
@@ -45,6 +46,7 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
   const list = detail.class.pricePerSessionCents ?? 0;
   const quote = await quoteCode({ code, listPriceCents: list, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city, userId: actor?.id ?? null });
   const wallet = actor ? await walletForClass(actor.id, detail.teacher.id) : null;
+  const policy = await checkoutPolicyText();
   const focus = one(sp.session);
   const sessions = detail.upcoming.filter((session) => session.status === "scheduled" && (!focus || session.localDate === focus || session.id === focus));
   const next = sessions[0];
@@ -144,6 +146,10 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
                 <input type="checkbox" name="series" value="1" /> Book the whole series ({money(detail.class.pricePerSeriesCents ?? list)})
               </label>
             ) : null}
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" name="policyAccepted" value="1" required className="mt-1" />
+              <span>{policy}</span>
+            </label>
             <button className="w-full rounded-full bg-clay py-3 text-sm font-medium text-white" disabled={!actor || !sessions.length}>
               {!actor ? "Sign in to book" : sessions.length ? "Book this session" : "No upcoming sessions"}
             </button>

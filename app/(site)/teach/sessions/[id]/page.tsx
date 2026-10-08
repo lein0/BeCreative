@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { rosterAction } from "@/lib/actions";
+import { rosterAction, teacherCancelAction } from "@/lib/actions";
 import { Panel, control } from "@/components/bits";
 import { loadTeacherAccess } from "@/lib/actor";
 import { roster } from "@/lib/queries";
@@ -70,6 +70,17 @@ async function Body({ params, searchParams }: { params: Promise<{ id: string }>;
         <textarea name="body" placeholder="Note to booked students" className={`${control} min-h-24`} required />
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="includePast" /> Include past attendees of this class</label>
         <button className="rounded-full bg-moss px-4 py-2 text-sm text-paper">Email roster</button>
+      </form>
+      <form action={teacherCancelAction} className="mt-8 space-y-3 rounded-3xl bg-white p-4 ring-1 ring-line" data-testid="teacher-cancel">
+        <h2 className="display text-3xl">Cancel this date</h2>
+        <p className="text-sm text-ink/70">Everyone booked gets a full refund to their original payment method. Studio credit is used only when that student has opted in.</p>
+        <input type="hidden" name="sessionId" value={id} />
+        <input type="hidden" name="classId" value={data.klass.id} />
+        <input type="hidden" name="back" value={`/teach/sessions/${id}`} />
+        <label className="block text-sm">Reason (optional)<input name="reason" className={`${control} mt-1`} placeholder="Weather, illness, studio emergency" /></label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="wantCredit" value="1" /> Offer studio credit instead, only if the student opted in</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="mass" value="1" /> Cancel every upcoming date in this series</label>
+        <button className="rounded-full bg-clay px-4 py-2 text-sm text-white">Cancel and refund</button>
       </form>
     </div>
   );

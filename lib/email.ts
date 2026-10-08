@@ -7,6 +7,7 @@ export type EmailMessage = {
   text: string;
   html?: string;
   teacherId?: string | null;
+  headers?: Record<string, string>;
 };
 
 export function individualDeliveries(recipients: string[]) {
@@ -31,7 +32,8 @@ class ConsoleEmailProvider implements EmailProvider {
   readonly name = "console";
   async send(message: EmailMessage) {
     const id = `console_${crypto.randomUUID()}`;
-    console.log(`\n[email:${id}] to=${message.to.join(", ")}\nsubject: ${message.subject}\n${message.text}\n`);
+    const extra = message.headers ? `\nheaders: ${JSON.stringify(message.headers)}` : "";
+    console.log(`\n[email:${id}] to=${message.to.join(", ")}\nsubject: ${message.subject}${extra}\n${message.text}\n`);
     return { providerMessageId: id };
   }
 }
@@ -42,22 +44,21 @@ class SesEmailProvider implements EmailProvider {
     const region = process.env.AWS_REGION;
     const from = process.env.SES_FROM_EMAIL;
     if (!region || !from) throw new Error("SES is not configured. Set AWS_REGION and SES_FROM_EMAIL.");
-    const { SESClient, SendEmailCommand } = await import("@aws-sdk/client-ses");
+    const { SESClient, SendRawEmailCommand } = await import("@aws-sdk/client-ses");
     // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
-    const result = await client.send(
-      new SendEmailCommand({
-        Source: from,
-        Destination: { ToAddresses: message.to },
-        Message: {
-          Subject: { Data: message.subject },
-          Body: {
-            Text: { Data: message.text },
-            ...(message.html ? { Html: { Data: message.html } } : {}),
-          },
-        },
-      }),
-    );
+    const headerLines = Object.entries(message.headers ?? {}).map(([key, value]) => `${key}: ${value}`);
+    const raw = [
+      `From: ${from}`,
+      `To: ${message.to.join(", ")}`,
+      `Subject: ${message.subject}`,
+      ...headerLines,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      message.text,
+    ].join("\r\n");
+    const result = await client.send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(raw) } }));
     return { providerMessageId: result.MessageId ?? null };
   }
 }

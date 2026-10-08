@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
 import {
@@ -35,14 +35,13 @@ import {
 } from "@/lib/pricing";
 import { collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
 import { studioCanSell } from "@/lib/review-rules";
-import { releaseExpiredCheckoutHolds, releaseVisitSeat } from "@/lib/booking-service";
-import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import { releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { createCheckout, stripeConfigured } from "@/lib/stripe";
 import {
   appointmentConflicts,
   canTakeSeat,
   generateOpenSlots,
   needsWaiver,
-  withinCancellationWindow,
   type BusyRange,
 } from "@/lib/slots";
 import { uniqueSlug } from "@/lib/utils";
@@ -185,6 +184,8 @@ export async function bookVisit(input: {
   startsAt: string;
   code?: string;
   payWith?: string;
+  policyAccepted?: boolean;
+  ip?: string | null;
 }) {
   const detail = await db.select().from(services).where(eq(services.id, input.serviceId)).limit(1);
   const service = detail[0];
@@ -374,7 +375,29 @@ export async function bookVisit(input: {
       return { orderId, visitId, quote, status, title: service.title };
     });
 
+    if (input.policyAccepted) {
+      const [settings] = await db.select().from(platformSettings).limit(1);
+      const { policySummary, SHIP_DEFAULTS } = await import("@/lib/ship-defaults");
+      const { policyAcceptances } = await import("@/lib/db/schema");
+      await db.insert(policyAcceptances).values({
+        id: crypto.randomUUID(),
+        userId: input.userId,
+        orderId: created.orderId,
+        policyVersion: settings?.policyVersion ?? SHIP_DEFAULTS.policyVersion,
+        policyText: policySummary({
+          fullRefundHours: settings?.studentFullRefundHours ?? SHIP_DEFAULTS.studentFullRefundHours,
+          creditOnlyHours: settings?.studentCreditOnlyHours ?? SHIP_DEFAULTS.studentCreditOnlyHours,
+          lateCancelFeeCents: settings?.lateCancelFeeCents ?? 0,
+          noShowFeeCents: settings?.noShowFeeCents ?? 0,
+        }),
+        ip: input.ip,
+      });
+    }
     if (created.status === "pending") {
+      const { cardPaymentsReady, statementDescriptor } = await import("@/lib/connect-rules");
+      const { SHIP_DEFAULTS } = await import("@/lib/ship-defaults");
+      const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
+      if (!ready.ok) return { error: ready.reason };
       const session = await createCheckout({
         name: created.title,
         amountCents: created.quote.studentPaysCents,
@@ -383,7 +406,8 @@ export async function bookVisit(input: {
         customerEmail: input.email,
         successPath: "/bookings?reserved=1",
         cancelPath: `/s/${service.slug}?cancelled=1`,
-        metadata: { type: "order", orderId: created.orderId },
+        metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       });
       if (session?.url) {
         await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
@@ -510,24 +534,6 @@ export async function visitRoster(serviceId: string) {
 }
 
 export async function cancelVisit(userId: string, visitId: string) {
-  const now = new Date();
-  const [visit] = await db.select().from(visitBookings).where(and(eq(visitBookings.id, visitId), eq(visitBookings.userId, userId))).limit(1);
-  if (!visit || visit.status !== "confirmed") return { error: "Booking not found." };
-  const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
-  if (!service || !withinCancellationWindow(visit.startsAt, now, service.cancellationHours)) return { error: "The cancellation window has closed." };
-  await releaseVisitSeat(visit, now);
-  if (!visit.orderId) return { ok: true };
-  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));
-  const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
-  if (!order || order.status === "refunded") return { ok: true };
-  if (order.status === "paid" && order.studentPaysCents > 0 && order.stripePaymentIntentId) {
-    const stripe = getStripe();
-    if (stripe) {
-      await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
-      await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      return { ok: true };
-    }
-  }
-  await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
-  return { ok: true };
+  const { studentCancelVisit } = await import("@/lib/cancellations");
+  return studentCancelVisit(userId, visitId);
 }

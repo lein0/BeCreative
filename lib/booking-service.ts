@@ -15,8 +15,10 @@ import {
   packs,
   platformSettings,
   promoCodes,
+  policyAcceptances,
   promoRedemptions,
   sessions,
+  teacherPolicies,
   teachers,
   user,
   visitBookings,
@@ -49,7 +51,13 @@ import {
 } from "@/lib/checkout-rules";
 import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
+import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
+import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
+import { emitNotification } from "@/lib/notifications";
+import { grantStudioCredit, issueRefund } from "@/lib/refunds";
+import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import { notifyOfferPurchased, notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 
 export type ActionState = { error?: string; ok?: string } | null;
 
@@ -159,6 +167,8 @@ export async function bookSession(input: {
   classId?: string;
   code?: string;
   payWith?: string;
+  policyAccepted?: boolean;
+  ip?: string | null;
 }): Promise<{ error?: string; checkoutUrl?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
   const attr = await attribution();
   const codeInput = normalizeCodes([input.code ?? "", attr.code]);
@@ -236,7 +246,7 @@ export async function bookSession(input: {
         if (!decision.ok) throw new Error(decision.reason === "full" ? "This session is full." : "That session can't be booked.");
         if (decision.status === "waitlisted") {
           await tx.insert(waitlistEntries).values({ id: crypto.randomUUID(), sessionId: session.id, userId: input.userId, status: "waiting" });
-          return { waitlisted: true as const };
+          return { waitlisted: true as const, teacherUserId: teacher.userId, title: klass.title, classSlug: klass.slug };
         }
       }
 
@@ -397,9 +407,34 @@ export async function bookSession(input: {
       return { waitlisted: false as const, alreadyBooked: false as const, orderId, bookingId, quote, status, klass, teacher, sessionCount: targetSessions.length };
     });
 
-    if (created.waitlisted) return { waitlisted: true };
+    if ("waitlisted" in created && created.waitlisted) {
+      if ("teacherUserId" in created && created.teacherUserId) {
+        await emitNotification({ userId: created.teacherUserId, event: "waitlist.joined", audience: "teacher", title: `Waitlist: ${created.title}`, body: `${input.name} joined the waitlist.`, href: `/c/${created.classSlug}` });
+        await emitNotification({ userId: input.userId, event: "waitlist.joined", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
+      }
+      return { waitlisted: true };
+    }
     if ("alreadyBooked" in created && created.alreadyBooked) return { orderId: created.orderId, alreadyBooked: true };
     if (!("orderId" in created) || !created.orderId || !("quote" in created)) return {};
+    if (input.policyAccepted) {
+      const [settings] = await db.select().from(platformSettings).limit(1);
+      const text = policySummary({
+        fullRefundHours: settings?.studentFullRefundHours ?? SHIP_DEFAULTS.studentFullRefundHours,
+        creditOnlyHours: settings?.studentCreditOnlyHours ?? SHIP_DEFAULTS.studentCreditOnlyHours,
+        lateCancelFeeCents: settings?.lateCancelFeeCents ?? 0,
+        noShowFeeCents: settings?.noShowFeeCents ?? 0,
+      });
+      await db.insert(policyAcceptances).values({
+        id: crypto.randomUUID(),
+        userId: input.userId,
+        orderId: created.orderId,
+        policyVersion: settings?.policyVersion ?? SHIP_DEFAULTS.policyVersion,
+        policyText: text,
+        ip: input.ip,
+      });
+    }
+    const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(created.teacher.stripeChargesEnabled) });
+    if (created.status === "pending" && !ready.ok) return { error: ready.reason };
     if (created.status === "pending") {
       const session = await createCheckout({
         name: created.klass.title,
@@ -409,7 +444,8 @@ export async function bookSession(input: {
         customerEmail: input.email,
         successPath: `/bookings?paid=1`,
         cancelPath: `/c/${created.klass.slug}?cancelled=1`,
-        metadata: { type: "order", orderId: created.orderId },
+        metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+        statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       });
       if (session?.id) {
         await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
@@ -424,6 +460,8 @@ export async function bookSession(input: {
       text: `Your spot is reserved${created.status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
       teacherId: created.teacher.id,
     });
+    await notifyTeacherOfBooking({ teacherUserId: created.teacher.userId, studentName: input.name, title: created.klass.title, href: `/teach` });
+    await notifyStudentConfirmed({ userId: input.userId, title: created.klass.title, href: `/c/${created.klass.slug}` });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
@@ -486,21 +524,52 @@ export async function cancelBooking(userId: string, bookingId: string) {
   if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
-  const upcoming = rows.filter((session) => session.startsAt > now);
+  const upcoming = rows.filter((session) => session.startsAt > now).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
   if (!upcoming.length) return { error: "This class has already started." };
+  const [klass] = await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1);
+  const [platform] = await db.select().from(platformSettings).limit(1);
+  const [override] = klass ? await db.select().from(teacherPolicies).where(eq(teacherPolicies.teacherId, klass.teacherId)).limit(1) : [];
+  const policy = resolvedPolicy(
+    {
+      fullRefundHours: platform?.studentFullRefundHours ?? SHIP_DEFAULTS.studentFullRefundHours,
+      creditOnlyHours: platform?.studentCreditOnlyHours ?? SHIP_DEFAULTS.studentCreditOnlyHours,
+      lateCancelFeeCents: platform?.lateCancelFeeCents ?? SHIP_DEFAULTS.lateCancelFeeCents,
+      noShowFeeCents: platform?.noShowFeeCents ?? SHIP_DEFAULTS.noShowFeeCents,
+    },
+    override ?? null,
+  );
+  const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
+  const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
   await releaseBookingSeat(booking, now);
-  if (booking.orderId) {
+  if (booking.orderId && outcome === "full_refund") {
+    await issueRefund({ orderId: booking.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: booking.id });
+  } else if (booking.orderId && outcome === "credit" && klass) {
     const [order] = await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1);
-    if (order?.promoCodeId) await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    if (order && order.status === "paid" && order.studentPaysCents > 0) {
-      const stripe = (await import("@/lib/stripe")).getStripe();
-      if (stripe && order.stripePaymentIntentId) {
-        await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
-        await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      } else await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
-    } else if (order) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
+    if (order) await grantStudioCredit(userId, klass.teacherId, Math.max(0, order.studentPaysCents - order.refundedCents));
   }
-  return { ok: true };
+  if (klass) {
+    const refunded = outcome === "full_refund";
+    await emitNotification({
+      userId,
+      event: refunded ? "booking.refunded" : "booking.cancelled",
+      audience: "student",
+      title: `Cancelled ${klass.title}`,
+      body: refunded ? "A full refund is on the way to your original payment method." : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
+      href: `/c/${klass.slug}`,
+    });
+    const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
+    if (teacher) {
+      await emitNotification({
+        userId: teacher.userId,
+        event: "booking.cancelled",
+        audience: "teacher",
+        title: `Cancellation: ${klass.title}`,
+        body: "A student cancelled.",
+        href: "/teach",
+      });
+    }
+  }
+  return { ok: true, outcome, feeCents: fee };
 }
 
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
@@ -523,7 +592,11 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
   }
-  if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
+    if ((order.kind === "pack" || order.kind === "membership") && order.teacherId) {
+      const [teacher] = await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1);
+      if (teacher) await notifyOfferPurchased({ teacherUserId: teacher.userId, title: order.kind, href: "/teach/billing" });
+    }
+    if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
     const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
     const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
     const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
@@ -625,6 +698,8 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     }
     if (promoError) return { error: promoError };
     const quote = quotePrice({ listPriceCents: pack.priceCents, feePercent: fee.feePercent, feeFixedCents: fee.feeFixedCents, promo: promo ? toRule(promo) : null });
+    const packReady = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
+    if (quote.studentPaysCents > 0 && !packReady.ok) return { error: packReady.reason };
     const orderId = crypto.randomUUID();
     const purchaseId = crypto.randomUUID();
     const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
@@ -671,7 +746,8 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
         customerEmail: input.email,
         successPath: "/bookings?pack=1",
         cancelPath: `/t/${teacher.slug}`,
-        metadata: { type: "order", orderId },
+        metadata: { type: "order", orderId, userId: input.userId },
+        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       });
       if (session?.url) {
         await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
@@ -681,6 +757,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
       await db.update(packPurchases).set({ creditsRemaining: packCreditsOnPayment(pack.creditCount) }).where(eq(packPurchases.id, purchaseId));
     }
+    if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: pack.name, href: "/teach/billing" });
     return { ok: true };
   }
   const [plan] = await db.select().from(memberships).where(eq(memberships.id, input.id)).limit(1);
@@ -709,6 +786,8 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   }
   if (promoError) return { error: promoError };
   const quote = quotePrice({ listPriceCents: plan.priceCents, feePercent: fee.feePercent, feeFixedCents: fee.feeFixedCents, promo: promo ? toRule(promo) : null });
+  const planReady = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
+  if (quote.studentPaysCents > 0 && !planReady.ok) return { error: planReady.reason };
   const orderId = crypto.randomUUID();
   const subId = crypto.randomUUID();
   const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
@@ -759,7 +838,8 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       customerEmail: input.email,
       successPath: "/bookings?membership=1",
       cancelPath: `/t/${teacher.slug}`,
-      metadata: { type: "order", orderId },
+      metadata: { type: "order", orderId, userId: input.userId },
+      statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
       recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
     });
     if (session?.url) {
@@ -770,5 +850,6 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, subId));
   }
+  if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
   return { ok: true };
 }
