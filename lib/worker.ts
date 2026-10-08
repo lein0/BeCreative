@@ -14,6 +14,10 @@ export async function workJobs(limit = 20) {
         const audience = payload.audience === "teacher" || payload.audience === "student" ? payload.audience : undefined;
         await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience);
       }
+      if (job.kind === "dispute.submit") {
+        const { submitDispute } = await import("@/lib/disputes");
+        await submitDispute(String(payload.disputeId ?? ""));
+      }
       if (job.kind === "reminder.send") {
         await emitNotification({
           userId: String(payload.userId),

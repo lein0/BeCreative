@@ -1,5 +1,7 @@
 import { eq } from "drizzle-orm";
 import { fulfillPaidCheckout, refundOrderByPaymentIntent } from "@/lib/booking-service";
+import { handleEarlyFraud, recordDispute } from "@/lib/disputes";
+import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
 import { stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
@@ -23,6 +25,31 @@ export async function POST(request: Request) {
   if (event.type === "charge.refunded") {
     const intent = typeof event.data.object.payment_intent === "string" ? event.data.object.payment_intent : event.data.object.payment_intent?.id;
     if (intent) await refundOrderByPaymentIntent(intent);
+  }
+  if (event.type === "charge.dispute.created" || event.type === "charge.dispute.updated" || event.type === "charge.dispute.closed" || event.type === "charge.dispute.funds_withdrawn" || event.type === "charge.dispute.funds_reinstated") {
+    const dispute = event.data.object;
+    const paymentIntent = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id;
+    await recordDispute({
+      id: dispute.id,
+      paymentIntentId: paymentIntent,
+      amountCents: dispute.amount,
+      reason: dispute.reason,
+      status: dispute.status,
+      dueBy: dispute.evidence_details?.due_by ? new Date(dispute.evidence_details.due_by * 1000) : null,
+    });
+    logEvent("info", "dispute webhook", { type: event.type, disputeId: dispute.id });
+  }
+  if (event.type === "radar.early_fraud_warning.created") {
+    const warning = event.data.object;
+    const chargeId = typeof warning.charge === "string" ? warning.charge : warning.charge?.id;
+    let paymentIntent = typeof warning.payment_intent === "string" ? warning.payment_intent : undefined;
+    let amountCents = 0;
+    if (chargeId) {
+      const charge = await stripe.charges.retrieve(chargeId);
+      amountCents = charge.amount;
+      paymentIntent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id ?? paymentIntent;
+    }
+    await handleEarlyFraud({ chargeId: chargeId ?? warning.id, paymentIntentId: paymentIntent, amountCents });
   }
   if (event.type === "account.updated") {
     const account = event.data.object;

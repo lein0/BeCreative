@@ -54,3 +54,8 @@ button, input, select, textarea {
 ::selection {
   background: #f3c7b0;
 }
+
+:focus-visible {
+  outline: 2px solid #1c1917;
+  outline-offset: 2px;
+}

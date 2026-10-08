@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Bell } from "lucide-react";
 import { Suspense } from "react";
+import { CookieNotice } from "@/components/cookie-notice";
 import { FeedbackLaunchButton } from "@/components/feedback-widget";
 import { FeedbackSlot } from "@/components/feedback-slot";
 import { getActor } from "@/lib/actor";
@@ -19,8 +20,15 @@ export function SiteFrame({ children, brand = BECREATIVE }: { children: React.Re
       <main>{children}</main>
       <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-8 text-sm text-ink/60">
         <p>{brand.name} · independent teachers, direct bookings.</p>
-        <p>Los Angeles</p>
+        <nav className="flex flex-wrap gap-3">
+          <a href="/help">Help</a>
+          <a href="/legal/terms">Terms</a>
+          <a href="/legal/privacy">Privacy</a>
+          <a href="/legal/refunds">Refunds</a>
+          <a href="/settings/privacy">Your data</a>
+        </nav>
       </footer>
+      <CookieNotice />
       <FeedbackSlot />
     </>
   );

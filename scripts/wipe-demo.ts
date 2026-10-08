@@ -1,8 +1,14 @@
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   account,
   bookings,
+  cannedReplies,
+  disputeNotes,
+  disputes,
+  faqArticles,
+  ticketMessages,
+  tickets,
   classMedia,
   classes,
   creditLedger,
@@ -52,6 +58,12 @@ export async function wipeDemo() {
     await db.delete(feedbackEvents).where(inArray(feedbackEvents.feedbackId, feedbackIds));
     await db.delete(feedback).where(inArray(feedback.id, feedbackIds));
   }
+  await db.delete(ticketMessages).where(sql`${ticketMessages.id} like 'ticket-demo-%'`);
+  await db.delete(tickets).where(sql`${tickets.isDemo} = true`);
+  await db.delete(disputeNotes).where(sql`${disputeNotes.disputeId} = 'dp_demo_scene'`);
+  await db.delete(disputes).where(sql`${disputes.isDemo} = true`);
+  await db.delete(faqArticles).where(sql`${faqArticles.id} like 'faq-%'`);
+  await db.delete(cannedReplies).where(eq(cannedReplies.id, "canned-refund-window"));
   await db.delete(waitlistEntries).where(sql`${waitlistEntries.isDemo} = true`);
   await db.delete(visitBookings).where(sql`${visitBookings.isDemo} = true`);
   if (bookingIds.length) await db.delete(bookings).where(inArray(bookings.id, bookingIds));
