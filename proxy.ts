@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { promoCookieFromLink } from "@/lib/pricing";
 
 const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
 
@@ -24,8 +25,8 @@ export function proxy(request: NextRequest) {
       { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure },
     );
   }
-  const code = searchParams.get("code");
-  if (code) response.cookies.set("bc_code", code.toUpperCase(), { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
+  const code = promoCookieFromLink(searchParams.get("code"));
+  if (code) response.cookies.set("bc_code", code, { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
   return response;
 }
 

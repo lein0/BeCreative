@@ -136,6 +136,18 @@ export function normalizeCodes(codes: string[]): { code: string | null; error: s
   return { code: unique[0] ?? null, error: null };
 }
 
+export function checkoutPromoCode(formCode: string | null | undefined, cookieCode: string | null | undefined) {
+  const submitted = formCode?.trim() ?? "";
+  if (submitted) return normalizeCodes([submitted]);
+  return normalizeCodes([cookieCode ?? ""]);
+}
+
+export function promoCookieFromLink(queryCode: string | null | undefined) {
+  const next = queryCode?.trim() ?? "";
+  if (!next) return null;
+  return next.toUpperCase();
+}
+
 export function validatePromo(input: {
   promo: PromoRule;
   now: Date;
