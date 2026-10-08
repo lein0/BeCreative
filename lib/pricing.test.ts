@@ -3,7 +3,9 @@ import {
   canSpendMembership,
   canSpendPack,
   firstClassFreeEligible,
+  checkoutPromoCode,
   normalizeCodes,
+  promoCookieFromLink,
   quotePrice,
   shouldRestoreEntitlement,
   validatePromo,
@@ -93,6 +95,12 @@ describe("promo limits and first class free", () => {
     expect(validatePromo({ promo: promo({ classIds: ["other"] }), now, listPriceCents: 4000, totalRedemptions: 0, customerRedemptions: 0, isFirstTimeStudent: true, product }).ok).toBe(false);
     expect(normalizeCodes(["maya15", " SAVE10 "])).toEqual({ code: null, error: "Only one promo code can be used per order." });
     expect(normalizeCodes([" becreative15 "]).code).toBe("BECREATIVE15");
+    expect(checkoutPromoCode("form20", "cookie10")).toEqual({ code: "FORM20", error: null });
+    expect(checkoutPromoCode("  ", "cookie10")).toEqual({ code: "COOKIE10", error: null });
+    expect(checkoutPromoCode("", "")).toEqual({ code: null, error: null });
+    expect(promoCookieFromLink("save10")).toBe("SAVE10");
+    expect(promoCookieFromLink("newcode")).toBe("NEWCODE");
+    expect(promoCookieFromLink("  ")).toBeNull();
   });
 
   it("allows one intro class per student per teacher and restores credits before start", () => {
