@@ -21,11 +21,11 @@ export function SiteFrame({ children, brand = BECREATIVE }: { children: React.Re
       <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-8 text-sm text-ink/60">
         <p>{brand.name} · independent teachers, direct bookings.</p>
         <nav className="flex flex-wrap gap-3">
-          <a href="/help">Help</a>
-          <a href="/legal/terms">Terms</a>
-          <a href="/legal/privacy">Privacy</a>
-          <a href="/legal/refunds">Refunds</a>
-          <a href="/settings/privacy">Your data</a>
+          <Link href="/help">Help</Link>
+          <Link href="/legal/terms">Terms</Link>
+          <Link href="/legal/privacy">Privacy</Link>
+          <Link href="/legal/refunds">Refunds</Link>
+          <Link href="/settings/privacy">Your data</Link>
         </nav>
       </footer>
       <CookieNotice />
