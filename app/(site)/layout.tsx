@@ -1,11 +1,11 @@
 import { headers } from "next/headers";
 import { Suspense } from "react";
 import { SiteFrame } from "@/components/shell";
-import { BECREATIVE, brandForHost } from "@/lib/brand";
+import { brandForHost } from "@/lib/brand";
 
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
-    <Suspense fallback={<SiteFrame brand={BECREATIVE}>{children}</SiteFrame>}>
+    <Suspense fallback={<header className="h-16 border-b border-line bg-paper/80" />}>
       <BrandedSite>{children}</BrandedSite>
     </Suspense>
   );
