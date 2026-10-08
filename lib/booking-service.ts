@@ -57,7 +57,7 @@ import { sameLocalDay } from "@/lib/messaging-rules";
 import { emitNotification } from "@/lib/notifications";
 import { grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
-import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import { createCheckout, createPaymentIntent, getStripe, stripeConfigured } from "@/lib/stripe";
 import { notifyOfferPurchased, notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 
 export type ActionState = { error?: string; ok?: string } | null;
@@ -170,7 +170,9 @@ export async function bookSession(input: {
   payWith?: string;
   policyAccepted?: boolean;
   ip?: string | null;
-}): Promise<{ error?: string; checkoutUrl?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
+  paymentSheet?: boolean;
+  platform?: string;
+}): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
   const attr = await attribution();
   const codeInput = normalizeCodes([input.code ?? "", attr.code]);
   if (codeInput.error) return { error: codeInput.error };
@@ -413,6 +415,8 @@ export async function bookSession(input: {
         await emitNotification({ userId: created.teacherUserId, event: "waitlist.joined", audience: "teacher", title: `Waitlist: ${created.title}`, body: `${input.name} joined the waitlist.`, href: `/c/${created.classSlug}` });
         await emitNotification({ userId: input.userId, event: "waitlist.joined", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
       }
+      const { capture } = await import("@/lib/analytics");
+      await capture({ name: "waitlist_joined", userId: input.userId, platform: input.platform, properties: { title: "title" in created ? String(created.title) : "" } });
       return { waitlisted: true };
     }
     if ("alreadyBooked" in created && created.alreadyBooked) return { orderId: created.orderId, alreadyBooked: true };
@@ -436,7 +440,25 @@ export async function bookSession(input: {
     }
     const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(created.teacher.stripeChargesEnabled) });
     if (created.status === "pending" && !ready.ok) return { error: ready.reason };
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "booking_started", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId, classId: created.klass.id } });
+    if (created.quote.discountCents > 0) await capture({ name: "promo_applied", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId } });
     if (created.status === "pending") {
+      await capture({ name: "checkout_started", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId } });
+      if (input.paymentSheet) {
+        const intent = await createPaymentIntent({
+          amountCents: created.quote.studentPaysCents,
+          applicationFeeCents: created.quote.platformFeeCents,
+          destinationAccountId: created.teacher.stripeAccountId,
+          customerEmail: input.email,
+          metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+          statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        });
+        if (intent?.client_secret) {
+          await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, created.orderId));
+          return { orderId: created.orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+        }
+      }
       const session = await createCheckout({
         name: created.klass.title,
         amountCents: created.quote.studentPaysCents,
@@ -463,6 +485,7 @@ export async function bookSession(input: {
     });
     await notifyTeacherOfBooking({ teacherUserId: created.teacher.userId, studentName: input.name, title: created.klass.title, href: `/teach` });
     await notifyStudentConfirmed({ userId: input.userId, title: created.klass.title, href: `/c/${created.klass.slug}` });
+    await capture({ name: "checkout_completed", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId, classId: created.klass.id, teacherId: created.teacher.id } });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
@@ -559,6 +582,8 @@ export async function cancelBooking(userId: string, bookingId: string) {
       href: `/c/${klass.slug}`,
       textEligible: outcome !== "full_refund" && sameLocalDay(upcoming[0]!.startsAt, now),
     });
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "booking_cancelled", userId, properties: { bookingId, classId: klass.id } });
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
     if (teacher) {
       await emitNotification({
@@ -574,6 +599,20 @@ export async function cancelBooking(userId: string, bookingId: string) {
   return { ok: true, outcome, feeCents: fee };
 }
 
+export async function rescheduleBooking(userId: string, bookingId: string, sessionId: string) {
+  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
+  if (!booking) return { error: "Booking not found." };
+  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
+  if (links.length !== 1) return { error: "Move one date at a time." };
+  const [next] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+  if (!next || next.classId !== booking.classId || next.status !== "scheduled" || next.startsAt <= new Date()) return { error: "That date is not open." };
+  if (links[0]!.sessionId === next.id) return { ok: true as const };
+  const taken = await confirmedCount(next.id);
+  if (taken >= next.capacity) return { error: "That date is full." };
+  await db.update(bookingSessions).set({ sessionId: next.id }).where(eq(bookingSessions.bookingId, booking.id));
+  return { ok: true as const };
+}
+
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
   const updated = await db
     .update(orders)
@@ -582,6 +621,11 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
     .returning();
   if (!updated.length) return;
   const order = updated[0]!;
+  if (order.userId) {
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "checkout_completed", userId: order.userId, properties: { orderId: order.id, kind: order.kind } });
+    if (order.kind === "pack" || order.kind === "membership") await capture({ name: "offer_purchased", userId: order.userId, properties: { orderId: order.id, kind: order.kind } });
+  }
   if (order.kind === "pack") {
     const purchases = await db.select().from(packPurchases).where(eq(packPurchases.orderId, order.id));
     for (const purchase of purchases) {
@@ -666,7 +710,7 @@ async function recordPromoRedemption(promoId: string, userId: string, orderId: s
   });
 }
 
-export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string }) {
+export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean }) {
   const fee = await fees();
   const attr = await attribution();
   const normalized = normalizeCodes([input.code ?? "", attr.code]);
@@ -739,6 +783,20 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       creditsRemaining: packCreditsOnCreate({ awaitingCardPayment: status === "pending", creditCount: pack.creditCount }),
       expiresAt: new Date(now.getTime() + pack.expiryDays * 86_400_000),
     });
+    if (status === "pending" && teacher && input.paymentSheet) {
+      const intent = await createPaymentIntent({
+        amountCents: quote.studentPaysCents,
+        applicationFeeCents: money.platformFeeCents,
+        destinationAccountId: teacher.stripeAccountId,
+        customerEmail: input.email,
+        metadata: { type: "order", orderId, userId: input.userId },
+        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+      });
+      if (intent?.client_secret) {
+        await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, orderId));
+        return { orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+      }
+    }
     if (status === "pending" && teacher) {
       const session = await createCheckout({
         name: pack.name,

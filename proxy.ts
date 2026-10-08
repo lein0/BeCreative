@@ -34,6 +34,9 @@ export function proxy(request: NextRequest) {
   }
   const code = searchParams.get("code");
   if (code) response.cookies.set("bc_code", code.toUpperCase(), { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
+  if (!request.cookies.get("bc_anon")) {
+    response.cookies.set("bc_anon", crypto.randomUUID(), { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", secure, httpOnly: true });
+  }
   return response;
 }
 

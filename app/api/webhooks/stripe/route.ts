@@ -15,6 +15,11 @@ export async function POST(request: Request) {
   const event = stripe.webhooks.constructEvent(await request.text(), signature, secret);
   const claimed = await db.insert(stripeEvents).values({ id: event.id, type: event.type }).onConflictDoNothing().returning();
   if (!claimed.length) return new Response("ok");
+  if (event.type === "payment_intent.succeeded") {
+    const intent = event.data.object;
+    const orderId = intent.metadata?.orderId;
+    if (orderId) await fulfillPaidCheckout(orderId, intent.id, null);
+  }
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
@@ -70,6 +75,13 @@ export async function POST(request: Request) {
       stripeRequirementsDue: due,
       updatedAt: new Date(),
     }).where(eq(teachers.stripeAccountId, account.id));
+    if (account.charges_enabled) {
+      const [teacher] = await db.select().from(teachers).where(eq(teachers.stripeAccountId, account.id)).limit(1);
+      if (teacher) {
+        const { capture } = await import("@/lib/analytics");
+        await capture({ name: "stripe_connected", userId: teacher.userId, properties: { teacherId: teacher.id } });
+      }
+    }
   }
   return new Response("ok");
 }

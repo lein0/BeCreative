@@ -35,6 +35,11 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
     miles: place ? Number(one(sp.miles) || 8) : undefined,
     vertical: vertical || undefined,
   });
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "page_view", path: "/explore", platform: "web", vertical: vertical || null, category: one(sp.category), city: near || null });
+  if (one(sp.q)) await capture({ name: "search", path: "/explore", platform: "web", properties: { q: one(sp.q)! } });
+  const used = ["category", "level", "format", "delivery", "near", "vertical"].filter((key) => one(sp[key]));
+  if (used.length) await capture({ name: "filter_used", path: "/explore", platform: "web", properties: { filters: used.join(",") } });
   const services = vertical === "wellness" ? await publishedServices() : [];
   const serviceRows = services.filter((row) => {
     const query = (one(sp.q) ?? "").toLowerCase();

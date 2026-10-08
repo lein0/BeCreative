@@ -96,6 +96,8 @@ export async function notifyTeacherOfBooking(input: { teacherUserId: string; stu
       body: `${input.studentName} took the first seat.`,
       href: input.href,
     });
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "first_booking_received", userId: input.teacherUserId, properties: { title: input.title } });
   }
 }
 

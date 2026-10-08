@@ -65,6 +65,28 @@ export async function createCheckout(input: {
   return session;
 }
 
+export async function createPaymentIntent(input: {
+  amountCents: number;
+  applicationFeeCents: number;
+  destinationAccountId?: string | null;
+  customerEmail?: string | null;
+  metadata: Record<string, string>;
+  statementDescriptor?: string;
+}) {
+  const stripe = getStripe();
+  if (!stripe || input.amountCents <= 0) return null;
+  const fee = Math.max(0, Math.min(input.applicationFeeCents, input.amountCents - 1));
+  return stripe.paymentIntents.create({
+    amount: input.amountCents,
+    currency: "usd",
+    receipt_email: input.customerEmail ?? undefined,
+    metadata: input.metadata,
+    automatic_payment_methods: { enabled: true },
+    ...(input.statementDescriptor ? { statement_descriptor_suffix: input.statementDescriptor.replace(/[^a-zA-Z0-9]/g, "").slice(-10) || "STUDIO" } : {}),
+    ...(input.destinationAccountId ? { transfer_data: { destination: input.destinationAccountId }, application_fee_amount: fee } : {}),
+  });
+}
+
 function feePercent(input: { amountCents: number; applicationFeeCents: number }) {
   if (input.amountCents <= 0) return 0;
   return Math.min(100, Math.round((input.applicationFeeCents / input.amountCents) * 1000) / 10);

@@ -241,6 +241,10 @@ export async function saveClass(input: {
     entityId: classId,
     summary: `${input.classId ? "Updated" : "Created"} ${input.title}${input.schedule?.mode === "repeat" ? `. ${describeRecurrence(input.schedule.rule)}` : ""}`,
   });
+  if (status === "published") {
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "class_published", userId: input.actorUserId, properties: { classId, teacherId: teacher.id } });
+  }
   return { classId };
 }
 

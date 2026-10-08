@@ -43,6 +43,13 @@
       "when": 1791457009691,
       "tag": "0005_ship_email_sms",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791458489835,
+      "tag": "0006_ship_analytics",
+      "breakpoints": true
     }
   ]
 }

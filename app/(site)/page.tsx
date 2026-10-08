@@ -5,6 +5,8 @@ import { catalog } from "@/lib/queries";
 
 export default function HomePage() {
   return (
+    <>
+      <Suspense fallback={null}><PageView /></Suspense>
     <div>
       <section className="mx-auto grid max-w-6xl gap-8 px-5 py-16 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
         <div>
@@ -38,7 +40,14 @@ export default function HomePage() {
         <Featured />
       </Suspense>
     </div>
+    </>
   );
+}
+
+async function PageView() {
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "page_view", path: "/", platform: "web" });
+  return null;
 }
 
 async function Featured() {

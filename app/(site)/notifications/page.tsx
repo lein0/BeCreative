@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { desc, eq } from "drizzle-orm";
-import { markNotificationsAction } from "@/lib/actions";
+import { markNotificationsAction, openNotificationAction } from "@/lib/actions";
 import { Panel } from "@/components/bits";
 import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
@@ -34,7 +34,13 @@ async function Body() {
               <div>
                 <p className="font-medium">{row.title}</p>
                 <p className="mt-1 text-sm text-ink/70">{row.body}</p>
-                {row.href ? <Link href={row.href} className="mt-2 inline-block text-sm text-clay">Open</Link> : null}
+                {row.href ? (
+                  <form action={openNotificationAction}>
+                    <input type="hidden" name="id" value={row.id} />
+                    <input type="hidden" name="href" value={row.href} />
+                    <button className="mt-2 text-sm text-clay">Open</button>
+                  </form>
+                ) : null}
               </div>
               {row.readAt ? <span className="text-xs text-ink/40">Read</span> : (
                 <form action={markNotificationsAction}>

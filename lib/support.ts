@@ -39,6 +39,8 @@ export async function openTicket(input: { userId: string; teacherId?: string | n
       await emitNotification({ userId: teacher.userId, event: "ticket.created", audience: "teacher", title: `Student question: ${input.subject}`, body: input.body, href: "/teach/support" });
     }
   }
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "ticket_opened", userId: input.userId, properties: { category: input.category, ticketId: id } });
   return { id, route: route.owner };
 }
 
