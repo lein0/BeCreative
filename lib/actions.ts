@@ -304,6 +304,7 @@ export async function rosterAction(formData: FormData) {
     const result = await manualBook({
       classId: klass.id,
       sessionId: text(formData, "sessionId"),
+      teacherId: teacher.id,
       name: text(formData, "name"),
       email: text(formData, "email"),
       payment: (text(formData, "payment") as "paid" | "pay_at_studio" | "unpaid") || "pay_at_studio",
