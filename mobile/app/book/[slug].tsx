@@ -25,6 +25,8 @@ export default function BookScreen() {
   const [signedName, setSignedName] = useState(user?.name ?? "");
   const [waiverBody, setWaiverBody] = useState<string | null>(null);
   const [waiverSigned, setWaiverSigned] = useState(false);
+  const [signatureRequired, setSignatureRequired] = useState(false);
+  const [waiverRequired, setWaiverRequired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -36,13 +38,15 @@ export default function BookScreen() {
     if (!slug || !ready) return;
     void api.classDetail(slug).then((next) => {
       setDetail(next);
+      setSignatureRequired(next.signatureRequired);
       setSessionId(next.slots[0]?.id ?? null);
       void track("booking_started", { slug: next.class.slug });
       if (user) {
         void api.waiver(next.teacher.slug).then((waiver) => {
           setWaiverBody(waiver.body);
           setWaiverSigned(waiver.signed);
-          if (waiver.signed) setAgreed(true);
+          setWaiverRequired(waiver.required);
+          setSignatureRequired(next.signatureRequired && waiver.required);
         }).catch(() => undefined);
       }
     }).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load this class."));
@@ -57,11 +61,11 @@ export default function BookScreen() {
     setBusy(true);
     setError(null);
     try {
-      if (!agreed && !waiverSigned) {
+      if (!agreed) {
         setError("Accept the cancellation policy.");
         return;
       }
-      if (waiverBody && !waiverSigned) {
+      if (signatureRequired && !waiverSigned) {
         if (!signedName.trim()) {
           setError("Type your name to sign.");
           return;
@@ -110,12 +114,9 @@ export default function BookScreen() {
         <Card>
           <Body>Cancellation policy</Body>
           <Body muted>{waiverBody || "Full refund until 24 hours before the start. Studio credit until 2 hours before. After that the seat is not refunded."}</Body>
-          {waiverSigned ? <Body>You already signed this waiver.</Body> : (
-            <>
-              <ToggleRow label="I agree" value={agreed} onChange={setAgreed} />
-              {waiverBody ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
-            </>
-          )}
+          {waiverSigned && signatureRequired ? <Body>You already signed this waiver.</Body> : null}
+          <ToggleRow label="I agree" value={agreed} onChange={setAgreed} />
+          {signatureRequired && waiverRequired && !waiverSigned ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
         </Card>
         {error ? <Notice>{error}</Notice> : null}
         <Body>Price {money(detail.class.priceCents ?? 0)}. The discount is applied at checkout.</Body>

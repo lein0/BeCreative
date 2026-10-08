@@ -14,7 +14,7 @@ export type DeepLink =
   | ({ type: "pack"; teacherSlug: string; packSlug: string } & PromoQuery)
   | ({ type: "membership"; teacherSlug: string; membershipSlug: string } & PromoQuery)
   | { type: "reset"; token: string | null }
-  | { type: "verify"; token: string | null; email: string | null }
+  | { type: "verify"; token: string | null; email: string | null; path: "verify" | "verify-email" }
   | { type: "login" }
   | { type: "bookings"; flow: string | null; cancelled: boolean };
 
@@ -76,8 +76,8 @@ export function parseDeepLink(raw: string): DeepLink | null {
     return null;
   }
   if (parts[0] === "reset" && parts.length === 1) return { type: "reset", token: url.searchParams.get("token") };
-  if (parts[0] === "verify-email" && parts.length === 1) {
-    return { type: "verify", token: url.searchParams.get("token"), email: url.searchParams.get("email") };
+  if ((parts[0] === "verify" || parts[0] === "verify-email") && parts.length === 1) {
+    return { type: "verify", token: url.searchParams.get("token"), email: url.searchParams.get("email"), path: parts[0] === "verify" ? "verify" : "verify-email" };
   }
   if ((parts[0] === "login" || parts[0] === "signup") && parts.length === 1) return { type: "login" };
   if (parts[0] === "bookings" && parts.length === 1) {
@@ -114,7 +114,8 @@ export function hrefForDeepLink(link: DeepLink): string {
       if (link.token) verify.set("token", link.token);
       if (link.email) verify.set("email", link.email);
       const text = verify.toString();
-      return text ? `/verify-email?${text}` : "/verify-email";
+      const path = link.path === "verify" ? "/verify" : "/verify-email";
+      return text ? `${path}?${text}` : path;
     }
     case "login":
       return "/login";

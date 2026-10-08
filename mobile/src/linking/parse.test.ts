@@ -23,9 +23,12 @@ describe("deep links", () => {
     expect(parseDeepLink("becreative://bookings?flow=membership&paid=1")).toMatchObject({ type: "bookings", flow: "membership", cancelled: false });
     expect(hrefForDeepLink(parseDeepLink("becreative://bookings?flow=membership&cancelled=1")!)).toBe("/bookings?cancelled=1");
     expect(parseDeepLink("https://classes.becreative.app/reset?token=reset-demo")).toMatchObject({ type: "reset", token: "reset-demo" });
+    expect(hrefForDeepLink(parseDeepLink("https://classes.becreative.app/reset?token=reset-demo")!)).toBe("/reset?token=reset-demo");
     expect(hrefForDeepLink(parseDeepLink("https://classes.becreative.app/verify-email?token=verify:sam@x.com&email=sam@x.com")!)).toBe(
       "/verify-email?token=verify%3Asam%40x.com&email=sam%40x.com",
     );
+    expect(parseDeepLink("https://classes.becreative.app/verify?token=verify-demo")).toMatchObject({ type: "verify", token: "verify-demo", path: "verify" });
+    expect(hrefForDeepLink(parseDeepLink("becreative://verify?token=verify-demo")!)).toBe("/verify?token=verify-demo");
   });
 
   it("ignores teacher tools and unsafe urls", () => {

@@ -13,6 +13,14 @@ export type AuthResult = {
   user: StudentUser;
 };
 
+export type Place = {
+  lat: number;
+  lng: number;
+  neighborhood: string;
+  name: string | null;
+  city: string | null;
+};
+
 export type PublicClass = {
   id: string;
   slug: string;
@@ -25,6 +33,10 @@ export type PublicClass = {
   vertical?: Vertical;
   nextStartsAt: string | null;
   spots: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  neighborhood?: string | null;
+  location?: Place | null;
 };
 
 export type Slot = { id: string; startsAt: string; spots: number | null };
@@ -34,11 +46,18 @@ export type ClassDetail = {
   description: string;
   slots: Slot[];
   teacher: { slug: string; name: string };
+  signatureRequired: boolean;
+  policyAcknowledgementRequired: boolean;
 };
+
+export type PackOffer = { id: string; slug: string; name: string; priceCents: number; creditCount: number };
+export type MembershipOffer = { id: string; slug: string; name: string; priceCents: number };
 
 export type TeacherProfile = {
   teacher: { slug: string; name: string; bio: string | null };
   classes: { id: string; slug: string; title: string }[];
+  packs: PackOffer[];
+  memberships: MembershipOffer[];
 };
 
 export type ServiceHit = { id: string; slug: string; title: string; teacher: string };
@@ -85,13 +104,41 @@ export type BookingListItem = {
   title: string;
   slug: string;
   createdAt: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  timezone: string;
+  location: Place | null;
 };
 
 export type WalletPack = { id: string; name: string; remaining: number; total: number };
 export type WalletMembership = { id: string; name: string; status: string; periodEnd: string };
 export type Wallet = { packs: WalletPack[]; memberships: WalletMembership[] };
 
-export type WaiverState = { body: string | null; version: number | null; signed: boolean };
+export type WaiverState = {
+  body: string | null;
+  version: number | null;
+  signed: boolean;
+  required: boolean;
+  policyAcknowledgementRequired: boolean;
+};
+
+export type SocialProvider = "apple" | "google";
+
+export type SocialSignInInput = {
+  provider: SocialProvider;
+  idToken: string;
+  nonce?: string;
+  firstName?: string;
+  lastName?: string;
+  anonymousId?: string;
+};
+
+export type DeleteAccountInput = {
+  password?: string;
+  provider?: SocialProvider;
+  idToken?: string;
+  nonce?: string;
+};
 
 export type AppNotification = {
   id: string;
@@ -168,7 +215,13 @@ export type StudentApi = {
   mode: "mock" | "live";
   signIn(input: { email: string; password: string; anonymousId?: string }): Promise<AuthResult>;
   signUp(input: { name: string; email: string; password: string; phone?: string; smsOptIn?: boolean; marketingOptIn?: boolean; anonymousId?: string }): Promise<AuthResult>;
+  signInSocial(input: SocialSignInInput): Promise<AuthResult>;
+  requestPasswordReset(email: string): Promise<{ ok: true }>;
+  confirmPasswordReset(input: { token: string; password: string }): Promise<{ ok: true }>;
+  requestEmailVerification(email: string): Promise<{ ok: true }>;
+  confirmEmailVerification(token: string): Promise<{ ok: true }>;
   signOut(): Promise<{ ok: true }>;
+  deleteAccount(input: DeleteAccountInput): Promise<{ ok: true }>;
   me(): Promise<{ user: StudentUser }>;
   explore(query?: ExploreQuery): Promise<{ classes: PublicClass[] }>;
   search(query?: { q?: string; vertical?: string }): Promise<{ classes: PublicClass[]; services: ServiceHit[] }>;
