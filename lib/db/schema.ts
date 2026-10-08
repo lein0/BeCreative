@@ -89,6 +89,7 @@ export const categories = pgTable("categories", {
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
   parentId: text("parent_id"),
+  vertical: text("vertical").notNull().default("creative"),
 });
 
 export const locations = pgTable("locations", {
@@ -570,6 +571,124 @@ export const feedbackDeliveries = pgTable("feedback_deliveries", {
   status: text("status").notNull(),
   httpStatus: integer("http_status"),
   error: text("error"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const services = pgTable("services", {
+  id: text("id").primaryKey(),
+  teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+  categoryId: text("category_id").notNull().references(() => categories.id),
+  subcategoryId: text("subcategory_id").references(() => categories.id),
+  locationId: text("location_id").references(() => locations.id),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  kind: text("kind").notNull(),
+  bufferMinutes: integer("buffer_minutes").notNull().default(0),
+  leadTimeHours: integer("lead_time_hours").notNull().default(2),
+  cancellationHours: integer("cancellation_hours").notNull().default(24),
+  slotMinutes: integer("slot_minutes"),
+  capacity: integer("capacity").notNull().default(1),
+  priceCents: integer("price_cents").notNull().default(0),
+  waiverRequired: boolean("waiver_required").notNull().default(false),
+  status: text("status").notNull().default("draft"),
+  coverImageUrl: text("cover_image_url"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const serviceOptions = pgTable("service_options", {
+  id: text("id").primaryKey(),
+  serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  minutes: integer("minutes").notNull(),
+  priceCents: integer("price_cents").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const serviceAddons = pgTable("service_addons", {
+  id: text("id").primaryKey(),
+  serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  priceCents: integer("price_cents").notNull(),
+  minutes: integer("minutes").notNull().default(0),
+});
+
+export const availabilityWindows = pgTable("availability_windows", {
+  id: text("id").primaryKey(),
+  serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  weekday: integer("weekday").notNull(),
+  startTime: text("start_time").notNull(),
+  endTime: text("end_time").notNull(),
+});
+
+export const accessSlots = pgTable(
+  "access_slots",
+  {
+    id: text("id").primaryKey(),
+    serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+    startsAt: ts("starts_at").notNull(),
+    capacity: integer("capacity").notNull(),
+  },
+  (table) => [uniqueIndex("access_slot_unique").on(table.serviceId, table.startsAt)],
+);
+
+export const visitBookings = pgTable("visit_bookings", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+  serviceId: text("service_id").notNull().references(() => services.id, { onDelete: "cascade" }),
+  optionId: text("option_id"),
+  offeringKind: text("offering_kind").notNull(),
+  startsAt: ts("starts_at").notNull(),
+  endsAt: ts("ends_at").notNull(),
+  status: text("status").notNull().default("confirmed"),
+  addonIds: text("addon_ids").array().notNull().default(sql`ARRAY[]::text[]`),
+  packPurchaseId: text("pack_purchase_id"),
+  membershipSubscriptionId: text("membership_subscription_id"),
+  waiverSignatureId: text("waiver_signature_id"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  cancelledAt: ts("cancelled_at"),
+});
+
+export const waivers = pgTable(
+  "waivers",
+  {
+    id: text("id").primaryKey(),
+    teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    version: integer("version").notNull().default(1),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("waivers_teacher").on(table.teacherId)],
+);
+
+export const waiverSignatures = pgTable(
+  "waiver_signatures",
+  {
+    id: text("id").primaryKey(),
+    waiverId: text("waiver_id").notNull().references(() => waivers.id, { onDelete: "cascade" }),
+    teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    signedName: text("signed_name").notNull(),
+    ip: text("ip"),
+    signedAt: ts("signed_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("waiver_signature_version").on(table.teacherId, table.userId, table.version)],
+);
+
+export const credentials = pgTable("credentials", {
+  id: text("id").primaryKey(),
+  teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  identifier: text("identifier"),
+  verified: boolean("verified").notNull().default(false),
+  verifiedAt: ts("verified_at"),
+  verifiedBy: text("verified_by"),
+  isDemo: boolean("is_demo").notNull().default(false),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 

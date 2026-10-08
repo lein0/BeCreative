@@ -4,6 +4,9 @@ export function StudioNav({ base = "/teach" }: { base?: string }) {
   const links = [
     ["Studio", base],
     ["New class", `${base}/classes/new`],
+    ["New visit", `${base}/services/new`],
+    ["Waiver", `${base}/waiver`],
+    ["Credentials", `${base}/credentials`],
     ["Pricing", `${base}/pricing`],
     ["Promos", `${base}/promos`],
     ["Reports", `${base}/reports`],

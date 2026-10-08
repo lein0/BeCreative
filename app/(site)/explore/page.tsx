@@ -2,8 +2,8 @@ import { Suspense } from "react";
 import { ClassCard, control, fromPrice } from "@/components/bits";
 import { StudioMap } from "@/components/map-loader";
 import { CLASS_FORMATS, DELIVERY_MODES, FORMAT_LABELS, LEVEL_LABELS, NEIGHBORHOODS, SKILL_LEVELS, type ClassFormat, type SkillLevel } from "@/lib/constants";
-import { catalog, categoryTree } from "@/lib/queries";
-import { one } from "@/lib/utils";
+import { catalog, categoryTree, publishedServices } from "@/lib/queries";
+import { money, one } from "@/lib/utils";
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
@@ -19,7 +19,9 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
   const sp = await searchParams;
   const near = one(sp.near);
   const place = NEIGHBORHOODS.find((item) => item.name === near);
+  const vertical = one(sp.vertical);
   const categories = await categoryTree();
+  const parents = categories.filter((category) => !category.parentId && (!vertical || category.vertical === vertical));
   const rows = await catalog({
     q: one(sp.q),
     category: one(sp.category),
@@ -31,6 +33,14 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
     lat: place?.lat,
     lng: place?.lng,
     miles: place ? Number(one(sp.miles) || 8) : undefined,
+    vertical: vertical || undefined,
+  });
+  const services = vertical === "wellness" ? await publishedServices() : [];
+  const serviceRows = services.filter((row) => {
+    const query = (one(sp.q) ?? "").toLowerCase();
+    if (query && !`${row.service.title} ${row.teacher.studioName ?? ""} ${row.category.name}`.toLowerCase().includes(query)) return false;
+    if (one(sp.category) && row.category.slug !== one(sp.category)) return false;
+    return true;
   });
   const points = rows
     .filter((row) => row.location)
@@ -43,13 +53,18 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
       meta: row.location!.neighborhood,
     }));
   return (
-    <div className="mx-auto grid max-w-6xl gap-6 px-5 py-8 lg:grid-cols-[280px_1fr]">
+    <div data-brand={vertical === "wellness" ? "bewell" : undefined} className="mx-auto grid max-w-6xl gap-6 px-5 py-8 lg:grid-cols-[280px_1fr]">
       <form className="space-y-3 lg:sticky lg:top-24 lg:self-start">
-        <h1 className="display text-4xl">Explore</h1>
+        <h1 className="display text-4xl">{vertical === "wellness" ? "BeWell" : "Explore"}</h1>
+        <select name="vertical" defaultValue={vertical} className={control}>
+          <option value="">Creative and wellness</option>
+          <option value="creative">Creative</option>
+          <option value="wellness">Wellness</option>
+        </select>
         <input name="q" defaultValue={one(sp.q)} placeholder="Search classes" className={control} />
         <select name="category" defaultValue={one(sp.category)} className={control}>
           <option value="">Any category</option>
-          {categories.filter((category) => !category.parentId).map((category) => (
+          {parents.map((category) => (
             <option key={category.id} value={category.slug}>{category.name}</option>
           ))}
         </select>
@@ -76,7 +91,22 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
       </form>
       <div className="space-y-4">
         <StudioMap points={points} />
-        <p className="text-sm text-ink/60">{rows.length} classes</p>
+        <p className="text-sm text-ink/60">{rows.length} classes{serviceRows.length ? ` · ${serviceRows.length} visits` : ""}</p>
+        {serviceRows.length ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {serviceRows.map((row) => (
+              <ClassCard
+                key={row.service.id}
+                href={`/s/${row.service.slug}`}
+                title={row.service.title}
+                teacher={row.teacher.studioName || "Studio"}
+                hue={160}
+                price={row.service.kind === "access" ? money(row.service.priceCents) : "Private hour"}
+                meta={[row.category.name, row.service.kind === "access" ? `${row.service.capacity} seats` : "1:1", row.location?.neighborhood].filter(Boolean).join(" · ")}
+              />
+            ))}
+          </div>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           {rows.map((row, index) => (
             <ClassCard

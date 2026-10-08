@@ -23,6 +23,9 @@ export default function HomePage() {
             <Link href="/signup" className="rounded-full border border-line bg-white px-5 py-3 text-sm">
               Teach on BeCreative
             </Link>
+            <Link href="/wellness" className="rounded-full border border-line bg-white px-5 py-3 text-sm">
+              BeWell
+            </Link>
           </div>
         </div>
         <div className="rounded-[32px] bg-moss p-6 text-paper">

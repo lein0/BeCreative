@@ -14,10 +14,12 @@ import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
 import { bookingSessions, classes, leads, leadViews, platformSettings, promoCodes, recurrences, sessions, teachers, user, userRoles } from "@/lib/db/schema";
 import { canApproveTeachers, canEditTeacherContent, canManageLeads, canManagePlatformPromos, canManageRoles } from "@/lib/permissions";
+import { teacherByUser } from "@/lib/queries";
 import type { RecurrenceRule } from "@/lib/recurrence";
 import { attachMedia, emailRoster, featureClass, manualBook, moveSession, saveClass, saveMembership, savePack, savePromo, setCheckin, setPaused, setTeacherStatus, skipSession, updateRecurrence } from "@/lib/studio-service";
 import { geocoder } from "@/lib/geocode";
 import { uniqueSlug } from "@/lib/utils";
+import { bookVisit, cancelVisit, saveCredential, saveService, saveWaiver, signWaiver, verifyCredential } from "@/lib/wellness-service";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -475,4 +477,127 @@ export async function geocodePreview(address: string) {
   const actor = await getActor();
   if (!actor) return null;
   return geocoder().geocode(address);
+}
+
+function num(formData: FormData, key: string, fallback = 0) {
+  const value = Number(text(formData, key));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function clientIp(headerStore: Headers) {
+  return headerStore.get("x-forwarded-for")?.split(",")[0]?.trim() || headerStore.get("x-real-ip") || null;
+}
+
+export async function bookVisitAction(formData: FormData) {
+  const actor = await requireActor();
+  const slug = text(formData, "slug");
+  const addonIds = formData.getAll("addonId").map(String).filter(Boolean);
+  const result = await bookVisit({
+    userId: actor.id,
+    email: actor.email,
+    serviceId: text(formData, "serviceId"),
+    optionId: text(formData, "optionId") || undefined,
+    addonIds,
+    startsAt: text(formData, "startsAt"),
+    code: text(formData, "code"),
+    payWith: text(formData, "payWith") || "cash",
+  });
+  if ("error" in result && result.error) redirect(`/s/${slug}?error=${encodeURIComponent(result.error)}`);
+  if ("checkoutUrl" in result && result.checkoutUrl) redirect(result.checkoutUrl);
+  redirect("/bookings?reserved=1");
+}
+
+export async function signWaiverAction(formData: FormData) {
+  const actor = await requireActor();
+  const slug = text(formData, "slug");
+  const result = await signWaiver({
+    teacherId: text(formData, "teacherId"),
+    userId: actor.id,
+    signedName: text(formData, "signedName"),
+    ip: clientIp(await headers()),
+  });
+  if (result.error) redirect(`/s/${slug}?error=${encodeURIComponent(result.error)}`);
+  redirect(`/s/${slug}?signed=1`);
+}
+
+export async function cancelVisitAction(formData: FormData) {
+  const actor = await requireActor();
+  const result = await cancelVisit(actor.id, text(formData, "visitId"));
+  if (result.error) redirect(`/bookings?error=${encodeURIComponent(result.error)}`);
+  revalidatePath("/bookings");
+}
+
+export async function saveServiceAction(formData: FormData) {
+  const actor = await requireActor();
+  const teacher = await teacherByUser(actor.id);
+  if (!teacher || !canEditTeacherContent(actor.roles, true)) redirect("/teach");
+  let parsed: { weekday: number; start: string; end: string }[] = [];
+  try {
+    parsed = JSON.parse(text(formData, "windows") || "[]") as { weekday: number; start: string; end: string }[];
+  } catch {
+    parsed = [];
+  }
+  const windows = parsed.filter((window) => window.weekday >= 0 && window.weekday <= 6 && /^\d{2}:\d{2}$/.test(window.start) && /^\d{2}:\d{2}$/.test(window.end));
+  const kind = text(formData, "kind") === "access" ? "access" : "appointment";
+  const options = kind === "appointment"
+    ? [
+        { label: `${num(formData, "minutesA", 60)} min`, minutes: num(formData, "minutesA", 60), priceCents: Math.round(num(formData, "priceA") * 100) },
+        { label: `${num(formData, "minutesB", 90)} min`, minutes: num(formData, "minutesB", 90), priceCents: Math.round(num(formData, "priceB") * 100) },
+      ].filter((option) => option.minutes > 0 && option.priceCents > 0)
+    : [];
+  const addons = [1, 2].map((index) => ({
+    name: text(formData, `addonName${index}`),
+    priceCents: Math.round(num(formData, `addonPrice${index}`) * 100),
+    minutes: num(formData, `addonMinutes${index}`),
+  })).filter((addon) => addon.name);
+  if (!text(formData, "title") || !text(formData, "categoryId") || !windows.length) redirect("/teach/services/new?error=Add%20a%20title%2C%20category%2C%20and%20hours");
+  if (kind === "appointment" && !options.length) redirect("/teach/services/new?error=Add%20a%20duration%20and%20price");
+  const saved = await saveService({
+    teacherId: teacher.id,
+    title: text(formData, "title"),
+    description: text(formData, "description"),
+    categoryId: text(formData, "categoryId"),
+    kind,
+    bufferMinutes: num(formData, "bufferMinutes", 15),
+    leadTimeHours: num(formData, "leadTimeHours", 2),
+    cancellationHours: num(formData, "cancellationHours", 24),
+    slotMinutes: kind === "access" ? num(formData, "slotMinutes", 45) : null,
+    capacity: num(formData, "capacity", 6),
+    priceCents: Math.round(num(formData, "accessPrice") * 100),
+    waiverRequired: formData.get("waiverRequired") === "1",
+    publish: formData.get("publish") === "1",
+    windows,
+    options,
+    addons,
+    location: { name: text(formData, "place"), address: text(formData, "address"), neighborhood: text(formData, "neighborhood") || "Silver Lake", city: "Los Angeles" },
+  });
+  revalidatePath("/teach");
+  redirect(`/teach/services/${saved.id}`);
+}
+
+export async function saveWaiverAction(formData: FormData) {
+  const actor = await requireActor();
+  const teacher = await teacherByUser(actor.id);
+  if (!teacher) redirect("/teach/onboarding");
+  const result = await saveWaiver(teacher.id, text(formData, "body"));
+  if (result.error) redirect(`/teach/waiver?error=${encodeURIComponent(result.error)}`);
+  revalidatePath("/teach/waiver");
+  redirect("/teach/waiver?saved=1");
+}
+
+export async function saveCredentialAction(formData: FormData) {
+  const actor = await requireActor();
+  const teacher = await teacherByUser(actor.id);
+  if (!teacher) redirect("/teach/onboarding");
+  const result = await saveCredential({ teacherId: teacher.id, label: text(formData, "label"), identifier: text(formData, "identifier") });
+  if ("error" in result && result.error) redirect(`/teach/credentials?error=${encodeURIComponent(result.error)}`);
+  revalidatePath("/teach/credentials");
+  redirect("/teach/credentials");
+}
+
+export async function verifyCredentialAction(formData: FormData) {
+  const actor = await requireActor();
+  if (!canApproveTeachers(actor.roles)) redirect("/admin");
+  await verifyCredential(text(formData, "credentialId"), text(formData, "verified") === "1", actor.id);
+  revalidatePath("/admin/teachers");
 }

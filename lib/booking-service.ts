@@ -19,6 +19,7 @@ import {
   sessions,
   teachers,
   user,
+  visitBookings,
   waitlistEntries,
 } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
@@ -123,6 +124,7 @@ export async function releaseExpiredCheckoutHolds(now = new Date()) {
       .returning({ id: orders.id });
     if (!updated.length) continue;
     await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+    await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
     await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
     released += 1;
@@ -455,6 +457,29 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   if (restore) await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
 }
 
+export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect, now: Date) {
+  const cancelled = await db
+    .update(visitBookings)
+    .set({ status: "cancelled", cancelledAt: now })
+    .where(and(eq(visitBookings.id, visit.id), eq(visitBookings.status, "confirmed")))
+    .returning({ id: visitBookings.id });
+  if (!cancelled.length) return;
+  if (visit.packPurchaseId) {
+    const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, visit.packPurchaseId)).limit(1);
+    if (purchase) {
+      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + 1 }).where(eq(packPurchases.id, purchase.id));
+      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
+    }
+  }
+  if (visit.membershipSubscriptionId) {
+    const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, visit.membershipSubscriptionId)).limit(1);
+    if (sub) {
+      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - 1) }).where(eq(membershipSubscriptions.id, sub.id));
+      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "membership", sourceId: sub.id, direction: "restore" });
+    }
+  }
+}
+
 export async function cancelBooking(userId: string, bookingId: string) {
   const now = new Date();
   const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
@@ -533,6 +558,11 @@ export async function refundOrderByPaymentIntent(intent: string) {
     for (const booking of linked) {
       if (!refundCancelsBooking(booking.status)) continue;
       await releaseBookingSeat(booking, now);
+    }
+    const visits = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id));
+    for (const visit of visits) {
+      if (!refundCancelsBooking(visit.status)) continue;
+      await releaseVisitSeat(visit, now);
     }
   }
 }

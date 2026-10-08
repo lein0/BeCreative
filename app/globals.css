@@ -3,6 +3,9 @@
 @theme inline {
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
   --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+}
+
+@theme {
   --color-paper: #f6f1e8;
   --color-ink: #1c1714;
   --color-clay: #e15a1c;
@@ -10,6 +13,16 @@
   --color-sand: #e7dfd2;
   --color-line: #d9cfc2;
   --color-mist: #fbf8f3;
+}
+
+[data-brand="bewell"] {
+  --color-paper: #f3f7f4;
+  --color-ink: #17241f;
+  --color-clay: #2f6b5a;
+  --color-moss: #1c3d34;
+  --color-sand: #e4eee8;
+  --color-line: #c9ddd2;
+  --color-mist: #f8fbf9;
 }
 
 html {
@@ -20,6 +33,12 @@ body {
   font-family: var(--font-sans);
   background:
     radial-gradient(1200px 500px at 100% -10%, rgb(225 90 28 / 0.12), transparent 50%),
+    var(--color-paper);
+}
+
+[data-brand="bewell"] body {
+  background:
+    radial-gradient(1200px 500px at 100% -10%, rgb(47 107 90 / 0.16), transparent 50%),
     var(--color-paper);
 }
 

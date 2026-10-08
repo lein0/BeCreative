@@ -3,19 +3,20 @@ import { Suspense } from "react";
 import { FeedbackLaunchButton } from "@/components/feedback-widget";
 import { FeedbackSlot } from "@/components/feedback-slot";
 import { getActor } from "@/lib/actor";
+import { BECREATIVE, type Brand } from "@/lib/brand";
 import { authorUnreadCount } from "@/lib/feedback-service";
 import { feedbackRole } from "@/lib/feedback-rules";
 import { canManageLeads, canViewPlatformStats } from "@/lib/permissions";
 
-export function SiteFrame({ children }: { children: React.ReactNode }) {
+export function SiteFrame({ children, brand = BECREATIVE }: { children: React.ReactNode; brand?: Brand }) {
   return (
     <>
       <Suspense fallback={<header className="h-16 border-b border-line bg-paper/80" />}>
-        <SiteHeader />
+        <SiteHeader brand={brand} />
       </Suspense>
       <main>{children}</main>
       <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-8 text-sm text-ink/60">
-        <p>BeCreative · independent teachers, direct bookings.</p>
+        <p>{brand.name} · independent teachers, direct bookings.</p>
         <p>Los Angeles</p>
       </footer>
       <FeedbackSlot />
@@ -23,7 +24,7 @@ export function SiteFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
-async function SiteHeader() {
+async function SiteHeader({ brand }: { brand: Brand }) {
   const actor = await getActor();
   const teacher = actor?.roles.includes("teacher");
   const admin = actor ? canViewPlatformStats(actor.roles) : false;
@@ -34,11 +35,12 @@ async function SiteHeader() {
   return (
     <header className="sticky top-0 z-30 border-b border-line/80 bg-paper/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5">
-        <Link href="/" className="display text-2xl tracking-tight">
-          Be<span className="text-clay">Creative</span>
+        <Link href={brand.id === "bewell" ? "/wellness" : "/"} className="display text-2xl tracking-tight">
+          Be<span className="text-clay">{brand.mark}</span>
         </Link>
         <nav className="flex items-center gap-1 text-sm">
-          <Nav href="/explore">Explore</Nav>
+          <Nav href={brand.exploreHref}>Explore</Nav>
+          {brand.id === "becreative" ? <Nav href="/wellness">Wellness</Nav> : null}
           {teacher ? <Nav href="/teach">Studio</Nav> : null}
           {manage ? <Nav href="/manage">Studios</Nav> : null}
           {crm ? <Nav href="/crm">Leads</Nav> : null}
