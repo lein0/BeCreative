@@ -258,4 +258,115 @@ describe("student API bugbot regressions", () => {
       signInSocial.mockRestore();
     }
   });
+
+  it("does not link Apple or Google onto an unverified local account", async () => {
+    const person = await student("Reserved", false);
+    const ctx = await auth.$context;
+    const previous = ctx.socialProviders.slice();
+    ctx.socialProviders.unshift({
+      id: "google",
+      options: {},
+      idToken: { verify: async (token: string) => token === "reserved-token" },
+      async getUserInfo() {
+        return { user: { name: "Reserved", email: person.email, emailVerified: true }, data: { sub: "sub-reserved" } };
+      },
+      accountSubject({ profile }: { profile: { sub?: string } }) {
+        return profile.sub ?? "";
+      },
+    } as (typeof ctx.socialProviders)[number]);
+    const signInSocial = vi.spyOn(auth.api, "signInSocial").mockResolvedValue({ redirect: false, url: undefined, user: { id: person.id, name: "Reserved", email: person.email } } as never);
+    try {
+      const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/social", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": crypto.randomUUID() },
+        body: JSON.stringify({ provider: "google", idToken: "reserved-token" }),
+      }), ["auth", "social"]);
+      expect(response.status).toBe(401);
+      expect(signInSocial).not.toHaveBeenCalled();
+    } finally {
+      signInSocial.mockRestore();
+      ctx.socialProviders.splice(0, ctx.socialProviders.length, ...previous);
+    }
+  });
+
+  it("releases a deleted social login when the first sign-in throws", async () => {
+    const deletedId = crypto.randomUUID();
+    userIds.push(deletedId);
+    await db.insert(schema.user).values({
+      id: deletedId,
+      name: "Deleted account",
+      email: `deleted+${deletedId}@users.invalid`,
+      emailVerified: true,
+      deletedAt: new Date(),
+    });
+    await db.insert(schema.account).values({
+      id: crypto.randomUUID(),
+      userId: deletedId,
+      accountId: "apple-sub-thrown",
+      providerId: "apple",
+    });
+    const ctx = await auth.$context;
+    const previous = ctx.socialProviders.slice();
+    ctx.socialProviders.unshift({
+      id: "apple",
+      options: {},
+      idToken: { verify: async () => true },
+      async getUserInfo() {
+        return { user: { name: "New", email: "fresh-social@example.com", emailVerified: true }, data: { sub: "apple-sub-thrown" } };
+      },
+      accountSubject({ profile }: { profile: { sub?: string } }) {
+        return profile.sub ?? "";
+      },
+    } as (typeof ctx.socialProviders)[number]);
+    let calls = 0;
+    const createdId = crypto.randomUUID();
+    userIds.push(createdId);
+    const signInSocial = vi.spyOn(auth.api, "signInSocial").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("deleted session rejected");
+      const email = `bugbot-fresh-${createdId}@example.com`;
+      await db.insert(schema.user).values({ id: createdId, name: "Fresh", email, emailVerified: true });
+      return { redirect: false, url: undefined, user: { id: createdId, name: "Fresh", email } } as never;
+    });
+    try {
+      const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/social", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": crypto.randomUUID() },
+        body: JSON.stringify({ provider: "apple", idToken: "apple-thrown" }),
+      }), ["auth", "social"]);
+      const body = await response.json() as { user?: { id: string } };
+      expect(response.status).toBe(200);
+      expect(calls).toBe(2);
+      expect(body.user?.id).toBe(createdId);
+      const links = await db.select().from(schema.account).where(eq(schema.account.userId, deletedId));
+      expect(links).toHaveLength(0);
+    } finally {
+      signInSocial.mockRestore();
+      ctx.socialProviders.splice(0, ctx.socialProviders.length, ...previous);
+    }
+  });
+
+  it("returns ok when a reset or verification email cannot be sent", async () => {
+    const reset = vi.spyOn(auth.api, "requestPasswordReset").mockRejectedValue(new Error("unknown"));
+    const verify = vi.spyOn(auth.api, "sendVerificationEmail").mockRejectedValue(new Error("unknown"));
+    try {
+      const password = await handleMobileApi(new Request("http://localhost/api/v1/auth/password/request", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": crypto.randomUUID() },
+        body: JSON.stringify({ email: "missing@example.com" }),
+      }), ["auth", "password", "request"]);
+      const email = await handleMobileApi(new Request("http://localhost/api/v1/auth/email/request", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": crypto.randomUUID() },
+        body: JSON.stringify({ email: "missing@example.com" }),
+      }), ["auth", "email", "request"]);
+      expect(password.status).toBe(200);
+      expect(email.status).toBe(200);
+      expect(await password.json()).toEqual({ ok: true });
+      expect(await email.json()).toEqual({ ok: true });
+    } finally {
+      reset.mockRestore();
+      verify.mockRestore();
+    }
+  });
 });

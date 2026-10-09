@@ -171,7 +171,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     try {
       await requestAppPasswordReset(body.email);
     } catch {
-      return json({ error: "Could not send the reset email." }, 400);
+      return json({ ok: true });
     }
     return json({ ok: true });
   }
@@ -196,7 +196,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     try {
       await requestAppEmailVerification(body.email);
     } catch {
-      return json({ error: "Could not send the verification email." }, 400);
+      return json({ ok: true });
     }
     return json({ ok: true });
   }

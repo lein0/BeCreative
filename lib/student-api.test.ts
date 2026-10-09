@@ -15,7 +15,7 @@ import {
 describe("student API contract helpers", () => {
   it("keeps password reset and email verification on the app deep links", () => {
     expect(APP_PASSWORD_RESET_PATH).toBe("/reset");
-    expect(APP_EMAIL_VERIFY_PATH).toBe("/verify");
+    expect(APP_EMAIL_VERIFY_PATH).toBe("/verify-email");
   });
 
   it("maps a place and leaves virtual classes without coordinates", () => {
