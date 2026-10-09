@@ -104,3 +104,20 @@ export function studioOwnsResource(resourceTeacherId: string | null | undefined,
 export function refundCancelsBooking(status: string) {
   return status === "confirmed";
 }
+
+/** A Stripe `charge.refunded` event also fires for a partial refund. Only a fully refunded charge reverses the order. */
+export function chargeFullyRefunded(charge: { amount?: number | null; amount_refunded?: number | null; refunded?: boolean | null }) {
+  if (charge.refunded === true) return true;
+  const amount = charge.amount ?? 0;
+  const refunded = charge.amount_refunded ?? 0;
+  return amount > 0 && refunded >= amount;
+}
+
+/** Refund only sessions that have not started. Attended dates stay paid. */
+export function unattendedRefundCents(input: { paidCents: number; sessions: { startsAt: Date }[]; now: Date }) {
+  if (input.paidCents <= 0 || input.sessions.length === 0) return 0;
+  const upcoming = input.sessions.filter((session) => session.startsAt > input.now).length;
+  if (upcoming <= 0) return 0;
+  if (upcoming >= input.sessions.length) return input.paidCents;
+  return Math.floor((input.paidCents * upcoming) / input.sessions.length);
+}
