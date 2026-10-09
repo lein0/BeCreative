@@ -17,6 +17,7 @@ export const user = pgTable("user", {
   emailUnsubscribed: boolean("email_unsubscribed").notNull().default(false),
   emailSuppressed: boolean("email_suppressed").notNull().default(false),
   phone: text("phone"),
+  timezone: text("timezone"),
   smsOptIn: boolean("sms_opt_in").notNull().default(false),
   marketingOptIn: boolean("marketing_opt_in").notNull().default(false),
   deletedAt: timestamp("deleted_at"),

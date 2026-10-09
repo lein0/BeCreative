@@ -68,7 +68,9 @@ Without Stripe keys, paid bookings complete as pay-at-studio. The confirmation e
 | Membership | Checkout `mode=subscription` with `application_fee_percent` and `transfer_data` on the connected account | `membership_subscriptions` plus the order |
 | $0, credits, intro, or no Stripe keys | No Checkout session | Order status `paid`, `pay_at_studio`, or entitlement |
 
-Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `payment_intent.succeeded`, `charge.refunded`, and `account.updated`. Class checkout can return a PaymentIntent client secret for Stripe PaymentSheet. Packs do the same when `paymentSheet` is true. Memberships stay on a Checkout Session because they renew.
+Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `payment_intent.succeeded`, `charge.refunded`, and `account.updated`. Class checkout can return a PaymentIntent client secret for Stripe PaymentSheet. Packs do the same when `paymentSheet` is true. Memberships stay on a Checkout Session because they renew. Stripe.js is not on the root layout. The content-security policy allows `https://js.stripe.com` only on checkout paths, and the mobile app loads the Stripe SDK on the checkout screen only.
+
+If a required pre-renewal, intro-ending, price-change, or material-change notice is not sent inside its window, that renewal is not charged. The subscription is set to `cancel_at_period_end` and operations is alerted. The previous price is not charged instead. Access continues until the paid term ends. Texts, including reminders, send only between 8:00 a.m. and 8:00 p.m. in the recipient's time zone, falling back to the class time zone.
 
 The student API is `/api/v1`. Web server actions and that API call the same booking, wallet, waiver, and support services. The OpenAPI document is `docs/openapi.yaml`. Bearer tokens are `bc_` plus random bytes, stored as a SHA-256 hash, and expire in 30 days.
 

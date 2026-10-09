@@ -12,6 +12,8 @@ import {
   legalIdentity,
   membershipOffer,
   planNotices,
+  missedRequiredNotice,
+  noticeAlert,
   priceAfterNotice,
   priceChangeDateError,
   purchaseButtonLabel,
@@ -59,6 +61,7 @@ describe("checkout disclosure and consent", () => {
     expect(text).toContain("Account › Memberships › Cancel membership");
     expect(text).toContain("https://northwind.test/account/memberships");
     expect(text).toContain("No minimum commitment.");
+    expect(text).toContain("If a required renewal notice is not sent in its window, that renewal is not charged.");
     expect(text).toContain("Payments already made are not refunded");
     expect(text).not.toContain("full refund of the renewal charge");
     expect(view.checkbox.startsWith("I agree that my Monthly studio membership will automatically renew")).toBe(true);
@@ -119,6 +122,7 @@ describe("checkout disclosure and consent", () => {
     expect(mail.subject).toBe("Your Monthly studio membership is active: renewal details and how to cancel");
     expect(mail.text).toContain("Northwind · Northwind LLC · 1 Market, Los Angeles, CA · hello@northwind.test");
     expect(mail.text).toContain("Cancel membership: https://northwind.test/account/memberships/sub/cancel");
+    expect(mail.text).toContain("If a required renewal notice is not sent in its window, that renewal is not charged.");
     expect(mail.text).not.toContain("[PLATFORM NAME]");
     const pdf = textPdf(mail.subject, mail.text);
     expect(Buffer.from(pdf).subarray(0, 8).toString()).toBe("%PDF-1.4");
@@ -198,7 +202,7 @@ describe("notice scheduler windows", () => {
     expect(missedPrice.find((item) => item.kind === "price_change")?.action).toBe("missed");
   });
 
-  it("keeps the old price when the notice was not delivered in the window", () => {
+  it("does not charge a renewal when the price notice missed its window", () => {
     const renewsAt = noon("2026-08-01");
     const effectiveAt = noon("2026-08-01");
     expect(priceAfterNotice({
@@ -206,25 +210,41 @@ describe("notice scheduler windows", () => {
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-11") },
       renewsAt,
-    })).toEqual({ priceCents: 14000, blockedNewPrice: false });
+    })).toEqual({ priceCents: 14000, blockedNewPrice: false, chargeRenewal: true });
     expect(priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-28") },
       renewsAt,
-    })).toEqual({ priceCents: 12000, blockedNewPrice: true });
+      now: noon("2026-07-28"),
+    })).toEqual({ priceCents: 12000, blockedNewPrice: true, chargeRenewal: false });
     expect(priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: null },
       renewsAt,
-    })).toEqual({ priceCents: 12000, blockedNewPrice: true });
+      now: noon("2026-07-28"),
+    })).toEqual({ priceCents: 12000, blockedNewPrice: true, chargeRenewal: false });
     expect(priceAfterNotice({
+      lockedPriceCents: 12000,
+      catalogPriceCents: 14000,
+      change: { newPriceCents: 14000, effectiveAt, noticeSentAt: null },
+      renewsAt,
+      now: noon("2026-07-01"),
+    }).chargeRenewal).toBe(true);
+    const before = priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-11") },
       renewsAt: noon("2026-07-15"),
-    }).priceCents).toBe(12000);
+    });
+    expect(before.priceCents).toBe(12000);
+    expect(before.chargeRenewal).toBe(true);
+    expect(missedRequiredNotice("pre_renewal")).toBe(true);
+    expect(missedRequiredNotice("intro_ending")).toBe(true);
+    expect(missedRequiredNotice("material_change")).toBe(true);
+    expect(missedRequiredNotice("annual")).toBe(false);
+    expect(noticeAlert("price_change", "subscription sub", true)).toContain("will not be charged");
   });
 
   it("blocks teacher price dates under 14 days and any date under 8 days", () => {

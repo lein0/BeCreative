@@ -1,8 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { db } from "@/lib/db";
 import { analyticsEvents } from "@/lib/db/schema";
 import { isCatalogEvent, platformName, type AnalyticsEventName, type PlatformName } from "@/lib/analytics-events";
+import { gpcEnabled, privacyChoices } from "@/lib/privacy";
 
 export type TrackInput = {
   name: AnalyticsEventName | string;
@@ -21,6 +22,8 @@ export type TrackInput = {
   device?: string | null;
   properties?: Record<string, string>;
   consent?: boolean;
+  /** Test hook. When omitted, the Sec-GPC request header is used. */
+  gpc?: boolean;
   demo?: boolean;
   at?: Date;
 };
@@ -38,7 +41,10 @@ export function posthogConfigured() {
   return Boolean(process.env.POSTHOG_KEY);
 }
 
-export async function forwardPostHog(input: { name: string; distinctId: string; properties: Record<string, string>; consent: boolean }) {
+/** Session recording stays off on every capture. */
+export const posthogOptions = { disable_session_recording: true as const };
+
+export async function forwardPostHog(input: { name: string; distinctId: string; properties: Record<string, string | boolean>; consent: boolean }) {
   const key = process.env.POSTHOG_KEY;
   if (!key || !input.consent) return { skipped: true as const };
   const host = (process.env.POSTHOG_HOST || "https://us.i.posthog.com").replace(/\/$/, "");
@@ -49,16 +55,27 @@ export async function forwardPostHog(input: { name: string; distinctId: string; 
       api_key: key,
       event: input.name,
       distinct_id: input.distinctId,
-      properties: { ...input.properties, $lib: "becreative" },
+      properties: { ...input.properties, $lib: "becreative", ...posthogOptions },
     }),
   });
   return { skipped: false as const, ok: response.ok };
 }
 
+async function gpcFromRequest() {
+  try {
+    return gpcEnabled((await headers()).get("sec-gpc"));
+  } catch {
+    return false;
+  }
+}
+
 export async function capture(input: TrackInput) {
   if (!isCatalogEvent(input.name)) return { ok: false as const };
-  const anonymousId = input.anonymousId ?? (await cookieValue("bc_anon"));
-  const consent = input.consent ?? (await cookieValue("bc_cookie")) === "1";
+  const gpc = input.gpc ?? (await gpcFromRequest());
+  const accepted = input.consent ?? (await cookieValue("bc_cookie")) === "1";
+  const choices = privacyChoices({ gpc, accepted });
+  const anonymousId = input.anonymousId ?? (gpc ? null : await cookieValue("bc_anon"));
+  const consent = choices.analytics;
   const id = crypto.randomUUID();
   const platform: PlatformName = platformName(input.platform);
   await db.insert(analyticsEvents).values({

@@ -6,6 +6,7 @@ import { priorWithTeacher } from "@/lib/booking-service";
 import { quotePrice, type PromoRule } from "@/lib/pricing";
 import { classPromoDecision } from "@/lib/review-rules";
 import { recordClick } from "@/lib/queries";
+import { marketingCookiesAllowed } from "@/lib/privacy-server";
 import { one } from "@/lib/utils";
 
 export async function platformFee() {
@@ -81,7 +82,7 @@ export async function trackView(input: {
   search: Record<string, string | string[] | undefined>;
 }) {
   const jar = await cookies();
-  const raw = jar.get("bc_attr")?.value;
+  const raw = (await marketingCookiesAllowed()) ? jar.get("bc_attr")?.value : undefined;
   let attr: { ref?: string; utm_source?: string; utm_medium?: string; utm_campaign?: string } = {};
   if (raw) {
     try {

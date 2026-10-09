@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appOrigin } from "@/lib/env";
 
 /** California ARL (AB 2863) + ROSCA copy. [PLATFORM NAME] and the other bracketed fields stay configurable. */
-export const BUILTIN_TEMPLATE_VERSION = "arl-2026-07-v1";
+export const BUILTIN_TEMPLATE_VERSION = "arl-2026-07-v2";
 
 export const CONSENT_REQUIRED_ERROR = "Please confirm you agree to automatic renewal to start your membership.";
 export const DISCLOSURE_CHANGED_ERROR = "The renewal terms changed. Review them and confirm again.";
@@ -67,7 +67,8 @@ export const BUILTIN_TEMPLATES: RenewalTemplates = {
   disclosureCancel:
     "Cancel anytime online: Account › Memberships › Cancel membership, in the app or at {{site_url}}/account/memberships. Cancelling stops future charges; you keep access until {{current_term_end_date}}. {{refund_line}}",
   disclosureCommitment: "{{minimum_commitment_line}}",
-  disclosurePrice: "Price changes: we'll email you at least 7 days before any price change takes effect.",
+  disclosurePrice:
+    "Price changes: we'll email you at least 7 days before any price change takes effect. If a required renewal notice is not sent in its window, that renewal is not charged.",
   checkbox:
     "I agree that my {{membership_name}} membership will automatically renew every {{term_length}} at {{renewal_price}} plus tax, charged to my payment method, until I cancel. I understand I can cancel anytime online in Account › Memberships.",
   termsLine: "By purchasing, you also agree to the Terms of Service and {{teacher_name}}'s cancellation policy.",
@@ -93,7 +94,7 @@ Cancellation and refund policy
 {{teacher_policy_summary}} Full policy: {{teacher_policy_url}}
 
 Price changes
-If the price ever changes, we'll email you at least 7 days (and no more than 30 days) before the new price takes effect, so you have time to cancel.
+If the price ever changes, we'll email you at least 7 days (and no more than 30 days) before the new price takes effect, so you have time to cancel. If a required renewal notice is not sent in its window, that renewal is not charged.
 
 Questions? Reply to this email or contact {{teacher_name}} through the app.
 
@@ -537,19 +538,34 @@ export function priceChangeDateError(now: Date, effectiveAt: Date, minDays = PRI
   return null;
 }
 
+const REQUIRED_NOTICE_KINDS = new Set<NoticeKind>(["pre_renewal", "intro_ending", "price_change", "material_change"]);
+
+/** A missed annual reminder does not, by itself, stop the charge. */
+export function missedRequiredNotice(kind: NoticeKind) {
+  return REQUIRED_NOTICE_KINDS.has(kind);
+}
+
 export function priceAfterNotice(input: {
   lockedPriceCents: number;
   catalogPriceCents: number;
   change: { newPriceCents: number; effectiveAt: Date; noticeSentAt: Date | null } | null;
   renewsAt: Date;
+  now?: Date;
 }) {
   const locked = input.lockedPriceCents > 0 ? input.lockedPriceCents : input.catalogPriceCents;
-  if (!input.change) return { priceCents: locked, blockedNewPrice: false };
-  if (input.renewsAt.getTime() < input.change.effectiveAt.getTime()) return { priceCents: locked, blockedNewPrice: false };
-  if (!input.change.noticeSentAt) return { priceCents: locked, blockedNewPrice: true };
-  const leadDays = daysBetween(input.change.noticeSentAt, input.change.effectiveAt);
-  if (leadDays < NOTICE_WINDOWS.priceChange.minDays || leadDays > NOTICE_WINDOWS.priceChange.maxDays) return { priceCents: locked, blockedNewPrice: true };
-  return { priceCents: input.change.newPriceCents, blockedNewPrice: false };
+  if (!input.change) return { priceCents: locked, blockedNewPrice: false, chargeRenewal: true };
+  if (input.renewsAt.getTime() < input.change.effectiveAt.getTime()) return { priceCents: locked, blockedNewPrice: false, chargeRenewal: true };
+  if (input.change.noticeSentAt) {
+    const leadDays = daysBetween(input.change.noticeSentAt, input.change.effectiveAt);
+    if (leadDays >= NOTICE_WINDOWS.priceChange.minDays && leadDays <= NOTICE_WINDOWS.priceChange.maxDays) {
+      return { priceCents: input.change.newPriceCents, blockedNewPrice: false, chargeRenewal: true };
+    }
+    return { priceCents: locked, blockedNewPrice: true, chargeRenewal: false };
+  }
+  if (input.now && daysBetween(input.now, input.change.effectiveAt) >= NOTICE_WINDOWS.priceChange.minDays) {
+    return { priceCents: locked, blockedNewPrice: true, chargeRenewal: true };
+  }
+  return { priceCents: locked, blockedNewPrice: true, chargeRenewal: false };
 }
 
 export function shouldRetryRenewal(input: { cancelAtPeriodEnd: boolean; status: string }) {
@@ -562,8 +578,10 @@ export function dunningBody(membershipName: string, cancelUrl: string) {
   return `The renewal charge for ${membershipName} did not go through. You can cancel anytime, and cancelling stops future charges: ${cancelUrl}`;
 }
 
-export function noticeAlert(kind: NoticeKind, reason: string) {
-  return `Renewal notice ${kind} was not sent in its legal window: ${reason}`;
+export function noticeAlert(kind: NoticeKind, reason: string, pause = false) {
+  const base = `Renewal notice ${kind} was not sent in its legal window: ${reason}`;
+  if (!pause) return base;
+  return `${base} That renewal will not be charged.`;
 }
 
 export type NoticeMailFacts = {
