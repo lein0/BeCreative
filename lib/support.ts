@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { cannedReplies, platformSettings, teachers, ticketMessages, tickets, user } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
@@ -90,7 +90,7 @@ export async function recordCsat(ticketId: string, score: number) {
 
 export async function escalateDueTickets(now = new Date()) {
   const hours = await slaHours();
-  const open = await db.select().from(tickets).where(and(eq(tickets.route, "teacher"), isNull(tickets.escalatedAt), eq(tickets.status, "open")));
+  const open = await db.select().from(tickets).where(and(eq(tickets.route, "teacher"), isNull(tickets.escalatedAt), or(eq(tickets.status, "open"), eq(tickets.status, "waiting"))));
   let count = 0;
   for (const ticket of open) {
     const replies = await db.select().from(ticketMessages).where(eq(ticketMessages.ticketId, ticket.id));
