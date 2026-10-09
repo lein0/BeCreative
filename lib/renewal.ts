@@ -33,7 +33,7 @@ import {
   legalIdentity,
   membershipOffer,
   mergeTemplates,
-  missedRequiredNotice,
+  missedNoticeSkipsCharge,
   noticeAlert,
   noticeMail,
   planNotices,
@@ -264,14 +264,16 @@ async function loadCancelTarget(subscriptionId: string) {
 export async function cancelMembership(input: {
   subscriptionId: string;
   actorUserId: string;
-  source: "member" | "admin" | "account_deletion";
+  source: "member" | "admin" | "account_deletion" | "teacher";
   platform?: string;
   ip?: string | null;
   userAgent?: string | null;
 }) {
   const loaded = await loadCancelTarget(input.subscriptionId);
   if (!loaded) return { error: "Membership not found." };
-  if (input.source !== "admin" && loaded.sub.userId !== input.actorUserId) return { error: "Membership not found." };
+  if (input.source === "teacher") {
+    if (loaded.teacher.userId !== input.actorUserId) return { error: "Membership not found." };
+  } else if (input.source !== "admin" && loaded.sub.userId !== input.actorUserId) return { error: "Membership not found." };
   const templates = await activeTemplates();
   const legal = await contextLegal();
   const screen = cancellationScreen(loaded.plan.name, loaded.sub.currentPeriodEnd, templates, legal);
@@ -456,6 +458,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
       periodEnd: sub.currentPeriodEnd,
       introEndsAt: sub.introEndsAt,
       introDays: plan.introDays,
+      introPriceCents: plan.introPriceCents,
       priceChange: price ? { effectiveAt: price.effectiveAt, sent: handled(mine, "price_change", isoDate(price.effectiveAt)) } : null,
       materialChange: material ? { effectiveAt: material.effectiveAt, sent: false } : null,
       annualSentFor: mine.filter((notice) => notice.kind === "annual").map((notice) => notice.eventOn),
@@ -464,6 +467,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
     });
     const cancelUrl = `${legal.siteUrl}/account/memberships/${sub.id}/cancel`;
     const pauseReasons: string[] = [];
+    let priceFallback = false;
     for (const decision of decisions) {
       if (decision.action === "wait") continue;
       const eventOn = isoDate(decision.eventAt);
@@ -502,17 +506,18 @@ export async function scheduleRenewalNotices(now = new Date()) {
             status: "missed",
             subject: mail.subject,
             body: mail.text,
-            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedRequiredNotice(decision.kind)),
+            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
           }).onConflictDoNothing().returning();
           if (inserted.length) missed += 1;
         } else if (prior.status !== "missed") {
           await db.update(renewalNotices).set({
             status: "missed",
-            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedRequiredNotice(decision.kind)),
+            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
           }).where(eq(renewalNotices.id, prior.id));
           missed += 1;
         }
-        if (missedRequiredNotice(decision.kind)) pauseReasons.push(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`, true));
+        if (missedNoticeSkipsCharge(decision.kind)) pauseReasons.push(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`, true));
+        else if (decision.kind === "price_change") priceFallback = true;
         else await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
         continue;
       }
@@ -572,14 +577,14 @@ export async function scheduleRenewalNotices(now = new Date()) {
       renewsAt: sub.currentPeriodEnd,
       now,
     });
-    if (!priced.chargeRenewal && !pauseReasons.some((reason) => reason.includes("price_change"))) {
-      pauseReasons.push(noticeAlert("price_change", `subscription ${sub.id} renews ${isoDate(sub.currentPeriodEnd)}`, true));
-    }
     if (pauseReasons.length) {
       const stripeId = sub.orderId ? ordersById.get(sub.orderId)?.stripeSubscriptionId ?? null : null;
       await pauseUnnoticedRenewal(sub.id, stripeId);
       await alertOps(`${pauseReasons.join(" ")} Subscription ${sub.id} is set to cancel at period end.`);
       continue;
+    }
+    if (priceFallback) {
+      await alertOps(`The price-change notice for subscription ${sub.id} was not sent in its window. The renewal will be charged at the previous price.`);
     }
     const locked = sub.renewalPriceCents > 0 ? sub.renewalPriceCents : plan.priceCents;
     if (!priced.blockedNewPrice && priced.priceCents !== locked && priced.priceCents > 0) {
@@ -599,6 +604,22 @@ export async function scheduleRenewalNotices(now = new Date()) {
     }
   }
   return { sent, missed };
+}
+
+export async function teacherMembershipRoster(teacherId: string) {
+  return db
+    .select({
+      id: membershipSubscriptions.id,
+      membershipId: membershipSubscriptions.membershipId,
+      name: user.name,
+      status: membershipSubscriptions.status,
+      cancelAtPeriodEnd: membershipSubscriptions.cancelAtPeriodEnd,
+      currentPeriodEnd: membershipSubscriptions.currentPeriodEnd,
+    })
+    .from(membershipSubscriptions)
+    .innerJoin(user, eq(user.id, membershipSubscriptions.userId))
+    .where(and(eq(membershipSubscriptions.teacherId, teacherId), ne(membershipSubscriptions.status, "cancelled")))
+    .orderBy(asc(user.name));
 }
 
 export async function listRenewalSubscriptions(limit = 50) {

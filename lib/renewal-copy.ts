@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appOrigin } from "@/lib/env";
 
 /** California ARL (AB 2863) + ROSCA copy. [PLATFORM NAME] and the other bracketed fields stay configurable. */
-export const BUILTIN_TEMPLATE_VERSION = "arl-2026-07-v2";
+export const BUILTIN_TEMPLATE_VERSION = "arl-2026-07-v3";
 
 export const CONSENT_REQUIRED_ERROR = "Please confirm you agree to automatic renewal to start your membership.";
 export const DISCLOSURE_CHANGED_ERROR = "The renewal terms changed. Review them and confirm again.";
@@ -12,12 +12,12 @@ export const PRICE_CHANGE_MIN_DAYS_TEACHER = 14;
 export const MATERIAL_CHANGE_MIN_DAYS = 30;
 
 export const NOTICE_WINDOWS = {
-  preRenewal: { targetDays: 30, minDays: 15, maxDays: 45 },
+  preRenewal: { targetDays: 35, minDays: 30, maxDays: 45 },
   introLong: { targetDays: 7, minDays: 3, maxDays: 21 },
   introShort: { targetDays: 3, minDays: 3, maxDays: 21 },
   priceChange: { targetDays: 21, minDays: 7, maxDays: 30 },
   materialChange: { targetDays: 30, minDays: 30, maxDays: 45 },
-  annualLateDays: 7,
+  annual: { targetDays: 35, minDays: 30, maxDays: 45 },
 } as const;
 
 export type LegalIdentity = {
@@ -67,8 +67,7 @@ export const BUILTIN_TEMPLATES: RenewalTemplates = {
   disclosureCancel:
     "Cancel anytime online: Account › Memberships › Cancel membership, in the app or at {{site_url}}/account/memberships. Cancelling stops future charges; you keep access until {{current_term_end_date}}. {{refund_line}}",
   disclosureCommitment: "{{minimum_commitment_line}}",
-  disclosurePrice:
-    "Price changes: we'll email you at least 7 days before any price change takes effect. If a required renewal notice is not sent in its window, that renewal is not charged.",
+  disclosurePrice: "Price changes: we'll email you 7 to 30 days before any price change takes effect.",
   checkbox:
     "I agree that my {{membership_name}} membership will automatically renew every {{term_length}} at {{renewal_price}} plus tax, charged to my payment method, until I cancel. I understand I can cancel anytime online in Account › Memberships.",
   termsLine: "By purchasing, you also agree to the Terms of Service and {{teacher_name}}'s cancellation policy.",
@@ -94,7 +93,7 @@ Cancellation and refund policy
 {{teacher_policy_summary}} Full policy: {{teacher_policy_url}}
 
 Price changes
-If the price ever changes, we'll email you at least 7 days (and no more than 30 days) before the new price takes effect, so you have time to cancel. If a required renewal notice is not sent in its window, that renewal is not charged.
+If the price ever changes, we'll email you 7 to 30 days before the new price takes effect, so you have time to cancel.
 
 Questions? Reply to this email or contact {{teacher_name}} through the app.
 
@@ -105,27 +104,29 @@ Terms of Service: {{terms_url}} · Privacy Policy: {{privacy_url}}`,
 [PLATFORM NAME] · [MAILING ADDRESS] · [CONTACT EMAIL]`,
   cancelScreen: "You've cancelled {{membership_name}}. You won't be charged again. Your access continues until {{current_term_end_date}}.",
   preRenewalSubject: "Your {{membership_name}} membership renews on {{renewal_date}}",
-  preRenewalBody: `Hi {{first_name}}, your 12-month {{membership_name}} membership with {{teacher_name}} will automatically renew on {{renewal_date}} for another 12 months, and we'll charge {{renewal_price}} plus any applicable tax to your {{card_brand}} ending in {{last4}}. If you don't want to renew, cancel before {{renewal_date}}: Cancel membership ({{cancel_url}}) or go to Account › Memberships in the app or at {{site_url}}. {{refund_line}}
+  preRenewalBody: `Hi {{first_name}}, your 12-month {{membership_name}} membership with {{teacher_name}} will automatically renew on {{renewal_date}} for another 12 months, and we'll charge {{renewal_price}} plus any applicable tax to your {{card_brand}} ending in {{last4}}. To avoid renewing, cancel by {{cancel_by_date_time}} (right up until your renewal): Cancel membership ({{cancel_url}}) or go to Account › Memberships in the app or at {{site_url}}. {{refund_line}}
 
 What it includes: {{benefits_summary}}
 How often you're charged: every {{term_length}}
 How much: {{renewal_price}} plus any applicable tax, to your {{card_brand}} ending in {{last4}}. Next charge: {{next_renewal_date}}.
-How to cancel: anytime online at Account › Memberships › Cancel membership, or {{cancel_url}}. Cancelling stops future charges, and you keep access until the end of your paid term.`,
+How to cancel: anytime online at Account › Memberships › Cancel membership, or {{cancel_url}}. Cancelling stops future charges, and you keep access until the end of your paid term.
+View your full membership terms: {{terms_url}}`,
   introSubject: "Your intro to {{membership_name}} ends {{intro_end_date}}",
   introBody:
-    "Hi {{first_name}}, your intro period for {{membership_name}} ends on {{intro_end_date}}. After that, your membership automatically continues at {{renewal_price}} every {{term_length}}, charged to your {{card_brand}} ending in {{last4}}, until you cancel. To avoid being charged, cancel before {{intro_end_date}}: Cancel membership ({{cancel_url}}).",
+    "Hi {{first_name}}, your intro period for {{membership_name}} ends on {{intro_end_date}}. After that, your membership automatically continues at {{renewal_price}} every {{term_length}}, charged to your {{card_brand}} ending in {{last4}}, until you cancel. To avoid being charged, cancel by {{cancel_by_date_time}}: Cancel membership ({{cancel_url}}). View your full membership terms: {{terms_url}}",
   priceSubject: "Price change for your {{membership_name}} membership",
   priceBody:
-    "Hi {{first_name}}, {{teacher_name}} is changing the price of {{membership_name}} from {{old_price}} to {{new_price}} every {{term_length}}, starting with your renewal on {{effective_date}}. Nothing changes before then. If you don't want to continue at the new price, cancel anytime before {{effective_date}}: Cancel membership ({{cancel_url}}) or Account › Memberships. If you do nothing, your membership will renew at {{new_price}} plus any applicable tax.",
+    "Hi {{first_name}}, {{teacher_name}} is changing the price of {{membership_name}} from {{old_price}} to {{new_price}} every {{term_length}}, starting with your renewal on {{effective_date}}. Nothing changes before then. If you don't want to continue at the new price, cancel by {{cancel_by_date_time}}: Cancel membership ({{cancel_url}}) or Account › Memberships. If you do nothing, your membership will renew at {{new_price}} plus any applicable tax. View your full membership terms: {{terms_url}}",
   materialSubject: "Changes to your {{membership_name}} membership",
   materialBody:
-    "Hi {{first_name}}, starting {{effective_date}}, {{teacher_name}} is making these changes to {{membership_name}}: {{change_summary}}. Your price {{price_phrase}}. If you'd rather not continue, cancel anytime: Cancel membership ({{cancel_url}}).",
+    "Hi {{first_name}}, starting {{effective_date}}, {{teacher_name}} is making these changes to {{membership_name}}: {{change_summary}}. Your price {{price_phrase}}. If you'd rather not continue, cancel by {{cancel_by_date_time}}: Cancel membership ({{cancel_url}}). View your full membership terms: {{terms_url}}",
   annualSubject: "Your yearly membership reminder: {{membership_name}}",
   annualBody: `Hi {{first_name}}, here's your yearly reminder about your {{membership_name}} membership with {{teacher_name}}, which you started on {{start_date}}.
 - What it includes: {{benefits_summary}}
 - How often you're charged: every {{term_length}}
 - How much: {{renewal_price}} plus any applicable tax, to your {{card_brand}} ending in {{last4}}. Next charge: {{next_renewal_date}}.
-- How to cancel: anytime online at Account › Memberships › Cancel membership, or {{cancel_url}}. Cancelling stops future charges, and you keep access until the end of your paid term.`,
+- How to cancel: anytime online at Account › Memberships › Cancel membership, or {{cancel_url}}. To avoid your next renewal, cancel by {{cancel_by_date_time}}. Cancelling stops future charges, and you keep access until the end of your paid term.
+- View your full membership terms: {{terms_url}}`,
   confirmSummary: "Your membership will end on {{current_term_end_date}}. You won't be charged again.",
 };
 
@@ -180,6 +181,18 @@ export function introLengthLabel(days: number) {
 
 export function formatRenewalDate(date: Date) {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "long", day: "numeric", year: "numeric" }).format(date);
+}
+
+export function formatRenewalDateTime(date: Date) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
 }
 
 export function addLocalMonths(date: Date, months: number) {
@@ -469,6 +482,8 @@ export type NoticePlanInput = {
   periodEnd: Date;
   introEndsAt: Date | null;
   introDays: number | null;
+  /** A discounted intro (price above zero) is a fee change, so it uses the 7-day notice. */
+  introPriceCents?: number | null;
   priceChange: { effectiveAt: Date; sent: boolean } | null;
   materialChange: { effectiveAt: Date; sent: boolean } | null;
   annualSentFor: string[];
@@ -485,14 +500,14 @@ function windowDecision(kind: NoticeKind, now: Date, eventAt: Date, targetDays: 
   return { kind, action: "wait", eventAt, daysBefore };
 }
 
-function nextAnniversary(startedAt: Date, now: Date) {
+/** The upcoming renewal is the one that carries the membership past a 12-month mark. */
+export function renewalCrossesYear(startedAt: Date, periodEnd: Date, termMonths: number) {
+  const previous = addLocalMonths(periodEnd, -Math.max(1, termMonths));
   for (let year = 1; year <= 20; year += 1) {
-    const eventAt = addLocalMonths(startedAt, year * 12);
-    const daysBefore = daysBetween(now, eventAt);
-    if (daysBefore >= -NOTICE_WINDOWS.annualLateDays) return { eventAt, daysBefore, key: isoDate(eventAt) };
-    if (daysBefore < -NOTICE_WINDOWS.annualLateDays && year === 20) return { eventAt, daysBefore, key: isoDate(eventAt) };
+    const mark = addLocalMonths(startedAt, year * 12);
+    if (previous.getTime() < mark.getTime() && periodEnd.getTime() >= mark.getTime()) return true;
   }
-  return null;
+  return false;
 }
 
 export function planNotices(input: NoticePlanInput): NoticeDecision[] {
@@ -500,16 +515,21 @@ export function planNotices(input: NoticePlanInput): NoticeDecision[] {
   if (input.termMonths >= 12) {
     const pre = windowDecision("pre_renewal", input.now, input.periodEnd, NOTICE_WINDOWS.preRenewal.targetDays, NOTICE_WINDOWS.preRenewal.minDays, NOTICE_WINDOWS.preRenewal.maxDays, input.preRenewalSent);
     if (pre) decisions.push(pre);
-  } else {
-    const anniversary = nextAnniversary(input.startedAt, input.now);
-    if (anniversary && !input.annualSentFor.includes(anniversary.key)) {
-      if (anniversary.daysBefore > 0) decisions.push({ kind: "annual", action: "wait", eventAt: anniversary.eventAt, daysBefore: anniversary.daysBefore });
-      else if (anniversary.daysBefore >= -NOTICE_WINDOWS.annualLateDays) decisions.push({ kind: "annual", action: "send", eventAt: anniversary.eventAt, daysBefore: anniversary.daysBefore });
-      else decisions.push({ kind: "annual", action: "missed", eventAt: anniversary.eventAt, daysBefore: anniversary.daysBefore });
-    }
+  } else if (renewalCrossesYear(input.startedAt, input.periodEnd, input.termMonths)) {
+    const annual = windowDecision(
+      "annual",
+      input.now,
+      input.periodEnd,
+      NOTICE_WINDOWS.annual.targetDays,
+      NOTICE_WINDOWS.annual.minDays,
+      NOTICE_WINDOWS.annual.maxDays,
+      input.annualSentFor.includes(isoDate(input.periodEnd)),
+    );
+    if (annual) decisions.push(annual);
   }
   if (input.introEndsAt && input.introDays && input.introDays >= 7) {
-    const window = input.introDays > 31 ? NOTICE_WINDOWS.introLong : NOTICE_WINDOWS.introShort;
+    const discounted = (input.introPriceCents ?? 0) > 0;
+    const window = input.introDays > 31 || discounted ? NOTICE_WINDOWS.introLong : NOTICE_WINDOWS.introShort;
     const intro = windowDecision("intro_ending", input.now, input.introEndsAt, window.targetDays, window.minDays, window.maxDays, input.introSent);
     if (intro) decisions.push(intro);
   }
@@ -538,11 +558,15 @@ export function priceChangeDateError(now: Date, effectiveAt: Date, minDays = PRI
   return null;
 }
 
-const REQUIRED_NOTICE_KINDS = new Set<NoticeKind>(["pre_renewal", "intro_ending", "price_change", "material_change"]);
+const PAUSE_NOTICE_KINDS = new Set<NoticeKind>(["pre_renewal", "intro_ending", "material_change", "annual"]);
 
-/** A missed annual reminder does not, by itself, stop the charge. */
+/** A missed price-change notice keeps the old price. Any other missed required notice is not charged. */
 export function missedRequiredNotice(kind: NoticeKind) {
-  return REQUIRED_NOTICE_KINDS.has(kind);
+  return PAUSE_NOTICE_KINDS.has(kind) || kind === "price_change";
+}
+
+export function missedNoticeSkipsCharge(kind: NoticeKind) {
+  return PAUSE_NOTICE_KINDS.has(kind);
 }
 
 export function priceAfterNotice(input: {
@@ -560,12 +584,9 @@ export function priceAfterNotice(input: {
     if (leadDays >= NOTICE_WINDOWS.priceChange.minDays && leadDays <= NOTICE_WINDOWS.priceChange.maxDays) {
       return { priceCents: input.change.newPriceCents, blockedNewPrice: false, chargeRenewal: true };
     }
-    return { priceCents: locked, blockedNewPrice: true, chargeRenewal: false };
-  }
-  if (input.now && daysBetween(input.now, input.change.effectiveAt) >= NOTICE_WINDOWS.priceChange.minDays) {
     return { priceCents: locked, blockedNewPrice: true, chargeRenewal: true };
   }
-  return { priceCents: locked, blockedNewPrice: true, chargeRenewal: false };
+  return { priceCents: locked, blockedNewPrice: true, chargeRenewal: true };
 }
 
 export function shouldRetryRenewal(input: { cancelAtPeriodEnd: boolean; status: string }) {
@@ -619,6 +640,8 @@ export function noticeMail(facts: NoticeMailFacts, templates: RenewalTemplates, 
     renewal_date: formatRenewalDate(facts.eventAt),
     intro_end_date: formatRenewalDate(facts.eventAt),
     effective_date: formatRenewalDate(facts.eventAt),
+    cancel_by_date_time: formatRenewalDateTime(facts.eventAt),
+    terms_url: facts.cancelUrl.replace(/\/cancel$/, "/terms"),
     next_renewal_date: formatRenewalDate(facts.nextRenewal),
     start_date: formatRenewalDate(facts.startedAt),
     cancel_url: facts.cancelUrl,
