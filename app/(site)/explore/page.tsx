@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { ClassCard, control, fromPrice } from "@/components/bits";
 import { StudioMap } from "@/components/map-loader";
 import { CLASS_FORMATS, DELIVERY_MODES, FORMAT_LABELS, LEVEL_LABELS, NEIGHBORHOODS, SKILL_LEVELS, type ClassFormat, type SkillLevel } from "@/lib/constants";
-import { catalog, categoryTree, publishedServices } from "@/lib/queries";
+import { catalog, categoryTree, matchesServiceQuery, publishedServices } from "@/lib/queries";
 import { money, one } from "@/lib/utils";
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
@@ -41,12 +41,7 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
   const used = ["category", "level", "format", "delivery", "near", "vertical"].filter((key) => one(sp[key]));
   if (used.length) await capture({ name: "filter_used", path: "/explore", platform: "web", properties: { filters: used.join(",") } });
   const services = vertical === "wellness" ? await publishedServices() : [];
-  const serviceRows = services.filter((row) => {
-    const query = (one(sp.q) ?? "").toLowerCase();
-    if (query && !`${row.service.title} ${row.teacher.studioName ?? ""} ${row.category.name}`.toLowerCase().includes(query)) return false;
-    if (one(sp.category) && row.category.slug !== one(sp.category)) return false;
-    return true;
-  });
+  const serviceRows = services.filter((row) => matchesServiceQuery(row, one(sp.q), one(sp.category)));
   const points = rows
     .filter((row) => row.location)
     .map((row) => ({

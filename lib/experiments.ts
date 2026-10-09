@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { ANON_COOKIE, ANON_HEADER, experimentSubject } from "@/lib/anon";
 import { assignVariant } from "@/lib/analytics-math";
 import { capture } from "@/lib/analytics";
 import { db } from "@/lib/db";
@@ -48,12 +49,23 @@ export async function exposeExperiment(key: string, subjectId: string, userId?: 
 }
 
 export async function subjectFromCookies(userId?: string | null) {
+  let cookie: string | null = null;
+  let header: string | null = null;
   try {
     const jar = await cookies();
-    return jar.get("bc_anon")?.value || userId || "anonymous";
+    cookie = jar.get(ANON_COOKIE)?.value ?? null;
   } catch {
-    return userId || "anonymous";
+    cookie = null;
   }
+  if (!cookie) {
+    try {
+      const headerStore = await headers();
+      header = headerStore.get(ANON_HEADER);
+    } catch {
+      header = null;
+    }
+  }
+  return experimentSubject({ cookie, header, userId });
 }
 
 export async function serverExperiment(key: string, userId?: string | null, platform?: string) {

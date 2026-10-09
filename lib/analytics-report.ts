@@ -115,28 +115,49 @@ export async function studentFunnel(filter: AnalyticsFilter) {
     sets.set(row.name, bucket);
   }
   const paidSubjects = sets.get("checkout_completed") ?? new Set<string>();
-  const paidUsers = rows.filter((row) => row.name === "checkout_completed" && row.userId).map((row) => row.userId!);
+  const classCheckouts = rows.filter((row) => {
+    if (row.name !== "checkout_completed" || !row.userId || !row.properties.orderId) return false;
+    const kind = row.properties.kind;
+    return kind !== "pack" && kind !== "membership";
+  });
+  const orderIds = [...new Set(classCheckouts.map((row) => row.properties.orderId!))];
   let attended = 0;
   let rebooked = 0;
-  if (paidUsers.length) {
-    const links = await db
-      .select({ userId: bookings.userId, checkedIn: bookingSessions.checkedIn, createdAt: bookings.createdAt })
-      .from(bookingSessions)
-      .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
-      .where(inArray(bookings.userId, paidUsers));
-    const attendedUsers = new Set(links.filter((link) => link.checkedIn && link.userId).map((link) => link.userId!));
+  if (orderIds.length) {
+    const paidBookings = await db
+      .select()
+      .from(bookings)
+      .where(and(inArray(bookings.orderId, orderIds), eq(bookings.status, "confirmed")));
+    const bookingIds = paidBookings.map((booking) => booking.id);
+    const links = bookingIds.length
+      ? await db
+          .select({ bookingId: bookingSessions.bookingId, checkedIn: bookingSessions.checkedIn })
+          .from(bookingSessions)
+          .where(inArray(bookingSessions.bookingId, bookingIds))
+      : [];
+    const checkedIn = new Set(links.filter((link) => link.checkedIn).map((link) => link.bookingId));
+    const attendedUsers = new Set(paidBookings.filter((booking) => booking.userId && checkedIn.has(booking.id)).map((booking) => booking.userId!));
     attended = [...paidSubjects].filter((subject) => attendedUsers.has(subject)).length;
-    const byUser = new Map<string, Date[]>();
-    for (const link of links) {
-      if (!link.userId) continue;
-      const list = byUser.get(link.userId) ?? [];
-      list.push(link.createdAt);
-      byUser.set(link.userId, list);
-    }
-    for (const dates of byUser.values()) {
-      dates.sort((a, b) => a.getTime() - b.getTime());
-      const first = dates[0];
-      if (first && dates.some((date) => date.getTime() - first.getTime() > 0 && date.getTime() - first.getTime() <= 30 * 86_400_000)) rebooked += 1;
+    const userIds = [...new Set(paidBookings.map((booking) => booking.userId).filter((id): id is string => Boolean(id)))];
+    if (userIds.length && paidBookings.length) {
+      const earliest = paidBookings.reduce((min, booking) => (booking.createdAt < min ? booking.createdAt : min), paidBookings[0]!.createdAt);
+      const latest = paidBookings.reduce((max, booking) => (booking.createdAt > max ? booking.createdAt : max), paidBookings[0]!.createdAt);
+      const windowEnd = new Date(latest.getTime() + 30 * 86_400_000);
+      const followUps = await db
+        .select()
+        .from(bookings)
+        .where(and(inArray(bookings.userId, userIds), eq(bookings.status, "confirmed"), gte(bookings.createdAt, earliest), lte(bookings.createdAt, windowEnd)));
+      const rebookUsers = new Set<string>();
+      for (const anchor of paidBookings) {
+        if (!anchor.userId || rebookUsers.has(anchor.userId)) continue;
+        const again = followUps.some((row) => {
+          if (row.userId !== anchor.userId || row.id === anchor.id) return false;
+          const gap = row.createdAt.getTime() - anchor.createdAt.getTime();
+          return gap > 0 && gap <= 30 * 86_400_000;
+        });
+        if (again) rebookUsers.add(anchor.userId);
+      }
+      rebooked = [...paidSubjects].filter((subject) => rebookUsers.has(subject)).length;
     }
   }
   const steps = STUDENT_FUNNEL.map((step) => {

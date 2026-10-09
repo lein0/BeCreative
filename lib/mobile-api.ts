@@ -26,8 +26,8 @@ import {
 import { exposeExperiment, subjectFromCookies } from "@/lib/experiments";
 import { FAQ_ARTICLES } from "@/lib/faq";
 import { hitRateLimit } from "@/lib/rate-limit";
-import { catalog, classDetail, publishedServices, teacherProfile } from "@/lib/queries";
-import { isCatalogEvent, platformName } from "@/lib/analytics-events";
+import { catalog, classDetail, matchesServiceQuery, publishedServices, teacherProfile } from "@/lib/queries";
+import { isCatalogEvent, MONEY_EVENTS, platformName } from "@/lib/analytics-events";
 import { openTicket } from "@/lib/support";
 import { signWaiver } from "@/lib/wellness-service";
 import { applyContactPrefs } from "@/lib/contact-prefs";
@@ -117,6 +117,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     if (!limit.ok) return json({ error: "Too many events." }, 429);
     const body = await request.json() as { name?: string; anonymousId?: string; properties?: Record<string, string>; consent?: boolean; path?: string; platform?: string };
     if (!body.name || !isCatalogEvent(body.name)) return json({ error: "Unknown event." }, 400);
+    if (MONEY_EVENTS.has(body.name)) return json({ error: "That event is recorded by the server." }, 400);
     const actor = await actorFromRequest(request);
     await capture({
       name: body.name,
@@ -157,7 +158,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   if (method === "GET" && root === "search") {
     const q = url.searchParams.get("q") || "";
     const rows = await catalog({ q, vertical: url.searchParams.get("vertical") || undefined });
-    const visits = await publishedServices();
+    const visits = (await publishedServices()).filter((row) => matchesServiceQuery(row, q));
     await capture({ name: "search", platform, properties: { q } });
     return json({
       classes: rows.map(publicClass),
@@ -165,7 +166,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     });
   }
 
-  if (method === "GET" && root === "classes" && second && !third) {
+  if (method === "GET" && root === "classes" && second && second !== "slots" && !third) {
     const detail = await classDetail(decodeURIComponent(second));
     if (!detail) return json({ error: "Class not found." }, 404);
     await capture({ name: "class_viewed", platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
@@ -189,8 +190,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   const authResult = await requireActor(request);
   if ("error" in authResult && authResult.error) {
     if (root === "help" && method === "GET") {
-      const articles = await db.select().from(faqArticles);
-      const list = articles.length ? articles : FAQ_ARTICLES;
+      const list = await visibleHelpArticles();
       if (second) {
         const article = list.find((item) => item.slug === decodeURIComponent(second));
         if (!article) return json({ error: "Article not found." }, 404);
@@ -324,7 +324,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
       token: body.token,
       platform: platformName(body.platform || platform),
       provider,
-    }).onConflictDoNothing();
+    }).onConflictDoUpdate({
+      target: deviceTokens.token,
+      set: { userId: actor.id, platform: platformName(body.platform || platform), provider },
+    });
     return json({ ok: true });
   }
 
@@ -335,8 +338,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "GET" && root === "help") {
-    const articles = await db.select().from(faqArticles);
-    const list = articles.length ? articles : FAQ_ARTICLES;
+    const list = await visibleHelpArticles();
     if (second) {
       const article = list.find((item) => item.slug === decodeURIComponent(second));
       if (!article) return json({ error: "Article not found." }, 404);
@@ -365,6 +367,11 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   return json({ error: "Not found." }, 404);
+}
+
+async function visibleHelpArticles() {
+  const articles = await db.select().from(faqArticles).where(eq(faqArticles.published, true));
+  return articles.length ? articles : FAQ_ARTICLES;
 }
 
 function publicClass(row: { class: { id: string; slug: string; title: string; pricePerSessionCents: number | null; delivery: string }; teacher: { slug: string; studioName: string | null }; category?: { slug: string; vertical: string; name: string }; next?: { startsAt: Date } | null; price?: number; spots?: number | null }) {

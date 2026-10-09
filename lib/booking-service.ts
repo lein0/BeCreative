@@ -111,21 +111,50 @@ function toRule(row: typeof promoCodes.$inferSelect): PromoRule {
   };
 }
 
+function paymentIntentStillCollecting(status: string) {
+  return status === "succeeded" || status === "processing";
+}
+
+function stripeResourceMissing(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "resource_missing";
+}
+
+/** Keep the seat when Stripe has already collected or may still collect. Cancel an open PaymentIntent before releasing it. */
+async function stripeHoldCanRelease(
+  stripe: NonNullable<ReturnType<typeof getStripe>>,
+  order: { stripeCheckoutSessionId: string | null; stripePaymentIntentId: string | null },
+) {
+  if (order.stripeCheckoutSessionId) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      if (session.status === "complete" || session.payment_status === "paid") return false;
+      if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    } catch {
+      // The Checkout session is already closed. Release the seat anyway.
+    }
+    return true;
+  }
+  if (!order.stripePaymentIntentId) return true;
+  try {
+    let intent = await stripe.paymentIntents.retrieve(order.stripePaymentIntentId);
+    if (paymentIntentStillCollecting(intent.status)) return false;
+    if (intent.status !== "canceled") {
+      intent = await stripe.paymentIntents.cancel(order.stripePaymentIntentId);
+      if (paymentIntentStillCollecting(intent.status) || intent.status !== "canceled") return false;
+    }
+  } catch (error) {
+    if (!stripeResourceMissing(error)) return false;
+  }
+  return true;
+}
+
 export async function releaseExpiredCheckoutHolds(now = new Date()) {
   const cutoff = checkoutHoldCutoff(now, checkoutHoldMinutes());
   const stale = await db.select().from(orders).where(and(eq(orders.status, "pending"), lte(orders.createdAt, cutoff)));
   const stripe = getStripe();
   let released = 0;
   for (const order of stale) {
-    if (stripe && order.stripeCheckoutSessionId) {
-      try {
-        const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
-        if (session.status === "complete" || session.payment_status === "paid") continue;
-        if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
-      } catch {
-        // The Checkout session is already closed. Release the seat anyway.
-      }
-    }
+    if (stripe && !(await stripeHoldCanRelease(stripe, order))) continue;
     const updated = await db
       .update(orders)
       .set({ status: "expired", updatedAt: now })
@@ -616,17 +645,24 @@ export async function cancelBooking(userId: string, bookingId: string) {
 }
 
 export async function rescheduleBooking(userId: string, bookingId: string, sessionId: string) {
-  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
-  if (!booking) return { error: "Booking not found." };
-  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
-  if (links.length !== 1) return { error: "Move one date at a time." };
-  const [next] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-  if (!next || next.classId !== booking.classId || next.status !== "scheduled" || next.startsAt <= new Date()) return { error: "That date is not open." };
-  if (links[0]!.sessionId === next.id) return { ok: true as const };
-  const taken = await confirmedCount(next.id);
-  if (taken >= next.capacity) return { error: "That date is full." };
-  await db.update(bookingSessions).set({ sessionId: next.id }).where(eq(bookingSessions.bookingId, booking.id));
-  return { ok: true as const };
+  try {
+    return await db.transaction(async (tx) => {
+      const [booking] = await tx.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
+      if (!booking) return { error: "Booking not found." };
+      const links = await tx.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
+      if (links.length !== 1) return { error: "Move one date at a time." };
+      await tx.execute(sql`select id from sessions where id = ${sessionId} for update`);
+      const [next] = await tx.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      if (!next || next.classId !== booking.classId || next.status !== "scheduled" || next.startsAt <= new Date()) return { error: "That date is not open." };
+      if (links[0]!.sessionId === next.id) return { ok: true as const };
+      const taken = await confirmedCount(next.id, tx as unknown as typeof db);
+      if (taken >= next.capacity) return { error: "That date is full." };
+      await tx.update(bookingSessions).set({ sessionId: next.id }).where(and(eq(bookingSessions.bookingId, booking.id), eq(bookingSessions.sessionId, links[0]!.sessionId)));
+      return { ok: true as const };
+    });
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not move that date." };
+  }
 }
 
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {

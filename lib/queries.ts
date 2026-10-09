@@ -92,6 +92,17 @@ export async function catalog(filters: {
     });
 }
 
+export function matchesServiceQuery(
+  row: { service: { title: string }; teacher: { studioName: string | null }; category: { name: string; slug: string } },
+  q?: string | null,
+  category?: string | null,
+) {
+  const query = (q ?? "").toLowerCase();
+  if (query && !`${row.service.title} ${row.teacher.studioName ?? ""} ${row.category.name}`.toLowerCase().includes(query)) return false;
+  if (category && row.category.slug !== category) return false;
+  return true;
+}
+
 export async function publishedServices() {
   return db
     .select({ service: services, teacher: teachers, location: locations, category: categories })
