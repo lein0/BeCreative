@@ -34,6 +34,12 @@ export function refundIdempotencyKey(orderId: string, amountCents: number, reaso
   return scope ? `refund:${orderId}:${scope}:${amountCents}:${reason}` : `refund:${orderId}:${amountCents}:${reason}`;
 }
 
+/** A successful submit clears the key. An error redirect keeps it so the retry is the same refund. */
+export function nextAdminRefundKey(input: { stored: string | null; succeeded: boolean; minted: string }) {
+  if (input.succeeded || !input.stored?.trim()) return input.minted;
+  return input.stored.trim();
+}
+
 /** Same admin submit (double click or refresh) must reuse one ledger key. A blank key stays stable. */
 export function adminRefundScope(idempotencyKey: string | null | undefined) {
   const key = (idempotencyKey ?? "").trim();

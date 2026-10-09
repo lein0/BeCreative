@@ -3,8 +3,9 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 config({ path: ".env.local" });
 
-const { refundCreate } = vi.hoisted(() => ({
+const { refundCreate, checkoutRetrieve } = vi.hoisted(() => ({
   refundCreate: vi.fn(async (_params: { payment_intent?: string; amount?: number }, _options?: { idempotencyKey?: string }) => ({ id: "re_test" })),
+  checkoutRetrieve: vi.fn(async () => ({ status: "expired", payment_status: "unpaid" })),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -17,7 +18,10 @@ vi.mock("@/lib/stripe", async () => {
   return {
     ...actual,
     stripeConfigured: () => true,
-    getStripe: () => ({ refunds: { create: refundCreate } }),
+    getStripe: () => ({
+      refunds: { create: refundCreate },
+      checkout: { sessions: { retrieve: checkoutRetrieve, expire: vi.fn(async () => ({})) } },
+    }),
     createCheckout: vi.fn(async () => {
       throw new Error("stripe down");
     }),
@@ -34,9 +38,10 @@ vi.mock("next/headers", () => ({
 const { eq, inArray } = await import("drizzle-orm");
 const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
-const { bookSession, cancelBooking, confirmedCount } = await import("@/lib/booking-service");
-const { sendIndividually } = await import("@/lib/email");
-const { teacherProfile } = await import("@/lib/queries");
+const { bookSession, cancelBooking, confirmedCount, purchaseOffer, renewMembershipFromInvoice } = await import("@/lib/booking-service");
+const { sendEmail, sendIndividually } = await import("@/lib/email");
+const { createCheckout } = await import("@/lib/stripe");
+const { classDetail, teacherProfile } = await import("@/lib/queries");
 const { manualBook, setPaused, syncRule } = await import("@/lib/studio-service");
 
 const tag = `bugbot-${crypto.randomUUID().slice(0, 8)}`;
@@ -435,5 +440,157 @@ describe("Bugbot follow-ups", () => {
       id: crypto.randomUUID(), teacherId, categoryId: cat, slug: `${tag}-rejected-class`, title: "Hidden", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
     });
     expect(await teacherProfile(`${tag}-rejected`)).toBeNull();
+  });
+
+  it("extends a membership when a renewal invoice is paid and ignores the first invoice", async () => {
+    const owner = await person("renew-owner");
+    const student = await person("renew-student");
+    const teacherId = await studio(owner, `${tag}-renew`);
+    const planId = crypto.randomUUID();
+    await db.insert(schema.memberships).values({
+      id: planId, teacherId, slug: `${tag}-plan`, name: "Monthly", termMonths: 1, kind: "limited", classesPerPeriod: 4, priceCents: 5000,
+    });
+    const orderId = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "membership", status: "paid", listPriceCents: 5000, studentPaysCents: 5000, platformFeeCents: 500, teacherAmountCents: 4500, paymentPath: "card", stripeSubscriptionId: `${tag}-sub`,
+    });
+    const subId = crypto.randomUUID();
+    await db.insert(schema.membershipSubscriptions).values({
+      id: subId, orderId, userId: student, membershipId: planId, teacherId, status: "active", currentPeriodStart: new Date("2026-11-01T00:00:00Z"), currentPeriodEnd: new Date("2026-12-01T00:00:00Z"), classesUsedThisPeriod: 2, classesPerPeriod: 4, unlimited: false,
+    });
+    const created = await renewMembershipFromInvoice({
+      subscriptionId: `${tag}-sub`, invoiceId: `${tag}-create`, billingReason: "subscription_create", amountPaidCents: 5000, paymentIntentId: `${tag}-pi-create`, periodStart: new Date("2026-11-01T00:00:00Z"), periodEnd: new Date("2026-12-01T00:00:00Z"),
+    });
+    expect(created.extended).toBe(false);
+    const renewed = await renewMembershipFromInvoice({
+      subscriptionId: `${tag}-sub`, invoiceId: `${tag}-cycle`, billingReason: "subscription_cycle", amountPaidCents: 5000, paymentIntentId: `${tag}-pi-cycle`, periodStart: new Date("2026-12-01T00:00:00Z"), periodEnd: new Date("2027-01-01T00:00:00Z"),
+    });
+    expect(renewed.extended).toBe(true);
+    const again = await renewMembershipFromInvoice({
+      subscriptionId: `${tag}-sub`, invoiceId: `${tag}-cycle`, billingReason: "subscription_cycle", amountPaidCents: 5000, paymentIntentId: `${tag}-pi-cycle`, periodStart: new Date("2026-12-01T00:00:00Z"), periodEnd: new Date("2027-01-01T00:00:00Z"),
+    });
+    expect(again.extended).toBe(false);
+    const [sub] = await db.select().from(schema.membershipSubscriptions).where(eq(schema.membershipSubscriptions.id, subId));
+    expect(sub?.currentPeriodEnd.toISOString()).toBe("2027-01-01T00:00:00.000Z");
+    expect(sub?.classesUsedThisPeriod).toBe(0);
+    const [renewal] = await db.select().from(schema.orders).where(eq(schema.orders.id, `renewal:${tag}-cycle`));
+    expect(renewal?.status).toBe("paid");
+    expect(renewal?.studentPaysCents).toBe(5000);
+    expect(renewal?.platformFeeCents).toBe(500);
+    expect(renewal?.teacherAmountCents).toBe(4500);
+  });
+
+  it("cancels a pack order when Stripe checkout throws", async () => {
+    const owner = await person("offer-owner");
+    const student = await person("offer-student");
+    const teacherId = await studio(owner, `${tag}-offer`);
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId, slug: `${tag}-pack`, name: "Five", creditCount: 5, priceCents: 4000 });
+    const promoId = crypto.randomUUID();
+    await db.insert(schema.promoCodes).values({ id: promoId, code: `${tag}-PACK`.toUpperCase(), discountType: "percent", percentOffBps: 1000, appliesTo: "all", active: true, maxRedemptions: 5 });
+    const [studentRow] = await db.select().from(schema.user).where(eq(schema.user.id, student));
+    const result = await purchaseOffer({ userId: student, email: studentRow!.email, kind: "pack", id: packId, code: `${tag}-PACK` });
+    expect(result.error).toMatch(/stripe down/);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.userId, student));
+    expect(order?.status).toBe("cancelled");
+    const [redemption] = await db.select().from(schema.promoRedemptions).where(eq(schema.promoRedemptions.orderId, order!.id));
+    expect(redemption?.reversed).toBe(true);
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.orderId, order!.id));
+    expect(purchase?.creditsRemaining).toBe(0);
+  });
+
+  it("lets only one checkout redeem a limited code", async () => {
+    const owner = await person("promo-owner");
+    const first = await person("promo-a");
+    const second = await person("promo-b");
+    const teacherId = await studio(owner, `${tag}-promo`);
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId, slug: `${tag}-limit-pack`, name: "One", creditCount: 1, priceCents: 3000 });
+    await db.insert(schema.promoCodes).values({ id: crypto.randomUUID(), code: `${tag}-ONCE`.toUpperCase(), discountType: "amount", amountOffCents: 100, appliesTo: "all", active: true, maxRedemptions: 1 });
+    const checkout = createCheckout as ReturnType<typeof vi.fn>;
+    checkout.mockResolvedValue(null);
+    try {
+      const [aRow] = await db.select().from(schema.user).where(eq(schema.user.id, first));
+      const [bRow] = await db.select().from(schema.user).where(eq(schema.user.id, second));
+      const [a, b] = await Promise.all([
+        purchaseOffer({ userId: first, email: aRow!.email, kind: "pack", id: packId, code: `${tag}-ONCE` }),
+        purchaseOffer({ userId: second, email: bRow!.email, kind: "pack", id: packId, code: `${tag}-ONCE` }),
+      ]);
+      const errors = [a, b].map((result) => result.error).filter(Boolean);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/redemption limit/);
+      const redemptions = await db.select().from(schema.promoRedemptions).where(eq(schema.promoRedemptions.userId, first));
+      const other = await db.select().from(schema.promoRedemptions).where(eq(schema.promoRedemptions.userId, second));
+      expect([...redemptions, ...other].filter((row) => !row.reversed)).toHaveLength(1);
+    } finally {
+      checkout.mockImplementation(async () => {
+        throw new Error("stripe down");
+      });
+    }
+  });
+
+  it("emails the next waitlisted student when a seat opens", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("wait-owner");
+    const holder = await person("wait-holder");
+    const waiting = await person("wait-next");
+    const teacherId = await studio(owner, `${tag}-wait`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-wait-class`, title: "Waitlist class", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 1, durationMinutes: 60, pricePerSessionCents: 0, waitlistEnabled: true, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-05-01T18:00:00Z"), endsAt: new Date("2027-05-01T19:00:00Z"), localDate: "2027-05-01", capacity: 1,
+    });
+    const [holderRow] = await db.select().from(schema.user).where(eq(schema.user.id, holder));
+    const [waitingRow] = await db.select().from(schema.user).where(eq(schema.user.id, waiting));
+    const booked = await bookSession({ userId: holder, email: holderRow!.email, name: holderRow!.name, sessionId });
+    expect(booked.error).toBeUndefined();
+    const queued = await bookSession({ userId: waiting, email: waitingRow!.email, name: waitingRow!.name, sessionId });
+    expect(queued.waitlisted).toBe(true);
+    vi.mocked(sendEmail).mockClear();
+    const bookingId = booked.orderId
+      ? (await db.select().from(schema.bookings).where(eq(schema.bookings.orderId, booked.orderId)))[0]?.id
+      : undefined;
+    expect(bookingId).toBeTruthy();
+    const cancelled = await cancelBooking(holder, bookingId!);
+    expect(cancelled.ok).toBe(true);
+    const [entry] = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.userId, waiting));
+    expect(entry?.status).toBe("offered");
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: [waitingRow!.email], subject: "A seat opened: Waitlist class" }));
+  });
+
+  it("does not call Stripe while a class page counts seats", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("page-owner");
+    const teacherId = await studio(owner, `${tag}-page`);
+    const classId = crypto.randomUUID();
+    const slug = `${tag}-page-class`;
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug, title: "Page", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-06-01T18:00:00Z"), endsAt: new Date("2027-06-01T19:00:00Z"), localDate: "2027-06-01", capacity: 8,
+    });
+    const student = await person("page-student");
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_${tag}`,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockClear();
+    const booking = await import("@/lib/booking-service");
+    const release = vi.spyOn(booking, "releaseExpiredCheckoutHolds");
+    const detail = await classDetail(slug);
+    expect(detail?.upcoming.length).toBeGreaterThan(0);
+    expect(release).not.toHaveBeenCalled();
+    expect(checkoutRetrieve).not.toHaveBeenCalled();
+    release.mockRestore();
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("pending");
   });
 });

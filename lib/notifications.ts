@@ -7,7 +7,7 @@ import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
 import { dispatchText, smsProviderConfigured } from "@/lib/messaging";
 import { maySend, smsWanted } from "@/lib/messaging-rules";
-import { channelsFor, defaultPrefs, minutesOfClock, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { shortenLink } from "@/lib/short-links";
@@ -150,14 +150,6 @@ async function sendText(input: { userId: string; phone: string | null; title: st
   }
   const target = input.href ? await shortenLink(new URL(input.href, appOrigin()).toString()) : "";
   await dispatchText({ to: input.phone, body: `${input.title}. ${input.body} ${target}`.trim(), userId: input.userId, imessageEnabled: input.imessageEnabled });
-}
-
-function nextQuietEnd(end: string) {
-  const [hour, minute] = end.split(":").map(Number);
-  const when = new Date();
-  when.setUTCHours(hour + 7, minute, 0, 0);
-  if (when.getTime() < Date.now()) when.setUTCDate(when.getUTCDate() + 1);
-  return when;
 }
 
 export async function unreadCount(userId: string) {

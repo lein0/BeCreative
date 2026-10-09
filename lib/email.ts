@@ -1,5 +1,6 @@
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailOutbox } from "@/lib/db/schema";
+import { emailOutbox, user } from "@/lib/db/schema";
 import { buildRawEmail } from "@/lib/email-mime";
 
 export type EmailMessage = {
@@ -17,6 +18,13 @@ export function normalizeEmail(email: string) {
 
 export function sameInbox(stored: string, reported: string) {
   return normalizeEmail(stored) === normalizeEmail(reported);
+}
+
+export async function findUserByEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const [row] = await db.select().from(user).where(sql`lower(${user.email}) = ${normalized}`).limit(1);
+  return row ?? null;
 }
 
 export function individualDeliveries(recipients: string[]) {

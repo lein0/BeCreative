@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disputeLiability, earlyFraudDecision, evidenceForReason, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
+import { disputeAcceptsEvidence, disputeLiability, earlyFraudDecision, evidenceForReason, refreshCheckedInEvidence, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
 
 const packet: EvidencePacket = {
   customerName: "Jules Navarro",
@@ -52,5 +52,20 @@ describe("dispute evidence", () => {
       teacherFeeCents: 0,
       platformFeeCents: 1500,
     });
+  });
+
+  it("refreshes a stale check-in and skips closed disputes", () => {
+    const refreshed = refreshCheckedInEvidence({
+      summary: "Check-in: no",
+      evidence: { uncategorized_text: "Check-in: no", refund_policy: "kept" },
+      incomingEvidence: { uncategorized_text: "Check-in: yes" },
+      attendanceConfirmed: true,
+    });
+    expect(refreshed.summary).toBe("Check-in: yes");
+    expect(refreshed.evidence.uncategorized_text).toBe("Check-in: yes");
+    expect(refreshed.evidence.refund_policy).toBe("kept");
+    expect(disputeAcceptsEvidence("lost")).toBe(false);
+    expect(disputeAcceptsEvidence("won")).toBe(false);
+    expect(disputeAcceptsEvidence("under_review")).toBe(true);
   });
 });
