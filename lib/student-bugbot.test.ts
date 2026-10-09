@@ -167,7 +167,7 @@ describe("student API bugbot regressions", () => {
       accountSubject({ profile }: { profile: { sub?: string } }) {
         return profile.sub ?? "";
       },
-    } as (typeof ctx.socialProviders)[number]);
+    } as unknown as (typeof ctx.socialProviders)[number]);
     const signInSocial = vi.spyOn(auth.api, "signInSocial").mockRejectedValue(new Error("reauth must not create an account"));
     try {
       const mismatch = await bearer(person.raw, "me", {
