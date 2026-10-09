@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { ANON_COOKIE, bindAnonymousId } from "@/lib/anon";
 import { promoCookieFromLink } from "@/lib/pricing";
 
 const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
@@ -23,7 +24,9 @@ export function proxy(request: NextRequest) {
     url.search = `?next=${encodeURIComponent(pathname + request.nextUrl.search)}`;
     return NextResponse.redirect(url);
   }
-  const response = NextResponse.next();
+  const requestHeaders = new Headers(request.headers);
+  const anon = bindAnonymousId(requestHeaders, request.cookies.get(ANON_COOKIE)?.value);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("X-Frame-Options", "SAMEORIGIN");
@@ -46,6 +49,9 @@ export function proxy(request: NextRequest) {
   }
   const code = promoCookieFromLink(searchParams.get("code"));
   if (code) response.cookies.set("bc_code", code, { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
+  if (anon.minted) {
+    response.cookies.set(ANON_COOKIE, anon.id, { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", secure, httpOnly: true });
+  }
   return response;
 }
 

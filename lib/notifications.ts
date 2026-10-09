@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { notificationOutbox, notificationPreferences, notifications, platformSettings, triggerOverrides, unsubscribeTokens, user } from "@/lib/db/schema";
+import { deviceTokens, notificationOutbox, notificationPreferences, notifications, platformSettings, triggerOverrides, unsubscribeTokens, user } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { appOrigin } from "@/lib/env";
@@ -12,6 +12,24 @@ import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { shortenLink } from "@/lib/short-links";
 import { templateFor, triggerEnabled } from "@/lib/triggers";
+
+function trackedUrl(href: string, event: "notification_clicked" | "notification_opened", channel: string, userId: string) {
+  const target = new URL(href, appOrigin()).toString();
+  const url = new URL("/api/r", appOrigin());
+  url.searchParams.set("e", event);
+  url.searchParams.set("c", channel);
+  url.searchParams.set("u", userId);
+  if (event === "notification_clicked") url.searchParams.set("to", target);
+  return url.toString();
+}
+
+function clickUrl(href: string, channel: string, userId: string) {
+  return trackedUrl(href, "notification_clicked", channel, userId);
+}
+
+function openPixelUrl(channel: string, userId: string) {
+  return trackedUrl("/", "notification_opened", channel, userId);
+}
 
 export async function emitNotification(input: {
   userId: string;
@@ -119,9 +137,10 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     await db.insert(unsubscribeTokens).values({ token, userId: person.id });
     const link = unsubscribeUrl(appOrigin(), token);
     const address = settings?.mailingAddress ?? SHIP_DEFAULTS.mailingAddress;
-    const href = row.href ? new URL(row.href, appOrigin()).toString() : appOrigin();
+    const href = row.href ? clickUrl(row.href, "email", person.id) : appOrigin();
     const rendered = await renderEmail(trigger?.template ?? row.event, { name: person.name, title: row.title, body: row.body, href, detail: row.body });
-    const html = rendered.html.replace("</body>", `<p style="color:#5c564f;font-size:12px;text-align:center">${address}<br><a href="${link}">Unsubscribe</a></p></body>`);
+    const pixel = `<img src="${openPixelUrl("email", person.id)}" width="1" height="1" alt="" />`;
+    const html = rendered.html.replace("</body>", `${pixel}<p style="color:#5c564f;font-size:12px;text-align:center">${address}<br><a href="${link}">Unsubscribe</a></p></body>`);
     await sendEmail({
       to: [person.email],
       subject: rendered.subject,
@@ -136,6 +155,12 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
+  const tokens = await db.select().from(deviceTokens).where(eq(deviceTokens.userId, row.userId));
+  const wantsDevicePush = tokens.length > 0 && (pref ? pref.push : true);
+  if (wantsDevicePush) {
+    const { sendDevicePush } = await import("@/lib/device-push");
+    await sendDevicePush(tokens, row.title, row.body, row.href ? clickUrl(row.href, "push", row.userId) : undefined);
+  }
   await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
 }
 
@@ -148,7 +173,7 @@ async function sendText(input: { userId: string; phone: string | null; title: st
     await enqueueJob("notification.sms", { outboxId: input.outboxId, phone: input.phone, audience: input.audience, textEligible: input.textEligible }, nextQuietEnd(end), `sms:${input.outboxId}`);
     return;
   }
-  const target = input.href ? await shortenLink(new URL(input.href, appOrigin()).toString()) : "";
+  const target = input.href ? await shortenLink(clickUrl(input.href, "sms", input.userId)) : "";
   await dispatchText({ to: input.phone, body: `${input.title}. ${input.body} ${target}`.trim(), userId: input.userId, imessageEnabled: input.imessageEnabled });
 }
 

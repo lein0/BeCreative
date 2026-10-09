@@ -6,6 +6,9 @@ import { NEIGHBORHOODS } from "@/lib/constants";
 import { db } from "@/lib/db";
 import {
   account,
+  analyticsEvents,
+  experiments,
+  experimentVariants,
   availabilityWindows,
   bookings,
   bookingSessions,
@@ -780,10 +783,99 @@ async function main() {
     { id: "note-demo-receipt", userId: studentId, event: "receipt.sent", title: "Receipt for Scene Study", body: "This confirms the amount and the cancellation policy you accepted.", href: "/bookings", isDemo: true },
   ]);
 
+  await seedAnalytics({ now, teacherId: maya.id, classId: scene.id, studentId });
+
   await ensureBootstrapAdmins();
   console.log(`Seeded ${teacherSeeds.length} teachers, ${classSeeds.length} classes, ${leadsSeed.length} leads.`);
   console.log(`Demo password ${PASSWORD}`);
   console.log(`Online teacher amount recorded for Maya before the $50 payout: ${(teacherOnline / 100).toFixed(2)}`);
+}
+
+async function seedAnalytics(input: { now: Date; teacherId: string; classId: string; studentId: string }) {
+  const experimentId = "exp-class-cta";
+  await db.insert(experiments).values({
+    id: experimentId,
+    key: "class_cta",
+    name: "Class page CTA copy",
+    status: "running",
+    goalEvent: "checkout_completed",
+    isDemo: true,
+  });
+  await db.insert(experimentVariants).values([
+    { id: "exp-class-cta-book", experimentId, key: "book_this", weight: 50, payload: { label: "Book this session" } },
+    { id: "exp-class-cta-save", experimentId, key: "save_seat", weight: 50, payload: { label: "Save your seat" } },
+  ]);
+  const at = (daysAgo: number) => new Date(input.now.getTime() - daysAgo * 86_400_000);
+  const cities = ["Los Angeles", "Silver Lake", "Echo Park"];
+  const utms = ["instagram", "google", "newsletter", null] as const;
+  const platforms = ["web", "ios", "android"] as const;
+  const rows: (typeof analyticsEvents.$inferInsert)[] = [];
+  for (let i = 0; i < 480; i += 1) {
+    rows.push({
+      id: crypto.randomUUID(),
+      name: "page_view",
+      anonymousId: `anon-f-${i}`,
+      platform: platforms[i % 3]!,
+      path: "/explore",
+      utmSource: utms[i % 4],
+      shareCode: i % 7 === 0 ? "instagram" : i % 11 === 0 ? "qr" : null,
+      vertical: i % 5 === 0 ? "wellness" : "creative",
+      category: i % 5 === 0 ? "yoga" : "scene-study",
+      city: cities[i % 3]!,
+      device: i % 3 === 0 ? "mobile" : "desktop",
+      properties: {},
+      isDemo: true,
+      createdAt: at(i % 20),
+    });
+  }
+  for (let i = 0; i < 360; i += 1) {
+    rows.push({
+      id: crypto.randomUUID(),
+      name: "class_viewed",
+      anonymousId: `anon-f-${i}`,
+      platform: platforms[i % 3]!,
+      path: "/c/scene-study",
+      vertical: "creative",
+      category: "scene-study",
+      city: "Los Angeles",
+      properties: { classId: input.classId, teacherId: input.teacherId },
+      isDemo: true,
+      createdAt: at(i % 18),
+    });
+  }
+  for (let i = 0; i < 280; i += 1) {
+    rows.push({
+      id: crypto.randomUUID(),
+      name: "checkout_started",
+      anonymousId: `anon-f-${i}`,
+      platform: "web",
+      path: "/c/scene-study",
+      properties: { classId: input.classId },
+      isDemo: true,
+      createdAt: at(i % 14),
+    });
+  }
+  for (let i = 0; i < 200; i += 1) {
+    const anon = `anon-f-${i}`;
+    rows.push({ id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta", variant: "book_this" }, isDemo: true, createdAt: at(i % 12) });
+    if (i < 40) rows.push({ id: crypto.randomUUID(), name: "checkout_completed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta" }, isDemo: true, createdAt: at(i % 12) });
+  }
+  for (let i = 200; i < 400; i += 1) {
+    const anon = `anon-f-${i}`;
+    rows.push({ id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta", variant: "save_seat" }, isDemo: true, createdAt: at(i % 12) });
+    if (i < 270) rows.push({ id: crypto.randomUUID(), name: "checkout_completed", anonymousId: anon, platform: "web", properties: { experiment: "class_cta" }, isDemo: true, createdAt: at(i % 12) });
+  }
+  rows.push({
+    id: crypto.randomUUID(),
+    name: "checkout_completed",
+    anonymousId: "anon-jules",
+    userId: input.studentId,
+    platform: "web",
+    properties: {},
+    isDemo: true,
+    createdAt: at(2),
+  });
+  for (let i = 0; i < rows.length; i += 100) await db.insert(analyticsEvents).values(rows.slice(i, i + 100));
 }
 
 const WAIVER = `This is a liability waiver for a wellness visit. It is not medical care, a diagnosis, or a treatment plan, and it does not collect health information.

@@ -182,6 +182,11 @@ export async function saveClass(input: {
   }
   const status = input.publish && teacher.status === "approved" ? "published" : "draft";
   const classId = input.classId ?? crypto.randomUUID();
+  let previousStatus: string | null = null;
+  if (input.classId) {
+    const [existing] = await db.select({ status: classes.status }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id))).limit(1);
+    previousStatus = existing?.status ?? null;
+  }
   const values = {
     teacherId: teacher.id,
     categoryId: input.categoryId,
@@ -249,6 +254,10 @@ export async function saveClass(input: {
     entityId: classId,
     summary: `${input.classId ? "Updated" : "Created"} ${input.title}${input.schedule?.mode === "repeat" ? `. ${describeRecurrence(input.schedule.rule)}` : ""}`,
   });
+  if (status === "published" && previousStatus !== "published") {
+    const { capture } = await import("@/lib/analytics");
+    await capture({ name: "class_published", userId: input.actorUserId, properties: { classId, teacherId: teacher.id } });
+  }
   return { classId };
 }
 

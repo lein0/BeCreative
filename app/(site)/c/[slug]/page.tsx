@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { bookAction } from "@/lib/actions";
 import { formatLabel, fromPrice, levelLabel, Money, Panel } from "@/components/bits";
+import { ExperimentLabel } from "@/components/experiment-label";
 import { ShareButton } from "@/components/share-button";
 import { getActor } from "@/lib/actor";
 import { quoteCode, trackView } from "@/lib/offers";
@@ -42,6 +43,10 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
   if (!detail || detail.class.status === "archived") notFound();
   await trackView({ teacherId: detail.teacher.id, targetType: "class", targetId: detail.class.id, path: `/c/${slug}`, search: sp });
   const actor = await getActor();
+  const { capture } = await import("@/lib/analytics");
+  const { serverExperiment } = await import("@/lib/experiments");
+  await capture({ name: "class_viewed", userId: actor?.id, path: `/c/${slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id }, utmSource: one(sp.utm_source) || null, shareCode: one(sp.ref) || null });
+  const cta = await serverExperiment("class_cta", actor?.id, "web");
   const code = one(sp.code);
   const list = detail.class.pricePerSessionCents ?? 0;
   const quote = await quoteCode({ code, listPriceCents: list, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city, userId: actor?.id ?? null });
@@ -160,7 +165,7 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
               <span>{policy}</span>
             </label>
             <button className="w-full rounded-full bg-clay py-3 text-sm font-medium text-white" disabled={!actor || !sessions.length}>
-              {!actor ? "Sign in to book" : sessions.length ? "Book this session" : "No upcoming sessions"}
+              {!actor ? "Sign in to book" : sessions.length ? <ExperimentLabel experiment="class_cta" fallback={cta?.payload.label || "Book this session"} /> : "No upcoming sessions"}
             </button>
             {!actor ? <Link href={`/login?next=/c/${detail.class.slug}`} className="block text-center text-sm text-clay">Sign in</Link> : null}
           </form>

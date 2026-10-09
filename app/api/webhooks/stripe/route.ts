@@ -31,7 +31,12 @@ export async function POST(request: Request) {
   return new Response("ok");
 }
 
-async function dispatchStripeEvent(event: Stripe.Event) {
+export async function dispatchStripeEvent(event: Stripe.Event) {
+  if (event.type === "payment_intent.succeeded") {
+    const intent = event.data.object;
+    const orderId = intent.metadata?.orderId;
+    if (orderId) await fulfillPaidCheckout(orderId, intent.id, null);
+  }
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
@@ -87,6 +92,7 @@ async function dispatchStripeEvent(event: Stripe.Event) {
   if (event.type === "account.updated") {
     const account = event.data.object;
     const due = account.requirements?.currently_due?.join(", ") || null;
+    const [before] = await db.select().from(teachers).where(eq(teachers.stripeAccountId, account.id)).limit(1);
     await db.update(teachers).set({
       stripeDetailsSubmitted: account.details_submitted ?? false,
       stripeChargesEnabled: account.charges_enabled ?? false,
@@ -94,5 +100,9 @@ async function dispatchStripeEvent(event: Stripe.Event) {
       stripeRequirementsDue: due,
       updatedAt: new Date(),
     }).where(eq(teachers.stripeAccountId, account.id));
+    if (account.charges_enabled && before && !before.stripeChargesEnabled) {
+      const { capture } = await import("@/lib/analytics");
+      await capture({ name: "stripe_connected", userId: before.userId, properties: { teacherId: before.id } });
+    }
   }
 }

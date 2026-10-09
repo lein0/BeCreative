@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { SignupForm } from "@/components/auth-forms";
 import { Panel } from "@/components/bits";
 import { googleAuthConfigured } from "@/lib/env";
@@ -5,6 +6,7 @@ import { googleAuthConfigured } from "@/lib/env";
 export default function SignupPage() {
   return (
     <div className="mx-auto max-w-md px-5 py-12">
+      <Suspense fallback={null}><SignupStarted /></Suspense>
       <h1 className="display text-5xl">Create an account</h1>
       <p className="mt-2 text-ink/70">Students can book right away. Teachers finish a short studio profile and wait for approval.</p>
       <Panel className="mt-6">
@@ -12,4 +14,10 @@ export default function SignupPage() {
       </Panel>
     </div>
   );
+}
+
+async function SignupStarted() {
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "signup_started", path: "/signup", platform: "web" });
+  return null;
 }

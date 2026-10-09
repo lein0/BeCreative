@@ -687,6 +687,68 @@ export const messageLog = pgTable("message_log", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+export const analyticsEvents = pgTable(
+  "analytics_events",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    anonymousId: text("anonymous_id"),
+    userId: text("user_id"),
+    platform: text("platform").notNull().default("web"),
+    path: text("path"),
+    source: text("source"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    shareCode: text("share_code"),
+    vertical: text("vertical"),
+    category: text("category"),
+    city: text("city"),
+    device: text("device"),
+    properties: jsonb("properties").$type<Record<string, string>>().notNull().default({}),
+    isDemo: boolean("is_demo").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("analytics_events_name_created").on(table.name, table.createdAt)],
+);
+
+export const apiTokens = pgTable("api_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: ts("expires_at").notNull(),
+  revokedAt: ts("revoked_at"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const experiments = pgTable("experiments", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("draft"),
+  goalEvent: text("goal_event").notNull(),
+  winnerVariant: text("winner_variant"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const experimentVariants = pgTable("experiment_variants", {
+  id: text("id").primaryKey(),
+  experimentId: text("experiment_id").notNull().references(() => experiments.id, { onDelete: "cascade" }),
+  key: text("key").notNull(),
+  weight: integer("weight").notNull().default(1),
+  payload: jsonb("payload").$type<Record<string, string>>().notNull().default({}),
+});
+
+export const deviceTokens = pgTable("device_tokens", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  platform: text("platform").notNull(),
+  provider: text("provider").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
 export const pushSubscriptions = pgTable("push_subscriptions", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),

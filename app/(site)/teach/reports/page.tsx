@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { Panel } from "@/components/bits";
 import { requireActor } from "@/lib/actor";
+import { shareConversions, teacherClassAnalytics } from "@/lib/analytics-report";
 import { teacherByUser, teacherReport } from "@/lib/queries";
 import { money } from "@/lib/utils";
 
@@ -14,6 +15,8 @@ async function Body() {
   const teacher = await teacherByUser(actor.id);
   if (!teacher) redirect("/teach/onboarding");
   const report = await teacherReport(teacher.id);
+  const classes = await teacherClassAnalytics(teacher.id);
+  const shares = await shareConversions(teacher.id);
   return (
     <div>
       <h1 className="display text-5xl">Reports</h1>
@@ -38,6 +41,18 @@ async function Body() {
         <Panel>
           <h2 className="display text-2xl">Bookings by month</h2>
           <ul className="mt-2 text-sm">{report.weeks.map(([month, count]) => <li key={month}>{month}: {count}</li>)}</ul>
+        </Panel>
+        <Panel>
+          <h2 className="display text-2xl">Views, then bookings, then revenue</h2>
+          <ul className="mt-2 text-sm">
+            {classes.map((klass) => <li key={klass.id}>{klass.title}: {klass.views} views · {klass.bookings} bookings · {money(klass.revenue)}</li>)}
+          </ul>
+        </Panel>
+        <Panel>
+          <h2 className="display text-2xl">Share links, QR, and codes</h2>
+          <ul className="mt-2 text-sm">
+            {shares.map((row) => <li key={row.name}>{row.name}: {row.clicks} clicks · {row.bookings} bookings · {Math.round(row.rate * 100)}%</li>)}
+          </ul>
         </Panel>
       </div>
     </div>

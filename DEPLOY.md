@@ -82,6 +82,8 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `SES_WEBHOOK_SECRET` | with SES feedback | Bearer token, or `?token=`, for `POST /api/webhooks/ses` |
 | `VAPID_PUBLIC_KEY` | no | Web push stays off until both VAPID keys are set and the admin flag is on |
 | `VAPID_PRIVATE_KEY` | no | Pair to the public key |
+| `POSTHOG_KEY` | no | First-party events always stay in Postgres. PostHog gets a copy only when this is set and the visitor accepted cookies |
+| `POSTHOG_HOST` | no | PostHog capture host. Defaults to `https://us.i.posthog.com` |
 
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are optional. When they are unset, S3 presigned uploads and SES use the instance role. The browser receives a presigned PUT URL, never the role credentials.
 
@@ -141,6 +143,10 @@ Turn on automated RDS backups (a 7-day retention is a sound start) and confirm a
 Server actions are same-origin. Next.js rejects a cross-site post, which is the CSRF check for forms. Booking, refund, and support actions also stop after a burst of requests from the same account.
 
 `SENTRY_DSN` is optional. When it is unset, errors are written as JSON logs and nothing is sent to Sentry.
+
+`POSTHOG_KEY` is optional. Page views, funnels, and experiment exposures are stored in `analytics_events` either way. PostHog is skipped until the key is set and `bc_cookie` is `1`.
+
+Student iOS and Android apps call the same services through `GET` and `POST /api/v1`. The contract is `docs/openapi.yaml`. A bearer token from `POST /api/v1/auth/sign-in` lasts 30 days. Teachers stay on the web.
 
 GitHub Actions runs lint, typecheck, tests, migrations, and a production build on every pull request.
 

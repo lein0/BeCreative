@@ -44,6 +44,11 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
     });
     if (!result) return { error: "Check the email and password." };
     await ensureAdminByEmail(email);
+    const [person] = await db.select({ id: user.id }).from(user).where(eq(user.email, email)).limit(1);
+    if (person) {
+      const { stitchFromCookies } = await import("@/lib/analytics");
+      await stitchFromCookies(person.id);
+    }
   } catch (error) {
     return { error: authFailure(error, "Check the email and password.") };
   }
@@ -72,6 +77,9 @@ export async function signupAction(_prev: ActionState, formData: FormData): Prom
         body: "You can book a class whenever you like.",
         href: "/explore",
       });
+      const { capture, stitchFromCookies } = await import("@/lib/analytics");
+      await stitchFromCookies(created.id);
+      await capture({ name: "signup_completed", userId: created.id });
     }
   } catch (error) {
     return { error: authFailure(error, "Could not create the account.") };
@@ -211,6 +219,8 @@ export async function onboardingAction(_prev: ActionState, formData: FormData): 
     status: "pending",
   });
   await db.insert(userRoles).values({ id: crypto.randomUUID(), userId: actor.id, role: "teacher" }).onConflictDoNothing();
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "teacher_onboarding_step", userId: actor.id, platform: "web", properties: { step: "profile" } });
   redirect("/teach/classes/new?welcome=1");
 }
 
@@ -774,7 +784,16 @@ export async function markNotificationsAction(formData: FormData) {
   const actor = await requireActor();
   const { markNotificationsRead } = await import("@/lib/notifications");
   await markNotificationsRead(actor.id, text(formData, "id") || undefined);
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "notification_opened", userId: actor.id, platform: "web", properties: { id: text(formData, "id") || "all", channel: "in_app" } });
   revalidatePath("/notifications");
+}
+
+export async function openNotificationAction(formData: FormData) {
+  const actor = await requireActor();
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "notification_clicked", userId: actor.id, platform: "web", properties: { id: text(formData, "id"), channel: "in_app" } });
+  redirect(safeNextPath(text(formData, "href"), "/notifications"));
 }
 
 export async function followAction(formData: FormData) {

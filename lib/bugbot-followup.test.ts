@@ -224,6 +224,8 @@ describe("Bugbot follow-ups", () => {
     const [studentRow] = await db.select().from(schema.user).where(eq(schema.user.id, student));
     const result = await bookSession({ userId: student, email: studentRow!.email, name: studentRow!.name, sessionId });
     expect(result.error).toBe("stripe down");
+    const sheet = await bookSession({ userId: student, email: studentRow!.email, name: studentRow!.name, sessionId, paymentSheet: true });
+    expect(sheet.error).toBe("stripe down");
     const held = await db.select().from(schema.bookings).where(eq(schema.bookings.userId, student));
     expect(held.every((booking) => booking.status === "cancelled")).toBe(true);
     expect(held.some((booking) => booking.status === "confirmed")).toBe(false);

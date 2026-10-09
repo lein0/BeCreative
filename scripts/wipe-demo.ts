@@ -2,6 +2,8 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   account,
+  analyticsEvents,
+  experiments,
   bookings,
   cannedReplies,
   disputeNotes,
@@ -64,6 +66,8 @@ export async function wipeDemo() {
   await db.delete(tickets).where(sql`${tickets.isDemo} = true`);
   await db.delete(disputeNotes).where(sql`${disputeNotes.disputeId} = 'dp_demo_scene'`);
   await db.delete(disputes).where(sql`${disputes.isDemo} = true`);
+  await db.delete(analyticsEvents).where(sql`${analyticsEvents.isDemo} = true`);
+  await db.delete(experiments).where(sql`${experiments.isDemo} = true`);
   await db.delete(messageLog).where(sql`${messageLog.isDemo} = true`);
   await db.delete(shortLinks).where(eq(shortLinks.code, "demo-scene"));
   await db.delete(faqArticles).where(sql`${faqArticles.id} like 'faq-%'`);

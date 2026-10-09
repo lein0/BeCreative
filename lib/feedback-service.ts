@@ -104,6 +104,8 @@ export async function createFeedback(input: CreateFeedbackInput) {
   const now = new Date();
   const id = crypto.randomUUID();
   const sensitive = isSensitiveFeedback({ route, title, body, targets });
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "feedback_filed", userId: input.authorUserId, properties: { type: input.type } });
   await db.insert(feedback).values({
     id,
     authorUserId: input.authorUserId,

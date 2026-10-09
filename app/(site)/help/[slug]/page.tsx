@@ -8,6 +8,8 @@ export default async function HelpArticlePage({ params }: { params: Promise<{ sl
   const { slug } = await params;
   const [article] = await db.select().from(faqArticles).where(eq(faqArticles.slug, slug)).limit(1);
   if (!article || !article.published) notFound();
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "help_article_viewed", properties: { slug: article.slug } });
   return (
     <article className="mx-auto max-w-3xl px-5 py-8">
       <Link href="/help" className="text-sm text-clay">Help</Link>

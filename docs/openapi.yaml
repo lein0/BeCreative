@@ -1,0 +1,517 @@
+openapi: 3.0.3
+info:
+  title: BeCreative student API
+  version: "1.0.0"
+  description: |
+    Versioned JSON API for the student iOS and Android apps. Teachers stay on the web.
+    Web server actions and these routes call the same service layer.
+    Authenticated routes expect `Authorization: Bearer bc_<token>`.
+    Tokens last 30 days and are stored as a SHA-256 hash.
+    Send `X-Platform: ios` or `X-Platform: android` (or `?platform=`). The default is `web`.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+paths:
+  /auth/sign-in:
+    post:
+      summary: Sign in and issue a bearer token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                password: { type: string }
+                anonymousId: { type: string, description: Stitches earlier anonymous events to this user }
+      responses:
+        "200":
+          description: Token and user
+        "401":
+          description: Bad credentials
+        "429":
+          description: Rate limited
+  /auth/sign-up:
+    post:
+      summary: Create a student account and issue a bearer token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                password: { type: string }
+                name: { type: string }
+                phone: { type: string }
+                smsOptIn: { type: boolean }
+                marketingOptIn: { type: boolean }
+                anonymousId: { type: string }
+      responses:
+        "200":
+          description: Token and user
+        "400":
+          description: Could not create the account
+  /auth/sign-out:
+    post:
+      summary: Revoke the bearer token
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Revoked
+  /auth/me:
+    get:
+      summary: Current user and roles
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: User
+        "401":
+          description: Sign in required
+  /track:
+    post:
+      summary: Record a catalog event
+      description: First-party storage always. PostHog only when POSTHOG_KEY is set and consent is true or the bc_cookie cookie is 1. Money events (checkout_completed, offer_purchased, booking_cancelled, promo_applied) are rejected here and recorded by the server.
+      parameters:
+        - in: header
+          name: X-Platform
+          schema: { type: string, enum: [web, ios, android] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  enum:
+                    - page_view
+                    - screen_view
+                    - search
+                    - filter_used
+                    - class_viewed
+                    - booking_started
+                    - checkout_started
+                    - checkout_completed
+                    - booking_cancelled
+                    - signup_started
+                    - signup_completed
+                    - teacher_onboarding_step
+                    - class_published
+                    - stripe_connected
+                    - first_booking_received
+                    - offer_purchased
+                    - promo_applied
+                    - waitlist_joined
+                    - notification_opened
+                    - notification_clicked
+                    - help_article_viewed
+                    - ticket_opened
+                    - feedback_filed
+                    - experiment_exposed
+                anonymousId: { type: string }
+                path: { type: string }
+                platform: { type: string, enum: [web, ios, android] }
+                consent: { type: boolean }
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: Stored
+        "400":
+          description: Unknown event
+  /experiments/{key}:
+    get:
+      summary: Assign a variant and record one exposure
+      description: Deterministic from the subject. Query subject wins, then the bc_anon cookie, then the signed-in user id. A stopped experiment with a winner returns that variant to everyone.
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema: { type: string }
+        - in: query
+          name: subject
+          schema: { type: string }
+        - in: query
+          name: platform
+          schema: { type: string, enum: [web, ios, android] }
+      responses:
+        "200":
+          description: Variant payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  variant: { type: string }
+                  payload:
+                    type: object
+                    additionalProperties: { type: string }
+                  goalEvent: { type: string }
+                  status: { type: string }
+        "404":
+          description: Experiment not found
+  /explore:
+    get:
+      summary: Published classes
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: vertical
+          schema: { type: string, enum: [creative, wellness] }
+        - in: query
+          name: level
+          schema: { type: string }
+        - in: query
+          name: format
+          schema: { type: string }
+        - in: query
+          name: platform
+          schema: { type: string, enum: [web, ios, android] }
+      responses:
+        "200":
+          description: Class list
+  /search:
+    get:
+      summary: Search classes and wellness services
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: vertical
+          schema: { type: string }
+      responses:
+        "200":
+          description: Classes and services
+  /classes/{slug}:
+    get:
+      summary: Class detail and upcoming slots
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Class, slots, and teacher
+        "404":
+          description: Not found
+  /classes/slots:
+    get:
+      summary: Upcoming slots for a class slug
+      security: [{ bearer: [] }]
+      parameters:
+        - in: query
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Slots
+  /teachers/{slug}:
+    get:
+      summary: Teacher profile and classes
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Profile
+        "404":
+          description: Not found
+  /bookings:
+    get:
+      summary: My bookings
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Booking list
+    post:
+      summary: Book a session
+      description: Same bookSession service as the web. paymentSheet true returns a Stripe PaymentIntent client secret for PaymentSheet. Otherwise a Checkout Session URL when Stripe is on. Pay-at-studio when Stripe is off.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId: { type: string }
+                classId: { type: string }
+                series: { type: boolean }
+                code: { type: string }
+                payWith: { type: string, description: "cash, pack:<id>, or membership:<id>" }
+                policyAccepted: { type: boolean }
+                paymentSheet: { type: boolean }
+      responses:
+        "200":
+          description: Order, clientSecret, or checkoutUrl
+        "400":
+          description: Booking error
+  /bookings/{id}/cancel:
+    post:
+      summary: Cancel a booking
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cancelled
+  /bookings/{id}/reschedule:
+    post:
+      summary: Move one session to another future date of the same class
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: string }
+      responses:
+        "200":
+          description: Moved
+        "400":
+          description: Date is closed, full, or the booking covers more than one date
+  /wallet:
+    get:
+      summary: Packs and memberships
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Wallet
+  /packs/purchase:
+    post:
+      summary: Buy a pack
+      description: paymentSheet true returns a PaymentIntent client secret. Otherwise a Checkout Session URL.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                code: { type: string }
+                paymentSheet: { type: boolean }
+      responses:
+        "200":
+          description: Order or client secret
+  /memberships/purchase:
+    post:
+      summary: Buy a membership
+      description: Recurring memberships return a Stripe Checkout Session URL.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                code: { type: string }
+      responses:
+        "200":
+          description: Checkout URL or confirmation
+  /waivers/{teacherSlug}:
+    get:
+      summary: Current waiver and whether this student signed it
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: teacherSlug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Waiver
+  /waivers/{teacherSlug}/sign:
+    post:
+      summary: Sign the current waiver
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: teacherSlug
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                signedName: { type: string }
+      responses:
+        "200":
+          description: Signed
+  /notifications:
+    get:
+      summary: In-app notifications
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: List
+  /notifications/read:
+    post:
+      summary: Mark one or all notifications read and record notification_opened
+      security: [{ bearer: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+      responses:
+        "200":
+          description: Updated
+  /preferences:
+    get:
+      summary: Notification preferences and SMS consent
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Preferences
+    put:
+      summary: Update one event preference or contact consent
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event: { type: string }
+                email: { type: boolean }
+                inApp: { type: boolean }
+                sms: { type: boolean }
+                push: { type: boolean }
+                cadence: { type: string, enum: [instant, daily] }
+                smsOptIn: { type: boolean }
+                marketingOptIn: { type: boolean }
+                phone: { type: string }
+      responses:
+        "200":
+          description: Saved
+  /push-tokens:
+    post:
+      summary: Register an Expo, APNs, or FCM device token
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                platform: { type: string, enum: [ios, android, web] }
+                provider: { type: string, enum: [expo, apns, fcm] }
+      responses:
+        "200":
+          description: Stored
+    delete:
+      summary: Remove a device token
+      security: [{ bearer: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Removed
+  /help:
+    get:
+      summary: Help articles
+      responses:
+        "200":
+          description: Article list
+  /help/{slug}:
+    get:
+      summary: One help article
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Article
+        "404":
+          description: Not found
+  /tickets:
+    get:
+      summary: My support tickets
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Tickets
+    post:
+      summary: Open a ticket
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category: { type: string }
+                subject: { type: string }
+                body: { type: string }
+                teacherId: { type: string }
+                bookingId: { type: string }
+      responses:
+        "200":
+          description: Ticket id
+        "429":
+          description: Rate limited

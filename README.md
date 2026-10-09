@@ -68,7 +68,9 @@ Without Stripe keys, paid bookings complete as pay-at-studio. The confirmation e
 | Membership | Checkout `mode=subscription` with `application_fee_percent` and `transfer_data` on the connected account | `membership_subscriptions` plus the order |
 | $0, credits, intro, or no Stripe keys | No Checkout session | Order status `paid`, `pay_at_studio`, or entitlement |
 
-Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `charge.refunded`, and `account.updated`.
+Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `payment_intent.succeeded`, `charge.refunded`, and `account.updated`. Class checkout can return a PaymentIntent client secret for Stripe PaymentSheet. Packs do the same when `paymentSheet` is true. Memberships stay on a Checkout Session because they renew.
+
+The student API is `/api/v1`. Web server actions and that API call the same booking, wallet, waiver, and support services. The OpenAPI document is `docs/openapi.yaml`. Bearer tokens are `bc_` plus random bytes, stored as a SHA-256 hash, and expire in 30 days.
 
 ## Architecture
 
@@ -79,7 +81,7 @@ Webhook: `POST /api/webhooks/stripe` handles `checkout.session.completed`, `char
 - Uploads go through `lib/storage.ts`. `local` stores files under `./data/uploads`. `s3` returns a presigned PUT. The browser never receives the AWS secret key.
 - Maps are Leaflet and OpenStreetMap behind `components/studio-map.tsx`. Geocoding is `lib/geocode.ts` (`local`, `nominatim`, or `mapbox`).
 - Recurring classes store a rule plus generated session rows. A rolling window covers "never" (about eight weeks ahead). Instances with bookings are kept. Times are America/Los_Angeles, including DST.
-- Share links: `/t/[slug]`, `/c/[slug]`, `/t/[slug]/bio`, `/t/[slug]/p/[pack]`, `/t/[slug]/m/[membership]`, plus `?session=`, `?code=`, `?ref=`, and UTM params. `proxy.ts` stores attribution for 30 days. Clicks land in `link_clicks`.
+- Share links: `/t/[slug]`, `/c/[slug]`, `/t/[slug]/bio`, `/t/[slug]/p/[pack]`, `/t/[slug]/m/[membership]`, plus `?session=`, `?code=`, `?ref=`, and UTM params. `proxy.ts` stores attribution for 30 days and sets `bc_anon` for a year. Clicks land in `link_clicks`. Product events land in `analytics_events`. Admin funnels are `/admin/analytics`. Experiments assign with a stable hash of the anonymous id. PostHog is optional and stays quiet without `POSTHOG_KEY` or cookie consent.
 - Feedback is limited to admins and account managers. The ✎ button opens a full-page drawing overlay. Marks are stored in page coordinates. Screenshots go to object storage. Admin notes are approved and dispatched immediately. Account manager notes stay `pending_review` until an admin approves them. Dispatch is `createFeedbackDispatcher()` in `lib/feedback-webhook.ts`: a webhook by default, and a no-op that records `undelivered` when `FEEDBACK_WEBHOOK_URL` is unset. The POST never fails the user's submit.
 
 ## Environment
