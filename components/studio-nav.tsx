@@ -12,6 +12,8 @@ export function StudioNav({ base = "/teach" }: { base?: string }) {
     ["Reports", `${base}/reports`],
     ["Billing", `${base}/billing`],
     ["Messages", `${base}/messages`],
+    ["Support", `${base}/support`],
+    ["Disputes", `${base}/disputes`],
   ];
   return (
     <nav className="mb-6 flex flex-wrap gap-2 text-sm">

@@ -23,7 +23,12 @@ import {
   locations,
   memberships,
   membershipSubscriptions,
+  cannedReplies,
+  disputes,
+  faqArticles,
   notifications,
+  ticketMessages,
+  tickets,
   orders,
   packPurchases,
   packs,
@@ -44,6 +49,7 @@ import {
   waiverSignatures,
   waivers,
 } from "@/lib/db/schema";
+import { FAQ_ARTICLES } from "@/lib/faq";
 import { quotePrice } from "@/lib/pricing";
 import { syncRule } from "@/lib/studio-service";
 import { zonedTimeToUtc } from "@/lib/time";
@@ -704,6 +710,54 @@ async function main() {
     studentId: staffIds.get("student@becreative.demo")!,
     avaId: staffIds.get("ava@becreative.demo")!,
   });
+
+  await db.insert(faqArticles).values(FAQ_ARTICLES.map((article) => ({ id: `faq-${article.slug}`, ...article })));
+  await db.insert(cannedReplies).values({ id: "canned-refund-window", title: "Refund window", body: "Full refund until 24 hours before the start. Studio credit until 2 hours before. After that the seat is not refunded.", category: "refunds" });
+  const [demoOrder] = await db.select().from(orders).where(eq(orders.userId, studentId)).limit(1);
+  if (demoOrder) {
+    await db.insert(disputes).values({
+      id: "dp_demo_scene",
+      orderId: demoOrder.id,
+      teacherId: maya.id,
+      userId: studentId,
+      amountCents: demoOrder.studentPaysCents,
+      reason: "fraudulent",
+      status: "needs_response",
+      evidenceStatus: "assembling",
+      dueBy: new Date("2026-10-20T00:00:00Z"),
+      attendanceConfirmed: false,
+      summary: "Demo dispute for Scene Study. Evidence is assembled from the booking, the policy checkbox, and the receipt.",
+      evidence: { customer_name: "Jules Navarro", product_description: "Scene Study" },
+      isDemo: true,
+    });
+  }
+  await db.insert(tickets).values({
+    id: "ticket-demo-class",
+    userId: studentId,
+    teacherId: maya.id,
+    category: "class",
+    priority: "normal",
+    status: "open",
+    subject: "Can I move Scene Study to Thursday?",
+    route: "teacher",
+    slaDueAt: new Date(now.getTime() + 24 * 3_600_000),
+    isDemo: true,
+  });
+  await db.insert(ticketMessages).values({ id: "ticket-demo-class-msg", ticketId: "ticket-demo-class", authorUserId: studentId, body: "Thursday works better this week. Happy to keep the same seat." });
+  await db.insert(tickets).values({
+    id: "ticket-demo-safety",
+    userId: studentId,
+    teacherId: maya.id,
+    category: "safety",
+    priority: "urgent",
+    status: "open",
+    subject: "The side door lock stuck after class",
+    route: "admin",
+    escalatedAt: now,
+    slaDueAt: now,
+    isDemo: true,
+  });
+  await db.insert(ticketMessages).values({ id: "ticket-demo-safety-msg", ticketId: "ticket-demo-safety", authorUserId: studentId, body: "We could not lock the side door on the way out. Please tell the studio." });
 
   await db.insert(notifications).values([
     { id: "note-demo-booking", userId: maya.userId, event: "booking.created", title: "New booking: Scene Study", body: "Jules Navarro booked Scene Study.", href: "/teach/sessions", isDemo: true },

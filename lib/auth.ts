@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
+import { sessionAllowedForUser } from "@/lib/account-data";
 import { ensureAdminByEmail, grantAdminRole } from "@/lib/admins";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
@@ -91,6 +92,11 @@ export const auth = betterAuth({
     },
     session: {
       create: {
+        before: async (created) => {
+          const userId = created && "userId" in created ? String(created.userId) : "";
+          if (!(await sessionAllowedForUser(userId))) return false;
+          return { data: created };
+        },
         after: async (created) => {
           const userId = "userId" in created ? String(created.userId) : "";
           if (!userId) return;

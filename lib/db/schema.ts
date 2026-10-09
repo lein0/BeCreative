@@ -15,6 +15,7 @@ export const user = pgTable("user", {
   isDemo: boolean("is_demo").notNull().default(false),
   creditOptIn: boolean("credit_opt_in").notNull().default(false),
   emailUnsubscribed: boolean("email_unsubscribed").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
 });
 
 export const session = pgTable("session", {
@@ -563,6 +564,90 @@ export const stripeEvents = pgTable("stripe_events", {
   id: text("id").primaryKey(),
   type: text("type").notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const disputes = pgTable("disputes", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
+  teacherId: text("teacher_id").references(() => teachers.id, { onDelete: "set null" }),
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+  amountCents: integer("amount_cents").notNull().default(0),
+  feeCents: integer("fee_cents").notNull().default(1500),
+  reason: text("reason").notNull().default("general"),
+  status: text("status").notNull().default("needs_response"),
+  evidenceStatus: text("evidence_status").notNull().default("assembling"),
+  dueBy: ts("due_by"),
+  attendanceConfirmed: boolean("attendance_confirmed").notNull().default(false),
+  amountBearer: text("amount_bearer").notNull().default("teacher"),
+  feeBearer: text("fee_bearer").notNull().default("platform"),
+  paymentIntentId: text("payment_intent_id"),
+  summary: text("summary").notNull().default(""),
+  evidence: jsonb("evidence").$type<Record<string, string>>().notNull().default({}),
+  stripeFileId: text("stripe_file_id"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const disputeNotes = pgTable("dispute_notes", {
+  id: text("id").primaryKey(),
+  disputeId: text("dispute_id").notNull().references(() => disputes.id, { onDelete: "cascade" }),
+  authorUserId: text("author_user_id"),
+  body: text("body").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const faqArticles = pgTable("faq_articles", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  category: text("category").notNull().default("booking"),
+  published: boolean("published").notNull().default(true),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const tickets = pgTable("tickets", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+  teacherId: text("teacher_id").references(() => teachers.id, { onDelete: "set null" }),
+  bookingId: text("booking_id"),
+  orderId: text("order_id"),
+  category: text("category").notNull().default("class"),
+  priority: text("priority").notNull().default("normal"),
+  status: text("status").notNull().default("open"),
+  subject: text("subject").notNull(),
+  route: text("route").notNull().default("teacher"),
+  assigneeUserId: text("assignee_user_id"),
+  slaDueAt: ts("sla_due_at"),
+  escalatedAt: ts("escalated_at"),
+  csatScore: integer("csat_score"),
+  mergedIntoId: text("merged_into_id"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const ticketMessages = pgTable("ticket_messages", {
+  id: text("id").primaryKey(),
+  ticketId: text("ticket_id").notNull().references(() => tickets.id, { onDelete: "cascade" }),
+  authorUserId: text("author_user_id"),
+  body: text("body").notNull(),
+  internal: boolean("internal").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const cannedReplies = pgTable("canned_replies", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  category: text("category").notNull().default("class"),
+});
+
+export const rateBuckets = pgTable("rate_buckets", {
+  key: text("key").primaryKey(),
+  windowStart: ts("window_start").notNull(),
+  count: integer("count").notNull().default(0),
 });
 
 export const pushSubscriptions = pgTable("push_subscriptions", {
