@@ -8,7 +8,9 @@ import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
+import { adminRefundScope } from "@/lib/refund-math";
 import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
+import { creditOptInFromForm } from "@/lib/notify-prefs";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
@@ -631,7 +633,7 @@ export async function teacherCancelAction(formData: FormData) {
     await teacherCancelUpcoming({ classId: text(formData, "classId"), actorUserId: actor.id, reason, wantCredit });
     redirect(`${back}?cancelled=series`);
   }
-  const result = await teacherCancelSession({ sessionId: text(formData, "sessionId"), actorUserId: actor.id, reason, wantCredit });
+  const result = await teacherCancelSession({ sessionId: text(formData, "sessionId"), classId, actorUserId: actor.id, reason, wantCredit });
   if ("error" in result && result.error) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
   redirect(`${back}?cancelled=1`);
 }
@@ -704,7 +706,7 @@ export async function adminRefundAction(formData: FormData) {
     amountCents: formData.get("full") === "1" ? undefined : dollars,
     reasonCode: text(formData, "reason") || "admin_goodwill",
     actorUserId: actor.id,
-    scope: `admin:${crypto.randomUUID()}`,
+    scope: adminRefundScope(text(formData, "idempotencyKey")),
   });
   if ("error" in result && result.error) redirect(`/admin/refunds?error=${encodeURIComponent(result.error)}`);
   revalidatePath("/admin/refunds");
@@ -716,17 +718,20 @@ export async function notificationPrefAction(formData: FormData) {
   const { notificationPreferences, user } = await import("@/lib/db/schema");
   const { and } = await import("drizzle-orm");
   const event = text(formData, "event");
-  const row = {
-    email: formData.get("email") === "1",
-    inApp: formData.get("inApp") === "1",
-    sms: formData.get("sms") === "1",
-    push: formData.get("push") === "1",
-    cadence: text(formData, "cadence") === "daily" ? "daily" : "instant",
-  };
-  const [existing] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, actor.id), eq(notificationPreferences.event, event))).limit(1);
-  if (existing) await db.update(notificationPreferences).set(row).where(eq(notificationPreferences.id, existing.id));
-  else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
-  await db.update(user).set({ creditOptIn: formData.get("creditOptIn") === "1" }).where(eq(user.id, actor.id));
+  if (event) {
+    const row = {
+      email: formData.get("email") === "1",
+      inApp: formData.get("inApp") === "1",
+      sms: formData.get("sms") === "1",
+      push: formData.get("push") === "1",
+      cadence: text(formData, "cadence") === "daily" ? "daily" : "instant",
+    };
+    const [existing] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, actor.id), eq(notificationPreferences.event, event))).limit(1);
+    if (existing) await db.update(notificationPreferences).set(row).where(eq(notificationPreferences.id, existing.id));
+    else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
+  }
+  const creditOptIn = creditOptInFromForm({ saveCredit: formData.get("saveCredit") === "1", checked: formData.get("creditOptIn") === "1" });
+  if (creditOptIn !== null) await db.update(user).set({ creditOptIn }).where(eq(user.id, actor.id));
   revalidatePath("/settings/notifications");
 }
 

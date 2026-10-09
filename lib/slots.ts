@@ -3,7 +3,7 @@ import { addDaysYmd, weekdayOfYmd, ymdInZone, zonedTimeToUtc } from "@/lib/time"
 
 export type AvailabilityWindow = { weekday: number; start: string; end: string };
 export type BusyRange = { startsAt: Date; endsAt: Date };
-export type OpenSlot = { startsAt: Date; endsAt: Date; localDate: string; time: string };
+export type OpenSlot = { startsAt: Date; endsAt: Date; localDate: string; time: string; slackMinutes: number };
 
 export function minutesOf(time: string) {
   const [hour, minute] = time.split(":").map(Number);
@@ -18,6 +18,17 @@ export function clockOf(minutes: number) {
 
 export function rangesOverlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) {
   return aStart.getTime() < bEnd.getTime() && bStart.getTime() < aEnd.getTime();
+}
+
+export function extraMinutesThatFit(startsAt: Date, endsAt: Date, windowEnd: Date, bufferMinutes: number, busy: BusyRange[]) {
+  const pad = Math.max(0, bufferMinutes) * 60_000;
+  let limit = windowEnd.getTime();
+  for (const item of busy) {
+    if (item.endsAt.getTime() + pad <= startsAt.getTime()) continue;
+    const cap = item.startsAt.getTime() - pad;
+    if (cap < limit) limit = cap;
+  }
+  return Math.max(0, Math.floor((limit - endsAt.getTime()) / 60_000));
 }
 
 export function appointmentConflicts(candidate: BusyRange, busy: BusyRange[], bufferMinutes: number) {
@@ -40,7 +51,7 @@ export function canTakeSeat(capacity: number, taken: number) {
 
 export function needsWaiver(input: { required: boolean; currentVersion: number | null; signedVersion: number | null }) {
   if (!input.required) return false;
-  if (!input.currentVersion) return false;
+  if (!input.currentVersion) return true;
   return input.signedVersion !== input.currentVersion;
 }
 
@@ -77,8 +88,16 @@ export function generateOpenSlots(input: {
         const endsAt = new Date(startsAt.getTime() + input.durationMinutes * 60_000);
         if (startsAt.getTime() < earliest) continue;
         const candidate = { startsAt, endsAt };
-        if (appointmentConflicts(candidate, input.busy ?? [], input.bufferMinutes)) continue;
-        slots.push({ startsAt, endsAt, localDate, time });
+        const busy = input.busy ?? [];
+        if (appointmentConflicts(candidate, busy, input.bufferMinutes)) continue;
+        const windowEnd = zonedTimeToUtc(localDate, window.end, zone);
+        slots.push({
+          startsAt,
+          endsAt,
+          localDate,
+          time,
+          slackMinutes: extraMinutesThatFit(startsAt, endsAt, windowEnd, input.bufferMinutes, busy),
+        });
       }
     }
   }

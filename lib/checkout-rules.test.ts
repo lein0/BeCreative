@@ -10,10 +10,12 @@ import {
   packCreditsOnCreate,
   packCreditsOnPayment,
   parseAttributionCookie,
+  chargeFullyRefunded,
   refundCancelsBooking,
   safeNextPath,
   sessionLockOrder,
   studioOwnsResource,
+  unattendedRefundCents,
 } from "@/lib/checkout-rules";
 import { canSpendMembership, quotePrice, validatePromo, type PromoRule } from "@/lib/pricing";
 
@@ -159,6 +161,26 @@ describe("stripe refunds free the seat", () => {
   it("cancels a confirmed booking and leaves an already cancelled one alone", () => {
     expect(refundCancelsBooking("confirmed")).toBe(true);
     expect(refundCancelsBooking("cancelled")).toBe(false);
+  });
+
+  it("treats only a fully refunded charge as an order reversal", () => {
+    expect(chargeFullyRefunded({ amount: 6000, amount_refunded: 2000, refunded: false })).toBe(false);
+    expect(chargeFullyRefunded({ amount: 6000, amount_refunded: 6000, refunded: false })).toBe(true);
+    expect(chargeFullyRefunded({ amount: 6000, amount_refunded: 6000, refunded: true })).toBe(true);
+    expect(chargeFullyRefunded({ amount: 0, amount_refunded: 0, refunded: false })).toBe(false);
+  });
+
+  it("keeps the attended share of a series payment", () => {
+    const now = new Date("2026-10-20T18:00:00Z");
+    const sessions = [
+      { startsAt: new Date("2026-10-06T18:00:00Z") },
+      { startsAt: new Date("2026-10-13T18:00:00Z") },
+      { startsAt: new Date("2026-10-27T18:00:00Z") },
+      { startsAt: new Date("2026-11-03T18:00:00Z") },
+    ];
+    expect(unattendedRefundCents({ paidCents: 8000, sessions, now })).toBe(4000);
+    expect(unattendedRefundCents({ paidCents: 8000, sessions: sessions.slice(2), now })).toBe(8000);
+    expect(unattendedRefundCents({ paidCents: 8000, sessions: sessions.slice(0, 2), now })).toBe(0);
   });
 });
 

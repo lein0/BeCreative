@@ -14,7 +14,7 @@ export async function workJobs(limit = 20) {
       const payload = (job.payload ?? {}) as Record<string, unknown>;
       if (job.kind === "notification.deliver" || job.kind === "notification.sms") {
         const audience = payload.audience === "teacher" || payload.audience === "student" ? payload.audience : undefined;
-        await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience);
+        await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, job.kind === "notification.sms" ? "sms" : "all");
       }
       if (job.kind === "dispute.submit") {
         const { submitDispute } = await import("@/lib/disputes");

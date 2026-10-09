@@ -4,7 +4,7 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { channelsFor, defaultPrefs, minutesOfClock, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, deferredSmsStillPending, minutesOfClock, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { twilioConfigured, sendSms } from "@/lib/sms";
@@ -45,9 +45,14 @@ function nextDigestTime() {
   return tomorrow;
 }
 
-export async function deliverOutbox(outboxId: string, phone?: string | null, audienceHint?: "teacher" | "student") {
+export async function deliverOutbox(outboxId: string, phone?: string | null, audienceHint?: "teacher" | "student", mode: "all" | "sms" = "all") {
   const [row] = await db.select().from(notificationOutbox).where(eq(notificationOutbox.id, outboxId)).limit(1);
-  if (!row || row.status === "sent" || !row.userId) return;
+  if (!row || !row.userId || row.status === "sent") return;
+  if (mode === "sms" || deferredSmsStillPending(row.status)) {
+    if (phone) await sendSms(phone, `${row.title}. ${row.body}`.slice(0, 320));
+    await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
+    return;
+  }
   const [person] = await db.select().from(user).where(eq(user.id, row.userId)).limit(1);
   const [pref] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, row.userId), eq(notificationPreferences.event, row.event))).limit(1);
   const audience = audienceHint ?? (row.event === "booking.created" || row.event === "dispute.opened" || row.event === "payout.sent" || row.event === "signup.followed" || row.event === "ticket.created" || row.event === "review.created" || row.event === "offer.purchased" ? "teacher" : "student");
@@ -86,18 +91,20 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
       },
     });
   }
+  let smsDeferred = false;
   if (channels.sms && phone) {
     const localMinutes = minutesOfClock(new Intl.DateTimeFormat("en-GB", { timeZone: SHIP_DEFAULTS.quietHoursZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()));
     if (smsAllowedNow(localMinutes, settings?.quietHoursStart ?? SHIP_DEFAULTS.quietHoursStart, settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd)) {
       await sendSms(phone, `${row.title}. ${row.body}`.slice(0, 320));
     } else {
+      smsDeferred = true;
       await enqueueJob("notification.sms", { outboxId, phone }, nextQuietEnd(settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd), `sms:${outboxId}`);
     }
   }
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
-  await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
+  await db.update(notificationOutbox).set({ status: outboxStatusAfterDelivery(smsDeferred) }).where(eq(notificationOutbox.id, outboxId));
 }
 
 function nextQuietEnd(end: string) {

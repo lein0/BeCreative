@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appointmentConflicts,
   canTakeSeat,
+  extraMinutesThatFit,
   generateOpenSlots,
   needsWaiver,
   seatsLeft,
@@ -60,6 +61,42 @@ describe("double booking", () => {
     });
     expect(slots.map((slot) => slot.time)).toEqual(["10:15"]);
   });
+
+  it("keeps extra minutes inside the window and before the next booking", () => {
+    const slots = generateOpenSlots({
+      windows: [{ weekday: 1, start: "09:00", end: "12:00" }],
+      durationMinutes: 60,
+      bufferMinutes: 0,
+      from: monday,
+      days: 1,
+      now: new Date("2026-10-12T08:00:00Z"),
+      leadTimeHours: 0,
+      timeZone: "UTC",
+    });
+    expect(slots.find((slot) => slot.time === "09:00")?.slackMinutes).toBe(120);
+    expect(slots.find((slot) => slot.time === "11:00")?.slackMinutes).toBe(0);
+    const busy = [{ startsAt: new Date("2026-10-12T10:30:00Z"), endsAt: new Date("2026-10-12T11:30:00Z") }];
+    const beforeBusy = generateOpenSlots({
+      windows: [{ weekday: 1, start: "09:00", end: "13:00" }],
+      durationMinutes: 60,
+      bufferMinutes: 0,
+      from: monday,
+      days: 1,
+      now: new Date("2026-10-12T08:00:00Z"),
+      leadTimeHours: 0,
+      busy,
+      timeZone: "UTC",
+    });
+    expect(beforeBusy.find((slot) => slot.time === "09:00")?.slackMinutes).toBe(30);
+    expect(beforeBusy.some((slot) => slot.time === "10:00")).toBe(false);
+    expect(extraMinutesThatFit(
+      new Date("2026-10-12T09:00:00Z"),
+      new Date("2026-10-12T10:00:00Z"),
+      new Date("2026-10-12T12:00:00Z"),
+      15,
+      [{ startsAt: new Date("2026-10-12T10:30:00Z"), endsAt: new Date("2026-10-12T11:30:00Z") }],
+    )).toBe(15);
+  });
 });
 
 describe("capacity slots", () => {
@@ -76,6 +113,7 @@ describe("waivers", () => {
     expect(needsWaiver({ required: true, currentVersion: 2, signedVersion: 1 })).toBe(true);
     expect(needsWaiver({ required: true, currentVersion: 2, signedVersion: 2 })).toBe(false);
     expect(needsWaiver({ required: false, currentVersion: 2, signedVersion: null })).toBe(false);
+    expect(needsWaiver({ required: true, currentVersion: null, signedVersion: null })).toBe(true);
   });
 
   it("allows cancellation only before the window closes", () => {
