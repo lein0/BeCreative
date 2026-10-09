@@ -45,6 +45,7 @@ import {
   parseAttributionCookie,
   refundCancelsBooking,
   sessionLockOrder,
+  unattendedRefundCents,
 } from "@/lib/checkout-rules";
 import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
@@ -132,7 +133,7 @@ export async function releaseExpiredCheckoutHolds(now = new Date()) {
 
 export async function confirmedCount(sessionId: string, tx: typeof db = db) {
   const [row] = await tx
-    .select({ count: sql<number>`count(distinct ${bookingSessions.bookingId})::int` })
+    .select({ count: sql<number>`count(distinct coalesce(${bookings.userId}, ${bookings.id}))::int` })
     .from(bookingSessions)
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
@@ -176,9 +177,9 @@ export async function bookSession(input: {
         }
         targetSessions = await tx.select().from(sessions).where(and(eq(sessions.classId, input.classId), eq(sessions.status, "scheduled")));
       } else if (input.sessionId) {
+        await tx.execute(sql`select id from sessions where id = ${input.sessionId} for update`);
         const [one] = await tx.select().from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
         if (!one) throw new Error("That session is no longer listed.");
-        await tx.execute(sql`select id from sessions where id = ${one.id} for update`);
         targetSessions = [one];
       } else throw new Error("Choose a session.");
 
@@ -247,6 +248,7 @@ export async function bookSession(input: {
 
       if (payWith.startsWith("pack:")) {
         const packId = payWith.slice(5);
+        await tx.execute(sql`select id from pack_purchases where id = ${packId} and user_id = ${input.userId} for update`);
         const [purchase] = await tx.select().from(packPurchases).where(and(eq(packPurchases.id, packId), eq(packPurchases.userId, input.userId))).limit(1);
         if (!purchase) throw new Error("That pack isn't in your wallet.");
         const needed = targetSessions.length;
@@ -255,11 +257,17 @@ export async function bookSession(input: {
         const check = canSpendPack({ creditsRemaining: purchase.creditsRemaining, expiresAt: purchase.expiresAt, now, covers });
         if (!check.ok) throw new Error(check.reason);
         if (purchase.creditsRemaining < needed) throw new Error(`This booking needs ${needed} credits and the pack has ${purchase.creditsRemaining}.`);
-        await tx.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining - needed }).where(eq(packPurchases.id, purchase.id));
+        const [spent] = await tx
+          .update(packPurchases)
+          .set({ creditsRemaining: sql`${packPurchases.creditsRemaining} - ${needed}` })
+          .where(and(eq(packPurchases.id, purchase.id), sql`${packPurchases.creditsRemaining} >= ${needed}`))
+          .returning({ id: packPurchases.id });
+        if (!spent) throw new Error(`This booking needs ${needed} credits and the pack has ${purchase.creditsRemaining}.`);
         entitlement = true;
         packPurchaseId = purchase.id;
       } else if (payWith.startsWith("membership:")) {
         const subId = payWith.slice(11);
+        await tx.execute(sql`select id from membership_subscriptions where id = ${subId} for update`);
         const [sub] = await tx.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, subId)).limit(1);
         if (!sub || sub.userId !== input.userId) throw new Error("That membership isn't active.");
         const [plan] = await tx.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
@@ -278,10 +286,21 @@ export async function bookSession(input: {
         if (!sub.unlimited && sub.classesPerPeriod != null && sub.classesUsedThisPeriod + needed > sub.classesPerPeriod) {
           throw new Error("This membership doesn't have enough classes left in the period.");
         }
-        await tx.update(membershipSubscriptions).set({ classesUsedThisPeriod: sub.classesUsedThisPeriod + needed }).where(eq(membershipSubscriptions.id, sub.id));
+        const [spent] = await tx
+          .update(membershipSubscriptions)
+          .set({ classesUsedThisPeriod: sql`${membershipSubscriptions.classesUsedThisPeriod} + ${needed}` })
+          .where(and(
+            eq(membershipSubscriptions.id, sub.id),
+            sub.unlimited || sub.classesPerPeriod == null
+              ? sql`true`
+              : sql`${membershipSubscriptions.classesUsedThisPeriod} + ${needed} <= ${membershipSubscriptions.classesPerPeriod}`,
+          ))
+          .returning({ id: membershipSubscriptions.id });
+        if (!spent) throw new Error("This membership doesn't have enough classes left in the period.");
         entitlement = true;
         membershipSubscriptionId = sub.id;
       } else if (payWith === "first_free" || (!input.series && (klass.firstClassFree || teacher.firstClassFree))) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${input.userId}:${teacher.id}`})::bigint)`);
         const [used] = await tx
           .select()
           .from(introRedemptions)
@@ -450,22 +469,24 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   if (!cancelled.length) return;
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
-  const restore = rows.every((session) => shouldRestoreEntitlement(session.startsAt, now));
-  if (restore && booking.packPurchaseId) {
+  const refundable = rows.filter((session) => shouldRestoreEntitlement(session.startsAt, now));
+  if (refundable.length && booking.packPurchaseId) {
     const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, booking.packPurchaseId)).limit(1);
     if (purchase) {
-      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + links.length }).where(eq(packPurchases.id, purchase.id));
+      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + refundable.length }).where(eq(packPurchases.id, purchase.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
     }
   }
-  if (restore && booking.membershipSubscriptionId) {
+  if (refundable.length && booking.membershipSubscriptionId) {
     const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, booking.membershipSubscriptionId)).limit(1);
     if (sub) {
-      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - links.length) }).where(eq(membershipSubscriptions.id, sub.id));
+      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - refundable.length) }).where(eq(membershipSubscriptions.id, sub.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "membership", sourceId: sub.id, direction: "restore" });
     }
   }
-  if (restore) await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+  if (rows.every((session) => shouldRestoreEntitlement(session.startsAt, now))) {
+    await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+  }
 }
 
 export async function cancelBooking(userId: string, bookingId: string) {
@@ -479,14 +500,18 @@ export async function cancelBooking(userId: string, bookingId: string) {
   await releaseBookingSeat(booking, now);
   if (booking.orderId) {
     const [order] = await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1);
-    if (order?.promoCodeId) await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    if (order && order.status === "paid" && order.studentPaysCents > 0) {
-      const stripe = (await import("@/lib/stripe")).getStripe();
+    const refundCents = unattendedRefundCents({ paidCents: order?.studentPaysCents ?? 0, sessions: rows, now });
+    const coversWholePayment = order != null && order.studentPaysCents > 0 && refundCents >= order.studentPaysCents;
+    if (order?.promoCodeId && coversWholePayment) await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+    if (order && order.status === "paid" && refundCents > 0) {
+      const stripe = getStripe();
       if (stripe && order.stripePaymentIntentId) {
-        await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
-        await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      } else await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
-    } else if (order) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
+        await stripe.refunds.create(coversWholePayment
+          ? { payment_intent: order.stripePaymentIntentId }
+          : { payment_intent: order.stripePaymentIntentId, amount: refundCents });
+        if (coversWholePayment) await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
+      } else if (coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
+    } else if (order && coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
   }
   return { ok: true };
 }
