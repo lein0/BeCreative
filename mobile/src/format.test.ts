@@ -7,4 +7,9 @@ describe("local day filter", () => {
     expect(matchesLocalDay(evening, "2026-10-16")).toBe(true);
     expect(matchesLocalDay(evening, "2026-10-17")).toBe(false);
   });
+
+  it("drops a class that has no next date when a day is selected", () => {
+    expect(matchesLocalDay(null, "2026-10-16")).toBe(false);
+    expect(matchesLocalDay(null, "")).toBe(true);
+  });
 });

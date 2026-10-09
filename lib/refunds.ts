@@ -116,6 +116,10 @@ export async function issueRefund(input: {
     return { error: "Refund is already in progress." };
   }
   const full = posted.full;
+  if (full) {
+    const { releaseSeatsForRefundedOrder } = await import("@/lib/booking-service");
+    await releaseSeatsForRefundedOrder(order.id);
+  }
   await db.insert(auditLog).values({
     id: crypto.randomUUID(),
     actorUserId: input.actorUserId,
@@ -125,6 +129,23 @@ export async function issueRefund(input: {
     summary: `${input.reasonCode} · ${(amountCents / 100).toFixed(2)}`,
   });
   return { ok: true, replayed: false, refundId: id, amountCents, full, feeReversed, transferReversed };
+}
+
+/** A studio-credit substitution spends the same cash so a later card refund cannot pay it again. */
+export async function consumeRefundableCash(orderId: string, amountCents: number): Promise<number> {
+  const requested = Math.max(0, Math.trunc(amountCents));
+  if (requested <= 0) return 0;
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return 0;
+  const applied = Math.min(requested, Math.max(0, order.studentPaysCents - order.refundedCents));
+  if (applied <= 0) return 0;
+  const updated = await db
+    .update(orders)
+    .set({ refundedCents: order.refundedCents + applied, updatedAt: new Date() })
+    .where(and(eq(orders.id, order.id), eq(orders.refundedCents, order.refundedCents)))
+    .returning({ refundedCents: orders.refundedCents });
+  if (!updated.length) return consumeRefundableCash(orderId, requested);
+  return applied;
 }
 
 export async function grantStudioCredit(userId: string, teacherId: string, amountCents: number) {

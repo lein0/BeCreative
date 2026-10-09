@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { deleteAccount } from "@/lib/account-data";
 import { hashToken, parseBearer, tokenUsable } from "@/lib/api-token";
 import { capture, stitchAnonymous } from "@/lib/analytics";
-import { auth } from "@/lib/auth";
+import { auth, emailVerificationRequired } from "@/lib/auth";
 import { bookSession, cancelBooking, purchaseOffer, rescheduleBooking } from "@/lib/booking-service";
 import { db } from "@/lib/db";
 import {
@@ -68,6 +68,28 @@ async function issueToken(userId: string) {
   return raw;
 }
 
+async function ticketTargets(userId: string, bookingId?: string, teacherId?: string): Promise<{ error: string; status: number } | { bookingId?: string; teacherId?: string }> {
+  if (bookingId) {
+    const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
+    if (!booking) return { error: "Booking not found.", status: 404 };
+    const [klass] = await db.select({ teacherId: classes.teacherId }).from(classes).where(eq(classes.id, booking.classId)).limit(1);
+    if (!klass) return { error: "Booking not found.", status: 404 };
+    if (teacherId && teacherId !== klass.teacherId) return { error: "That teacher does not teach this booking.", status: 403 };
+    return { bookingId, teacherId: klass.teacherId };
+  }
+  if (teacherId) {
+    const [owned] = await db
+      .select({ id: bookings.id })
+      .from(bookings)
+      .innerJoin(classes, eq(classes.id, bookings.classId))
+      .where(and(eq(bookings.userId, userId), eq(classes.teacherId, teacherId)))
+      .limit(1);
+    if (!owned) return { error: "That teacher is not on your bookings.", status: 403 };
+    return { teacherId };
+  }
+  return {};
+}
+
 async function requireActor(request: Request) {
   const actor = await actorFromRequest(request);
   if (!actor) return { error: json({ error: "Sign in required." }, 401) };
@@ -88,6 +110,9 @@ export async function handleMobileApi(request: Request, path: string[]) {
       const result = await auth.api.signInEmail({ body: { email: body.email || "", password: body.password || "" } });
       const userId = result.user.id;
       await stitchAnonymous(userId, body.anonymousId || null);
+      if (emailVerificationRequired() && !result.user.emailVerified) {
+        return json({ error: "Verify your email before signing in.", verificationRequired: true }, 403);
+      }
       const token = await issueToken(userId);
       return json({ token, user: { id: userId, name: result.user.name, email: result.user.email } });
     } catch {
@@ -96,6 +121,8 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "auth" && second === "sign-up") {
+    const limit = await hitRateLimit(`api-signup:${request.headers.get("x-forwarded-for") || "api"}`, 10, 60_000);
+    if (!limit.ok) return json({ error: "Too many attempts." }, 429);
     const body = await request.json() as { email?: string; password?: string; name?: string; phone?: string; smsOptIn?: boolean; marketingOptIn?: boolean; anonymousId?: string };
     try {
       const result = await auth.api.signUpEmail({ body: { email: body.email || "", password: body.password || "", name: body.name || "" } });
@@ -107,6 +134,9 @@ export async function handleMobileApi(request: Request, path: string[]) {
       await applyContactPrefs(userId, form, "capture");
       await stitchAnonymous(userId, body.anonymousId || null);
       await capture({ name: "signup_completed", userId, anonymousId: body.anonymousId, platform });
+      if (emailVerificationRequired() && !result.user.emailVerified) {
+        return json({ verificationRequired: true, user: { id: userId, name: result.user.name, email: result.user.email } });
+      }
       const token = await issueToken(userId);
       return json({ token, user: { id: userId, name: result.user.name, email: result.user.email } });
     } catch {
@@ -245,12 +275,12 @@ export async function handleMobileApi(request: Request, path: string[]) {
     await capture({ name: "class_viewed", platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
     const [waiver] = await db.select({ body: waivers.body }).from(waivers).where(eq(waivers.teacherId, detail.teacher.id)).limit(1);
     return json({
-      class: publicClass(detail),
+      class: { ...publicClass(detail), seriesPriceCents: detail.class.pricePerSeriesCents, categoryId: detail.class.categoryId },
       description: detail.class.description,
       signatureRequired: classNeedsSignature(waiver?.body),
       policyAcknowledgementRequired: true,
       slots: detail.upcoming.map((session) => ({ id: session.id, startsAt: session.startsAt, spots: session.spots })),
-      teacher: { slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
+      teacher: { id: detail.teacher.id, slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
     });
   }
 
@@ -367,7 +397,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       policyAccepted: body.policyAccepted,
       paymentSheet: body.paymentSheet,
       platform,
-      returnToApp: platform !== "web",
+      returnToApp: true,
       ip: request.headers.get("x-forwarded-for"),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
@@ -390,20 +420,20 @@ export async function handleMobileApi(request: Request, path: string[]) {
       db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(eq(membershipSubscriptions.userId, actor.id)),
     ]);
     return json({
-      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal })),
+      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
       memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd })),
     });
   }
 
   if (method === "POST" && root === "packs" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, returnToApp: platform !== "web" });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: platform !== "web" });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
@@ -507,7 +537,9 @@ export async function handleMobileApi(request: Request, path: string[]) {
     const limit = await hitRateLimit(`api-ticket:${actor.id}`, 10, 60 * 60 * 1000);
     if (!limit.ok) return json({ error: "Too many tickets." }, 429);
     const body = await request.json() as { category?: string; subject?: string; body?: string; teacherId?: string; bookingId?: string };
-    const opened = await openTicket({ userId: actor.id, teacherId: body.teacherId, bookingId: body.bookingId, category: body.category || "class", subject: body.subject || "Help", body: body.body || "" });
+    const targets = await ticketTargets(actor.id, body.bookingId, body.teacherId);
+    if ("error" in targets) return json({ error: targets.error }, targets.status);
+    const opened = await openTicket({ userId: actor.id, teacherId: targets.teacherId, bookingId: targets.bookingId, category: body.category || "class", subject: body.subject || "Help", body: body.body || "" });
     return json({ id: opened.id });
   }
 

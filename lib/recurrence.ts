@@ -85,6 +85,20 @@ export function collectOccurrences(rule: RecurrenceRule, from: string, until: st
   return results;
 }
 
+/** Ongoing series are synced on a rolling horizon, not from the original start date. */
+export function neverSeriesWindow(startDate: string, today: string, horizonDays = 56) {
+  const from = today > startDate ? today : startDate;
+  return { from, until: addDaysYmd(from, horizonDays) };
+}
+
+export function occurrencesForSync(rule: RecurrenceRule, today: string, durationMinutes: number) {
+  if (rule.endType === "never") {
+    const window = neverSeriesWindow(rule.startDate, today);
+    return { occurrences: collectOccurrences(rule, window.from, window.until, durationMinutes), from: window.from };
+  }
+  return { occurrences: previewOccurrences(rule, durationMinutes), from: null as string | null };
+}
+
 export function previewOccurrences(rule: RecurrenceRule, durationMinutes: number, horizonDays = 56): Occurrence[] {
   if (rule.endType === "after") {
     const count = Math.max(1, rule.endCount ?? 1);

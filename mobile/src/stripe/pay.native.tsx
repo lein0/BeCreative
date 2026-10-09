@@ -2,6 +2,7 @@ import { StripeProvider, useStripe } from "@stripe/stripe-react-native";
 import { useState } from "react";
 import { View } from "react-native";
 import { Button, Notice } from "../components/ui";
+import { PAYMENT_SHEET_RETURN_URL } from "../../../lib/mobile-client";
 import { paymentSheetPlan, type PaymentSheetPlan } from "./sheet-plan";
 
 const merchantIdentifier = process.env.APPLE_MERCHANT_ID || "merchant.com.becreative.students";
@@ -39,7 +40,7 @@ function PayButton({
       merchantDisplayName: "BeCreative",
       paymentIntentClientSecret: clientSecret,
       allowsDelayedPaymentMethods: false,
-      returnURL: "becreative://bookings",
+      returnURL: PAYMENT_SHEET_RETURN_URL,
     });
     if (init.error) {
       setError(init.error.message);

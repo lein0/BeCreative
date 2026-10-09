@@ -1,6 +1,7 @@
 import { applySmsKeyword, sendKeywordReply } from "@/lib/messaging";
 import { smsWebhookIsForm, twimlMessage } from "@/lib/messaging-rules";
 import { hitRateLimit } from "@/lib/rate-limit";
+import { snsSubscribeUrlAllowed } from "@/lib/sns-url";
 
 export async function POST(request: Request) {
   const secret = process.env.SMS_WEBHOOK_SECRET;
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
   } else {
     const json = JSON.parse(raw) as { Type?: string; SubscribeURL?: string; Message?: string; phone?: string; body?: string; From?: string; Body?: string; originationNumber?: string; messageBody?: string };
     if (json.Type === "SubscriptionConfirmation" && json.SubscribeURL) {
+      if (!snsSubscribeUrlAllowed(json.SubscribeURL)) return new Response("Invalid confirmation URL", { status: 400 });
       await fetch(json.SubscribeURL);
       return Response.json({ ok: true });
     }

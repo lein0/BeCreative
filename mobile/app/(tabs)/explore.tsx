@@ -1,11 +1,12 @@
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { PublicClass, Vertical } from "@mobile/api/types";
 import { ClassCardView } from "@mobile/components/ClassCardView";
 import { MapCanvas } from "@mobile/components/MapCanvas";
 import { Body, Button, Chip, Display, Segmented, Sheet } from "@mobile/components/ui";
+import { acceptLatest } from "../../../lib/mobile-client";
 import { matchesLocalDay } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
@@ -27,8 +28,12 @@ export default function Explore() {
     void track("screen_view", { screen: "explore" });
   }, [track]);
 
+  const searchGen = useRef(0);
   useEffect(() => {
-    void api.explore({ q, vertical }).then((result) => setRows(result.classes));
+    const mine = ++searchGen.current;
+    void api.explore({ q, vertical }).then((result) => {
+      if (acceptLatest(mine, searchGen.current)) setRows(result.classes);
+    });
   }, [api, q, vertical]);
 
   const chips = useMemo(() => [...new Set(rows.map((item) => item.category).filter((item): item is string => Boolean(item)))], [rows]);
@@ -36,7 +41,7 @@ export default function Explore() {
     if (category && item.category !== category) return false;
     if (maxPriceCents != null && (item.priceCents ?? 0) > maxPriceCents) return false;
     if (freeOnly && item.priceCents !== 0) return false;
-    if (date && item.nextStartsAt && !matchesLocalDay(item.nextStartsAt, date)) return false;
+    if (date && !matchesLocalDay(item.nextStartsAt, date)) return false;
     return true;
   });
 

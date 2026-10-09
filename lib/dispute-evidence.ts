@@ -65,6 +65,30 @@ export function classHasStarted(starts: Date[], now: Date) {
   return starts.some((start) => start.getTime() <= now.getTime());
 }
 
+/** Closed Stripe disputes must not be submitted again. */
+export function disputeAcceptsEvidence(status: string | null | undefined) {
+  if (!status) return true;
+  return !["won", "lost", "charge_refunded", "warning_closed"].includes(status);
+}
+
+/** A check-in after the dispute opens has to land in the packet that auto-submit sends. */
+export function refreshCheckedInEvidence(input: {
+  summary: string;
+  evidence: Record<string, string>;
+  incomingEvidence: Record<string, string>;
+  attendanceConfirmed: boolean;
+}) {
+  if (!input.attendanceConfirmed) return { summary: input.summary, evidence: input.evidence };
+  const evidence = { ...input.evidence };
+  for (const [key, value] of Object.entries(input.evidence)) {
+    if (!value.includes("Check-in: no")) continue;
+    const fresh = input.incomingEvidence[key];
+    evidence[key] = fresh?.includes("Check-in: yes") ? fresh : value.replaceAll("Check-in: no", "Check-in: yes");
+  }
+  const summary = input.summary.includes("Check-in: no") ? input.summary.replaceAll("Check-in: no", "Check-in: yes") : input.summary;
+  return { summary, evidence };
+}
+
 export const DISPUTE_SUBMIT_ATTEMPTS = 5;
 
 export function nextDisputeSubmitAt(input: { dueBy: Date | null; leadHours: number; now: Date; retry: boolean; attempts?: number }) {

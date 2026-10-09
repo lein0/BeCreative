@@ -11,6 +11,10 @@ import { renderEmail } from "@/lib/email-templates";
 import { triggerEnabled } from "@/lib/triggers";
 import { appOrigin, appleIdTokenAudiences, authSecret, googleIdTokenAudiences, isBootstrapAdminEmail, trustedProxyCidrs } from "@/lib/env";
 
+export function emailVerificationRequired() {
+  return process.env.REQUIRE_EMAIL_VERIFICATION !== "false";
+}
+
 const origin = appOrigin();
 const googleAudiences = googleIdTokenAudiences();
 const appleAudiences = appleIdTokenAudiences();
@@ -64,7 +68,7 @@ export const auth = betterAuth({
   },
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION !== "false",
+    requireEmailVerification: emailVerificationRequired(),
     sendResetPassword: async ({ user, url }) => {
       if (!(await authTriggerOn("auth.reset"))) return;
       const rendered = await renderEmail("auth.reset", { name: user.name, href: url, title: "password" });

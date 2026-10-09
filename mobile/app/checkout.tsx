@@ -65,7 +65,12 @@ export default function Checkout() {
           </Card>
         ) : null}
         {draft?.waitlisted ? <Body>You're on the waitlist. Nothing is charged yet.</Body> : null}
-        {done ? (
+        {draft?.alreadyBooked ? (
+          <View style={{ gap: 12 }}>
+            <Body>You already have this booking.</Body>
+            <Button label="See my bookings" onPress={() => router.replace("/bookings")} testID="see-bookings" />
+          </View>
+        ) : done ? (
           <View style={{ gap: 12 }}>
             <Body>You're booked. A receipt is on its way.</Body>
             <Button label="See my bookings" onPress={() => router.replace("/bookings")} testID="see-bookings" />

@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { statementDescriptorSuffix } from "@/lib/connect-rules";
 import { appOrigin } from "@/lib/env";
 
 export function stripeConfigured() {
@@ -57,7 +58,7 @@ export async function createCheckout(input: {
       : {
           payment_intent_data: {
             metadata: input.metadata,
-            ...(input.statementDescriptor ? { statement_descriptor_suffix: input.statementDescriptor.replace(/[^a-zA-Z0-9]/g, "").slice(-10) || "STUDIO" } : {}),
+            ...(input.statementDescriptor ? { statement_descriptor_suffix: statementDescriptorSuffix(input.statementDescriptor) } : {}),
             ...transfer,
           },
         }),

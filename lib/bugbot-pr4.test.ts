@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { checkoutMustReleaseSeat, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
 import { creditOptInFromForm, deferredSmsStillPending, outboxStatusAfterDelivery, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
-import { adminRefundScope, applyStudioCredit, nextStripeRefundKey, parseStudioCreditLedgerSource, refundReplayIsSuccess, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { adminRefundScope, applyStudioCredit, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundReplayIsSuccess, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
+import { statementDescriptor, statementDescriptorSuffix } from "@/lib/connect-rules";
+import { nextQuietEnd } from "@/lib/notify-prefs";
 import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
 describe("partial refunds keep remaining seats", () => {
@@ -73,6 +75,29 @@ describe("admin refund idempotency", () => {
     expect(adminRefundScope("  ")).toBe("admin");
     expect(adminRefundScope(null)).toBe("admin");
   });
+
+  it("keeps the form key after an error and mints a new one after success", () => {
+    expect(nextAdminRefundKey({ stored: "key-1", succeeded: false, minted: "key-2" })).toBe("key-1");
+    expect(nextAdminRefundKey({ stored: "key-1", succeeded: true, minted: "key-2" })).toBe("key-2");
+    expect(nextAdminRefundKey({ stored: null, succeeded: false, minted: "key-2" })).toBe("key-2");
+  });
+});
+
+describe("quiet hours follow Pacific time", () => {
+  it("waits until 8am Pacific after daylight time ends", () => {
+    const winter = nextQuietEnd("08:00", new Date("2026-11-03T14:00:00.000Z"));
+    expect(winter.toISOString()).toBe("2026-11-03T16:00:00.000Z");
+    const summer = nextQuietEnd("08:00", new Date("2026-07-15T13:00:00.000Z"));
+    expect(summer.toISOString()).toBe("2026-07-15T15:00:00.000Z");
+  });
+});
+
+describe("card statement suffix", () => {
+  it("uses the studio name instead of the sliced prefix", () => {
+    const descriptor = statementDescriptor("Yoga Fit", "BECREATIVE");
+    expect(statementDescriptorSuffix(descriptor)).toBe("YOGAFIT");
+    expect(statementDescriptorSuffix(descriptor)).not.toBe("ATIVEYOGAF");
+  });
 });
 
 describe("webhook retries", () => {
@@ -109,7 +134,7 @@ describe("card checkout notifications", () => {
   it("emits booking events when a class order is paid", () => {
     expect(paidCheckoutEmitsBookingNotifications("booking")).toBe(true);
     expect(paidCheckoutEmitsBookingNotifications("pack")).toBe(false);
-    expect(paidCheckoutEmitsBookingNotifications("visit")).toBe(false);
+    expect(paidCheckoutEmitsBookingNotifications("visit")).toBe(true);
   });
 });
 
