@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 config({ path: ".env.local" });
 
 const { refundCreate } = vi.hoisted(() => ({
-  refundCreate: vi.fn(async () => ({ id: "re_test" })),
+  refundCreate: vi.fn(async (_params: { payment_intent?: string; amount?: number }, _options?: { idempotencyKey?: string }) => ({ id: "re_test" })),
 }));
 
 vi.mock("@/lib/email", () => ({
