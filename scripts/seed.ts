@@ -6,11 +6,13 @@ import { NEIGHBORHOODS } from "@/lib/constants";
 import { db } from "@/lib/db";
 import {
   account,
+  availabilityWindows,
   bookings,
   bookingSessions,
   categories,
   classes,
   classMedia,
+  credentials,
   creditLedger,
   feedback,
   feedbackDeliveries,
@@ -30,10 +32,16 @@ import {
   promoRedemptions,
   recurrences,
   reviews,
+  serviceAddons,
+  serviceOptions,
+  services,
   sessions,
   teachers,
   user,
   userRoles,
+  visitBookings,
+  waiverSignatures,
+  waivers,
 } from "@/lib/db/schema";
 import { quotePrice } from "@/lib/pricing";
 import { syncRule } from "@/lib/studio-service";
@@ -213,11 +221,11 @@ async function main() {
   for (const parent of tree) {
     const id = `cat-${parent.slug}`;
     categoryIds.set(parent.slug, id);
-    await db.insert(categories).values({ id, name: parent.name, slug: parent.slug }).onConflictDoNothing();
+    await db.insert(categories).values({ id, name: parent.name, slug: parent.slug, vertical: "creative" }).onConflictDoNothing();
     for (const child of parent.children) {
       const childId = `cat-${child.slug}`;
       categoryIds.set(child.slug, childId);
-      await db.insert(categories).values({ id: childId, name: child.name, slug: child.slug, parentId: id }).onConflictDoNothing();
+      await db.insert(categories).values({ id: childId, name: child.name, slug: child.slug, parentId: id, vertical: "creative" }).onConflictDoNothing();
     }
   }
 
@@ -688,10 +696,402 @@ async function main() {
     createdAt: new Date("2026-10-07T12:00:00Z"),
   });
 
+  await seedWellness({
+    password,
+    now,
+    artDir,
+    studentId: staffIds.get("student@becreative.demo")!,
+    avaId: staffIds.get("ava@becreative.demo")!,
+  });
+
   await ensureBootstrapAdmins();
   console.log(`Seeded ${teacherSeeds.length} teachers, ${classSeeds.length} classes, ${leadsSeed.length} leads.`);
   console.log(`Demo password ${PASSWORD}`);
   console.log(`Online teacher amount recorded for Maya before the $50 payout: ${(teacherOnline / 100).toFixed(2)}`);
+}
+
+const WAIVER = `This is a liability waiver for a wellness visit. It is not medical care, a diagnosis, or a treatment plan, and it does not collect health information.
+
+I choose to take part in yoga, movement, bodywork, breath practice, or bathing at my own pace. I will stop if something does not feel right. I accept the ordinary risks of these activities and release the practitioner from liability for those ordinary risks.`;
+
+async function seedWellness(input: { password: string; now: Date; artDir: string; studentId: string; avaId: string }) {
+  const wellnessTree: { slug: string; name: string; children?: { slug: string; name: string }[] }[] = [
+    { slug: "yoga", name: "Yoga", children: [{ slug: "vinyasa", name: "Vinyasa" }, { slug: "restorative-yoga", name: "Restorative" }] },
+    { slug: "pilates", name: "Pilates", children: [{ slug: "reformer", name: "Reformer" }, { slug: "mat-pilates", name: "Mat" }] },
+    { slug: "stretching", name: "Stretching" },
+    { slug: "meditation", name: "Meditation" },
+    { slug: "breathwork", name: "Breathwork" },
+    { slug: "sound-baths", name: "Sound baths" },
+    { slug: "massage", name: "Massage", children: [{ slug: "swedish", name: "Swedish" }, { slug: "deep-tissue", name: "Deep tissue" }] },
+    { slug: "bodywork", name: "Bodywork" },
+    { slug: "reiki", name: "Reiki" },
+    { slug: "sauna", name: "Sauna" },
+    { slug: "cold-plunge", name: "Cold plunge" },
+    { slug: "contrast", name: "Contrast therapy" },
+    { slug: "float", name: "Float" },
+    { slug: "bathhouse", name: "Bathhouses" },
+  ];
+  const categoryIds = new Map<string, string>();
+  for (const parent of wellnessTree) {
+    const id = `cat-${parent.slug}`;
+    categoryIds.set(parent.slug, id);
+    await db.insert(categories).values({ id, name: parent.name, slug: parent.slug, vertical: "wellness" }).onConflictDoNothing();
+    for (const child of parent.children ?? []) {
+      const childId = `cat-${child.slug}`;
+      categoryIds.set(child.slug, childId);
+      await db.insert(categories).values({ id: childId, name: child.name, slug: child.slug, parentId: id, vertical: "wellness" }).onConflictDoNothing();
+    }
+  }
+
+  const studios = [
+    { slug: "silver-lake-still", email: "wellness-yoga@becreative.demo", name: "Noor Hale", studio: "Silver Lake Still", neighborhood: "Silver Lake", hue: 150, specialties: ["Yoga", "Stretching"], bio: "Vinyasa and private hours in a quiet Silver Lake room. Movement only — no health intake." },
+    { slug: "echo-park-reformer", email: "wellness-pilates@becreative.demo", name: "Elena Voss", studio: "Echo Park Reformer", neighborhood: "Echo Park", hue: 168, specialties: ["Pilates"], bio: "Reformer and mat sessions with time between clients." },
+    { slug: "atwater-bodywork", email: "wellness-body@becreative.demo", name: "Chris Okonkwo", studio: "Atwater Bodywork", neighborhood: "Atwater Village", hue: 28, specialties: ["Massage", "Reiki"], bio: "Massage, bodywork, and Reiki. Add hot stones or CBD oil. Liability waiver only." },
+    { slug: "highland-park-quiet", email: "wellness-quiet@becreative.demo", name: "Mina Cho", studio: "Highland Park Quiet", neighborhood: "Highland Park", hue: 200, specialties: ["Meditation", "Breathwork", "Sound baths"], bio: "Sitting, breath, and sound baths. Come as you are." },
+    { slug: "frogtown-baths", email: "wellness-bath@becreative.demo", name: "Rae Molina", studio: "Frogtown Baths", neighborhood: "Frogtown", hue: 190, specialties: ["Sauna", "Cold plunge", "Contrast therapy"], bio: "Sauna, cold plunge, and contrast rounds with a headcount on every slot." },
+    { slug: "venice-float", email: "wellness-float@becreative.demo", name: "Jules Park", studio: "Venice Float", neighborhood: "Venice", hue: 210, specialties: ["Float"], bio: "A private float tank, reset between guests." },
+  ] as const;
+
+  const teacherIds = new Map<string, string>();
+  for (const studio of studios) {
+    const userId = crypto.randomUUID();
+    await db.insert(user).values({ id: userId, name: studio.name, email: studio.email, emailVerified: true, isDemo: true, createdAt: input.now, updatedAt: input.now });
+    await db.insert(account).values({ id: crypto.randomUUID(), accountId: userId, providerId: "credential", userId, password: input.password, createdAt: input.now, updatedAt: input.now });
+    await db.insert(userRoles).values({ id: crypto.randomUUID(), userId, role: "teacher" });
+    const teacherId = crypto.randomUUID();
+    const initials = studio.name.split(" ").map((part) => part[0]).join("");
+    await writeFile(path.join(input.artDir, `${studio.slug}.svg`), portrait(initials, studio.hue));
+    await db.insert(teachers).values({
+      id: teacherId,
+      userId,
+      slug: studio.slug,
+      studioName: studio.studio,
+      bio: studio.bio,
+      photoUrl: `/seed/${studio.slug}.svg`,
+      specialties: [...studio.specialties],
+      status: "approved",
+      isDemo: true,
+    });
+    teacherIds.set(studio.slug, teacherId);
+    await db.insert(waivers).values({ id: crypto.randomUUID(), teacherId, body: WAIVER, version: 1 });
+  }
+
+  async function place(teacherSlug: string, title: string) {
+    const studio = studios.find((item) => item.slug === teacherSlug)!;
+    const neighborhood = NEIGHBORHOODS.find((item) => item.name === studio.neighborhood) ?? NEIGHBORHOODS[1]!;
+    const id = crypto.randomUUID();
+    await db.insert(locations).values({
+      id,
+      name: studio.studio,
+      addressLine1: `${120 + (studio.hue % 40)} ${neighborhood.name} Ave`,
+      city: "Los Angeles",
+      state: "CA",
+      postalCode: "90026",
+      neighborhood: neighborhood.name,
+      lat: jitter(title, neighborhood.lat),
+      lng: jitter(`${title}-w`, neighborhood.lng),
+      isDemo: true,
+    });
+    return id;
+  }
+
+  async function addClass(item: { teacher: string; title: string; category: string; sub?: string; price: number; minutes: number; size: number; days: [number, string][]; bring: string }) {
+    const teacherId = teacherIds.get(item.teacher)!;
+    const classId = crypto.randomUUID();
+    const classSlug = slugify(item.title);
+    const coverPath = `/seed/classes/${classSlug}.svg`;
+    await writeFile(path.join(input.artDir, "classes", `${classSlug}.svg`), cover(item.title, studios.find((studio) => studio.slug === item.teacher)?.hue ?? 150));
+    await db.insert(classes).values({
+      id: classId,
+      teacherId,
+      categoryId: categoryIds.get(item.category)!,
+      subcategoryId: item.sub ? categoryIds.get(item.sub) : null,
+      locationId: await place(item.teacher, item.title),
+      slug: classSlug,
+      title: item.title,
+      description: `${item.title}. A group practice. No health questionnaire.`,
+      outcomes: "Leave a little quieter than you arrived.",
+      whatToBring: item.bring,
+      skillLevel: "all_levels",
+      format: "drop_in",
+      delivery: "in_person",
+      maxSize: item.size,
+      durationMinutes: item.minutes,
+      pricePerSessionCents: Math.round(item.price * 100),
+      status: "published",
+      waitlistEnabled: true,
+      coverImageUrl: coverPath,
+      isDemo: true,
+    });
+    const recurrenceId = crypto.randomUUID();
+    await db.insert(recurrences).values({
+      id: recurrenceId,
+      classId,
+      timezone: "America/Los_Angeles",
+      frequency: "weekly",
+      days: item.days.map(([weekday, time]) => ({ weekday, time })),
+      startDate: "2026-10-08",
+      endType: "never",
+      durationMinutes: item.minutes,
+      capacity: item.size,
+    });
+    await syncRule(recurrenceId, "2026-10-08");
+  }
+
+  await addClass({ teacher: "silver-lake-still", title: "Morning Vinyasa", category: "yoga", sub: "vinyasa", price: 28, minutes: 75, size: 12, days: [[2, "09:00"], [4, "09:00"]], bring: "A mat if you have one" });
+  await addClass({ teacher: "silver-lake-still", title: "Slow Stretch", category: "stretching", price: 24, minutes: 60, size: 14, days: [[3, "18:00"]], bring: "Comfortable clothes" });
+  await addClass({ teacher: "echo-park-reformer", title: "Reformer Foundations", category: "pilates", sub: "reformer", price: 40, minutes: 50, size: 8, days: [[1, "12:00"], [3, "12:00"]], bring: "Grip socks" });
+  await addClass({ teacher: "highland-park-quiet", title: "Evening Sound Bath", category: "sound-baths", price: 30, minutes: 60, size: 16, days: [[5, "19:00"]], bring: "A layer to lie down in" });
+  await addClass({ teacher: "highland-park-quiet", title: "Breathwork Circle", category: "breathwork", price: 26, minutes: 45, size: 12, days: [[0, "10:00"]], bring: "Water" });
+  await addClass({ teacher: "highland-park-quiet", title: "Saturday Sit", category: "meditation", price: 18, minutes: 40, size: 18, days: [[6, "09:00"]], bring: "Nothing" });
+
+  async function addService(item: {
+    teacher: string;
+    slug: string;
+    title: string;
+    category: string;
+    kind: "appointment" | "access";
+    description: string;
+    buffer?: number;
+    lead?: number;
+    cancel?: number;
+    waiver?: boolean;
+    slotMinutes?: number;
+    capacity?: number;
+    price?: number;
+    days: number[];
+    start: string;
+    end: string;
+    options?: { minutes: number; price: number }[];
+    addons?: { name: string; price: number; minutes: number }[];
+  }) {
+    const id = crypto.randomUUID();
+    await db.insert(services).values({
+      id,
+      teacherId: teacherIds.get(item.teacher)!,
+      categoryId: categoryIds.get(item.category)!,
+      locationId: await place(item.teacher, item.title),
+      slug: item.slug,
+      title: item.title,
+      description: item.description,
+      kind: item.kind,
+      bufferMinutes: item.buffer ?? 0,
+      leadTimeHours: item.lead ?? 2,
+      cancellationHours: item.cancel ?? 24,
+      slotMinutes: item.slotMinutes ?? null,
+      capacity: item.capacity ?? 1,
+      priceCents: Math.round((item.price ?? 0) * 100),
+      waiverRequired: Boolean(item.waiver),
+      status: "published",
+      isDemo: true,
+    });
+    for (const [index, option] of (item.options ?? []).entries()) {
+      await db.insert(serviceOptions).values({ id: crypto.randomUUID(), serviceId: id, label: `${option.minutes} min`, minutes: option.minutes, priceCents: Math.round(option.price * 100), sortOrder: index });
+    }
+    for (const addon of item.addons ?? []) {
+      await db.insert(serviceAddons).values({ id: crypto.randomUUID(), serviceId: id, name: addon.name, priceCents: Math.round(addon.price * 100), minutes: addon.minutes });
+    }
+    for (const weekday of item.days) {
+      await db.insert(availabilityWindows).values({ id: crypto.randomUUID(), serviceId: id, weekday, startTime: item.start, endTime: item.end });
+    }
+    return id;
+  }
+
+  const weekdays = [0, 1, 2, 3, 4, 5, 6];
+  const privateYoga = await addService({
+    teacher: "silver-lake-still",
+    slug: "private-yoga",
+    title: "Private yoga",
+    category: "yoga",
+    kind: "appointment",
+    description: "A one-to-one yoga hour. Choose 60 or 90 minutes. The studio waiver is signed once.",
+    buffer: 15,
+    waiver: true,
+    days: [1, 2, 3, 4, 5, 6],
+    start: "09:00",
+    end: "17:00",
+    options: [{ minutes: 60, price: 90 }, { minutes: 90, price: 120 }],
+  });
+  await addService({
+    teacher: "echo-park-reformer",
+    slug: "private-reformer",
+    title: "Private reformer",
+    category: "pilates",
+    kind: "appointment",
+    description: "A private Pilates reformer session.",
+    buffer: 15,
+    days: [1, 2, 3, 4, 5],
+    start: "10:00",
+    end: "18:00",
+    options: [{ minutes: 50, price: 85 }, { minutes: 80, price: 120 }],
+  });
+  await addService({
+    teacher: "atwater-bodywork",
+    slug: "therapeutic-massage",
+    title: "Therapeutic massage",
+    category: "massage",
+    kind: "appointment",
+    description: "Massage and bodywork. Hot stones or CBD oil can be added. This is not medical treatment.",
+    buffer: 15,
+    waiver: true,
+    days: [2, 3, 4, 5, 6],
+    start: "10:00",
+    end: "18:00",
+    options: [{ minutes: 60, price: 140 }, { minutes: 90, price: 190 }],
+    addons: [{ name: "Hot stones", price: 25, minutes: 0 }, { name: "CBD oil", price: 20, minutes: 0 }],
+  });
+  await addService({
+    teacher: "atwater-bodywork",
+    slug: "reiki-session",
+    title: "Reiki session",
+    category: "reiki",
+    kind: "appointment",
+    description: "A quiet Reiki hour. The same studio waiver covers it.",
+    buffer: 10,
+    waiver: true,
+    days: [3, 5],
+    start: "11:00",
+    end: "16:00",
+    options: [{ minutes: 60, price: 95 }],
+  });
+  await addService({
+    teacher: "frogtown-baths",
+    slug: "sauna-six",
+    title: "Sauna",
+    category: "sauna",
+    kind: "access",
+    description: "A shared sauna. Six people per slot.",
+    slotMinutes: 45,
+    capacity: 6,
+    price: 28,
+    days: weekdays,
+    start: "08:00",
+    end: "20:00",
+  });
+  await addService({
+    teacher: "frogtown-baths",
+    slug: "cold-plunge",
+    title: "Cold plunge",
+    category: "cold-plunge",
+    kind: "access",
+    description: "A cold plunge with four spots each round.",
+    slotMinutes: 20,
+    capacity: 4,
+    price: 18,
+    lead: 1,
+    days: weekdays,
+    start: "08:00",
+    end: "20:00",
+  });
+  await addService({
+    teacher: "frogtown-baths",
+    slug: "contrast-circuit",
+    title: "Contrast circuit",
+    category: "contrast",
+    kind: "access",
+    description: "Heat then cold, eight people per round.",
+    slotMinutes: 30,
+    capacity: 8,
+    price: 32,
+    days: weekdays,
+    start: "09:00",
+    end: "19:00",
+  });
+  await addService({
+    teacher: "venice-float",
+    slug: "float-tank",
+    title: "Float tank",
+    category: "float",
+    kind: "appointment",
+    description: "A private float. The tank resets before the next guest.",
+    buffer: 30,
+    days: weekdays,
+    start: "09:00",
+    end: "20:00",
+    options: [{ minutes: 60, price: 89 }],
+  });
+
+  const yogaId = teacherIds.get("silver-lake-still")!;
+  await db.insert(credentials).values({ id: crypto.randomUUID(), teacherId: yogaId, label: "RYT-200", identifier: "YA-20481", verified: true, verifiedAt: input.now, isDemo: true });
+  await db.insert(credentials).values({ id: crypto.randomUUID(), teacherId: teacherIds.get("atwater-bodywork")!, label: "CAMTC", identifier: "CAMTC-88312", verified: true, verifiedAt: input.now, isDemo: true });
+  await db.insert(credentials).values({ id: crypto.randomUUID(), teacherId: teacherIds.get("highland-park-quiet")!, label: "Sound healing certificate", identifier: null, verified: false, isDemo: true });
+
+  const packId = crypto.randomUUID();
+  await db.insert(packs).values({
+    id: packId,
+    teacherId: yogaId,
+    slug: "still-five",
+    name: "5-visit pack",
+    description: "Five yoga visits, group or private.",
+    creditCount: 5,
+    priceCents: 36000,
+    expiryDays: 90,
+    categoryIds: [categoryIds.get("yoga")!],
+    isDemo: true,
+  });
+  const packOrder = crypto.randomUUID();
+  await db.insert(orders).values({ id: packOrder, userId: input.studentId, teacherId: yogaId, kind: "pack", status: "paid", listPriceCents: 36000, studentPaysCents: 36000, teacherAmountCents: 32400, platformFeeCents: 3600, paymentPath: "cash", isDemo: true });
+  await db.insert(packPurchases).values({ id: crypto.randomUUID(), orderId: packOrder, userId: input.studentId, packId, teacherId: yogaId, creditsTotal: 5, creditsRemaining: 5, isDemo: true });
+
+  const bathId = teacherIds.get("frogtown-baths")!;
+  const membershipId = crypto.randomUUID();
+  await db.insert(memberships).values({
+    id: membershipId,
+    teacherId: bathId,
+    slug: "bathhouse-unlimited",
+    name: "Unlimited baths",
+    description: "Unlimited sauna, plunge, and contrast visits this month.",
+    termMonths: 1,
+    kind: "unlimited",
+    priceCents: 8900,
+    recurring: true,
+    categoryIds: [categoryIds.get("sauna")!, categoryIds.get("cold-plunge")!, categoryIds.get("contrast")!, categoryIds.get("bathhouse")!],
+    isDemo: true,
+  });
+  const memberOrder = crypto.randomUUID();
+  await db.insert(orders).values({ id: memberOrder, userId: input.studentId, teacherId: bathId, kind: "membership", status: "paid", listPriceCents: 8900, studentPaysCents: 8900, teacherAmountCents: 8010, platformFeeCents: 890, paymentPath: "cash", isDemo: true });
+  const periodEnd = new Date(input.now);
+  periodEnd.setDate(periodEnd.getDate() + 30);
+  await db.insert(membershipSubscriptions).values({
+    id: crypto.randomUUID(),
+    orderId: memberOrder,
+    userId: input.studentId,
+    membershipId,
+    teacherId: bathId,
+    status: "active",
+    currentPeriodStart: input.now,
+    currentPeriodEnd: periodEnd,
+    unlimited: true,
+    isDemo: true,
+  });
+
+  const [waiver] = await db.select().from(waivers).where(eq(waivers.teacherId, yogaId)).limit(1);
+  const signatureId = crypto.randomUUID();
+  await db.insert(waiverSignatures).values({
+    id: signatureId,
+    waiverId: waiver!.id,
+    teacherId: yogaId,
+    userId: input.avaId,
+    version: 1,
+    signedName: "Ava Chen",
+    ip: "127.0.0.1",
+    signedAt: input.now,
+  });
+  const visitOrder = crypto.randomUUID();
+  const startsAt = zonedTimeToUtc("2026-10-12", "10:00", "America/Los_Angeles");
+  await db.insert(orders).values({ id: visitOrder, userId: input.avaId, teacherId: yogaId, kind: "visit", status: "pay_at_studio", listPriceCents: 9000, studentPaysCents: 9000, paymentPath: "cash", isDemo: true });
+  await db.insert(visitBookings).values({
+    id: crypto.randomUUID(),
+    orderId: visitOrder,
+    userId: input.avaId,
+    serviceId: privateYoga,
+    offeringKind: "appointment",
+    startsAt,
+    endsAt: new Date(startsAt.getTime() + 60 * 60_000),
+    status: "confirmed",
+    waiverSignatureId: signatureId,
+    isDemo: true,
+  });
 }
 
 main().then(() => process.exit(0)).catch((error) => {

@@ -2,11 +2,13 @@ import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { studioCanSell } from "@/lib/review-rules";
 import {
+  availabilityWindows,
   bookingSessions,
   bookings,
   categories,
   classMedia,
   classes,
+  credentials,
   creditLedger,
   leads,
   linkClicks,
@@ -21,11 +23,15 @@ import {
   promoRedemptions,
   recurrences,
   reviews,
+  serviceOptions,
+  services,
   sessions,
   teachers,
   user,
   userRoles,
+  visitBookings,
 } from "@/lib/db/schema";
+import { visitDurationMinutes, visitListPriceCents } from "@/lib/explore-filters";
 import { publicListingVisible } from "@/lib/review-rules";
 import { ymdInZone } from "@/lib/time";
 
@@ -44,6 +50,7 @@ export async function catalog(filters: {
   lat?: number;
   lng?: number;
   miles?: number;
+  vertical?: string;
 }) {
   const rows = await db
     .select({
@@ -83,8 +90,40 @@ export async function catalog(filters: {
       if (filters.maxPrice && row.price > filters.maxPrice * 100) return false;
       if (filters.date && (!row.next || row.next.localDate < filters.date)) return false;
       if (filters.miles && row.class.delivery === "in_person" && (row.miles == null || row.miles > filters.miles)) return false;
+      if (filters.vertical && row.category.vertical !== filters.vertical) return false;
       return true;
     });
+}
+
+export async function publishedServices() {
+  return db
+    .select({ service: services, teacher: teachers, location: locations, category: categories })
+    .from(services)
+    .innerJoin(teachers, eq(teachers.id, services.teacherId))
+    .innerJoin(categories, eq(categories.id, services.categoryId))
+    .leftJoin(locations, eq(locations.id, services.locationId))
+    .where(and(eq(services.status, "published"), eq(teachers.status, "approved"), eq(categories.vertical, "wellness")));
+}
+
+export async function publishedServiceExplore() {
+  const rows = await publishedServices();
+  if (!rows.length) return [];
+  const ids = rows.map((row) => row.service.id);
+  const [windows, options] = await Promise.all([
+    db.select().from(availabilityWindows).where(inArray(availabilityWindows.serviceId, ids)),
+    db.select().from(serviceOptions).where(inArray(serviceOptions.serviceId, ids)),
+  ]);
+  return rows.map((row) => {
+    const optionRows = options.filter((option) => option.serviceId === row.service.id);
+    return {
+      ...row,
+      priceCents: visitListPriceCents(row.service.kind, row.service.priceCents, optionRows.map((option) => option.priceCents)),
+      durationMinutes: visitDurationMinutes(row.service.kind, row.service.slotMinutes, optionRows.map((option) => option.minutes)),
+      windows: windows
+        .filter((window) => window.serviceId === row.service.id)
+        .map((window) => ({ weekday: window.weekday, start: window.startTime, end: window.endTime })),
+    };
+  });
 }
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {
@@ -136,13 +175,15 @@ export async function teacherProfile(slug: string) {
   const upcoming = offerings.length
     ? await db.select().from(sessions).where(and(inArray(sessions.classId, offerings.map((item) => item.id)), eq(sessions.status, "scheduled"), gte(sessions.startsAt, new Date()))).orderBy(asc(sessions.startsAt))
     : [];
-  const [teacherPacks, teacherMemberships, reviewRows, codes] = await Promise.all([
+  const [teacherPacks, teacherMemberships, reviewRows, codes, creds, studioServices] = await Promise.all([
     db.select().from(packs).where(and(eq(packs.teacherId, teacher.id), eq(packs.active, true))),
     db.select().from(memberships).where(and(eq(memberships.teacherId, teacher.id), eq(memberships.active, true))),
     db.select({ review: reviews, name: user.name }).from(reviews).innerJoin(user, eq(user.id, reviews.userId)).where(eq(reviews.teacherId, teacher.id)).limit(8),
     db.select().from(promoCodes).where(and(eq(promoCodes.teacherId, teacher.id), eq(promoCodes.active, true))),
+    db.select().from(credentials).where(eq(credentials.teacherId, teacher.id)),
+    db.select().from(services).where(and(eq(services.teacherId, teacher.id), eq(services.status, "published"))),
   ]);
-  return { teacher, person, offerings, upcoming, packs: teacherPacks, memberships: teacherMemberships, reviews: reviewRows, codes };
+  return { teacher, person, offerings, upcoming, packs: teacherPacks, memberships: teacherMemberships, reviews: reviewRows, codes, credentials: creds, services: studioServices };
 }
 
 export async function teacherByUser(userId: string) {
@@ -156,7 +197,15 @@ export async function studioHome(teacherId: string) {
   const upcoming = classRows.length
     ? await db.select().from(sessions).where(and(inArray(sessions.classId, classRows.map((item) => item.id)), gte(sessions.startsAt, new Date()))).orderBy(asc(sessions.startsAt)).limit(8)
     : [];
-  return { teacher, classRows, upcoming };
+  const serviceRows = await db.select().from(services).where(eq(services.teacherId, teacherId)).orderBy(desc(services.createdAt));
+  const visitRows = await db
+    .select({ visit: visitBookings, service: services })
+    .from(visitBookings)
+    .innerJoin(services, eq(services.id, visitBookings.serviceId))
+    .where(and(eq(services.teacherId, teacherId), eq(visitBookings.status, "confirmed"), gte(visitBookings.startsAt, new Date())))
+    .orderBy(asc(visitBookings.startsAt))
+    .limit(8);
+  return { teacher, classRows, upcoming, serviceRows, visitRows };
 }
 
 export async function classStudio(classId: string) {
@@ -298,7 +347,14 @@ export async function myBookings(userId: string) {
   const packsOwned = await db.select({ purchase: packPurchases, pack: packs }).from(packPurchases).innerJoin(packs, eq(packs.id, packPurchases.packId)).where(eq(packPurchases.userId, userId));
   const subs = await db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(eq(membershipSubscriptions.userId, userId));
   const ledger = await db.select().from(creditLedger).where(eq(creditLedger.userId, userId)).orderBy(desc(creditLedger.createdAt)).limit(12);
-  return { rows, packsOwned, subs, ledger };
+  const visits = await db
+    .select({ visit: visitBookings, service: services, order: orders })
+    .from(visitBookings)
+    .innerJoin(services, eq(services.id, visitBookings.serviceId))
+    .leftJoin(orders, eq(orders.id, visitBookings.orderId))
+    .where(eq(visitBookings.userId, userId))
+    .orderBy(desc(visitBookings.startsAt));
+  return { rows, packsOwned, subs, ledger, visits };
 }
 
 export async function billing(teacherId: string) {

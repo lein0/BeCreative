@@ -23,8 +23,11 @@ import {
   promoCodes,
   promoRedemptions,
   reviews,
+  services,
   session,
   teachers,
+  visitBookings,
+  credentials,
   user,
   userRoles,
   waitlistEntries,
@@ -50,6 +53,7 @@ export async function wipeDemo() {
     await db.delete(feedback).where(inArray(feedback.id, feedbackIds));
   }
   await db.delete(waitlistEntries).where(sql`${waitlistEntries.isDemo} = true`);
+  await db.delete(visitBookings).where(sql`${visitBookings.isDemo} = true`);
   if (bookingIds.length) await db.delete(bookings).where(inArray(bookings.id, bookingIds));
   if (orderIds.length) await db.delete(orders).where(inArray(orders.id, orderIds));
   await db.delete(packPurchases).where(sql`${packPurchases.isDemo} = true`);
@@ -58,6 +62,8 @@ export async function wipeDemo() {
   await db.delete(linkClicks).where(sql`${linkClicks.isDemo} = true`);
   await db.delete(classMedia).where(sql`${classMedia.isDemo} = true`);
   await db.delete(classes).where(sql`${classes.isDemo} = true`);
+  await db.delete(services).where(sql`${services.isDemo} = true`);
+  await db.delete(credentials).where(sql`${credentials.isDemo} = true`);
   await db.delete(packs).where(sql`${packs.isDemo} = true`);
   await db.delete(memberships).where(sql`${memberships.isDemo} = true`);
   await db.delete(promoCodes).where(sql`${promoCodes.isDemo} = true`);

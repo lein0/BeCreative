@@ -113,6 +113,8 @@ export const NEIGHBORHOODS: { name: string; lat: number; lng: number }[] = [
   { name: "Venice", lat: 33.985, lng: -118.4695 },
   { name: "Pasadena", lat: 34.1478, lng: -118.1445 },
   { name: "Highland Park", lat: 34.1114, lng: -118.1926 },
+  { name: "Atwater Village", lat: 34.1165, lng: -118.2564 },
+  { name: "Frogtown", lat: 34.0986, lng: -118.2462 },
 ];
 
 export function labelForOutreach(value: string): string {

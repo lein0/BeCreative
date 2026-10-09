@@ -63,12 +63,32 @@ async function TeacherBody({ params, searchParams }: { params: Promise<{ slug: s
             </div>
           </div>
           <p className="mt-5 max-w-2xl text-lg">{profile.teacher.bio}</p>
+          {profile.credentials.length ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {profile.credentials.map((credential) => (
+                <span key={credential.id} className="rounded-full bg-sand px-3 py-1 text-xs">{credential.label}{credential.verified ? " · verified" : ""}</span>
+              ))}
+            </div>
+          ) : null}
           <div className="mt-6 flex flex-wrap gap-3 text-sm">
             {profile.teacher.instagram ? <span>IG {profile.teacher.instagram}</span> : null}
             {profile.teacher.website ? <span>{profile.teacher.website}</span> : null}
           </div>
         </div>
       </div>
+      {profile.services.length ? (
+        <>
+          <h2 className="display mt-10 text-4xl">Visits</h2>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {profile.services.map((service) => (
+              <Link key={service.id} href={`/s/${service.slug}`} className="rounded-3xl border border-line bg-mist p-4">
+                <p className="display text-3xl">{service.title}</p>
+                <p className="mt-2 text-sm text-ink/70">{service.kind === "access" ? `${money(service.priceCents)} · ${service.capacity} people` : "Private hour"}</p>
+              </Link>
+            ))}
+          </div>
+        </>
+      ) : null}
       <h2 className="display mt-10 text-4xl">Classes</h2>
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         {profile.offerings.map((klass) => (
