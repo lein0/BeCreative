@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
+import { fieldAutoCapitalize } from "./field-input";
 import { useAppTheme } from "../theme/theme";
 
 export function Screen({ children, scroll = true, testID }: { children: ReactNode; scroll?: boolean; testID?: string }) {
@@ -99,7 +100,7 @@ export function Field({
         placeholder={placeholder}
         placeholderTextColor={colors.muted}
         secureTextEntry={secure}
-        autoCapitalize={keyboard === "email-address" ? "none" : "sentences"}
+        autoCapitalize={fieldAutoCapitalize(keyboard, secure)}
         keyboardType={keyboard}
         onBlur={onBlur}
         style={{ minHeight: 48, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 14, color: colors.ink, fontFamily: fonts.body, fontSize: 16 }}

@@ -1,4 +1,5 @@
 import { decideBooking, decideSeriesBooking, type SessionState } from "../../../lib/booking-rules";
+import { bookDisplayCents, packsForClass } from "../../../lib/mobile-client";
 import {
   canSpendMembership,
   canSpendPack,
@@ -9,6 +10,8 @@ import {
   type PriceQuote,
   type PromoRule,
 } from "../../../lib/pricing";
+
+export { bookDisplayCents, packsForClass };
 export type BookingKind = "session" | "series" | "appointment" | "capacity";
 export type RefundKind = "full" | "credit" | "none";
 export type HelpAction = {

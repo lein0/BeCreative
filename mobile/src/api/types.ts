@@ -18,6 +18,8 @@ export type PublicClass = {
   slug: string;
   title: string;
   priceCents: number | null;
+  seriesPriceCents?: number | null;
+  categoryId?: string;
   delivery: string;
   teacher: string;
   teacherSlug: string;
@@ -33,7 +35,7 @@ export type ClassDetail = {
   class: PublicClass;
   description: string;
   slots: Slot[];
-  teacher: { slug: string; name: string };
+  teacher: { id?: string; slug: string; name: string };
 };
 
 export type TeacherProfile = {
@@ -87,7 +89,7 @@ export type BookingListItem = {
   createdAt: string;
 };
 
-export type WalletPack = { id: string; name: string; remaining: number; total: number };
+export type WalletPack = { id: string; name: string; remaining: number; total: number; classIds?: string[]; categoryIds?: string[]; teacherId?: string };
 export type WalletMembership = { id: string; name: string; status: string; periodEnd: string };
 export type Wallet = { packs: WalletPack[]; memberships: WalletMembership[] };
 

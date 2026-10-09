@@ -1,3 +1,5 @@
+export { authSessionRedirect } from "../../../lib/mobile-client";
+
 export type CheckoutSessionOutcome = "success" | "cancel" | "dismiss";
 
 /** Stripe success and cancel both redirect to becreative://bookings. The query says which one happened. */

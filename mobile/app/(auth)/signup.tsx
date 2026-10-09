@@ -1,14 +1,16 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import { Body, Button, Display, Field, Notice } from "@mobile/components/ui";
+import { postLoginPath } from "../../../lib/mobile-client";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Signup() {
   const router = useRouter();
+  const destination = postLoginPath(useLocalSearchParams<{ next?: string }>().next);
   const { api, acceptSession, track } = useSession();
   const { colors } = useAppTheme();
   const [name, setName] = useState("");
@@ -22,7 +24,7 @@ export default function Signup() {
       await track("signup_started", {});
       const session = await api.signUp({ name, email, password });
       await acceptSession(session);
-      router.replace("/explore");
+      router.replace(destination as "/explore");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create the account.");
     }
@@ -38,7 +40,7 @@ export default function Signup() {
         <Field label="Email" value={email} onChangeText={setEmail} keyboard="email-address" />
         <Field label="Password" value={password} onChangeText={setPassword} secure />
         <Button label="Create account" onPress={() => void submit()} />
-        <Button label="I already have an account" tone="ghost" onPress={() => router.push("/login")} />
+        <Button label="I already have an account" tone="ghost" onPress={() => router.push(destination === "/explore" ? "/login" : { pathname: "/login", params: { next: destination } })} />
       </View>
     </SafeAreaView>
   );

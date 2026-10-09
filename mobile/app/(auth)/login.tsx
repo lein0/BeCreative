@@ -1,15 +1,18 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import { DEMO_EMAIL, DEMO_PASSWORD } from "@mobile/api/fixtures";
 import { Body, Button, Display, Field, Notice } from "@mobile/components/ui";
+import { postLoginPath } from "../../../lib/mobile-client";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Login() {
   const router = useRouter();
+  const { next } = useLocalSearchParams<{ next?: string }>();
+  const destination = postLoginPath(next);
   const { api, acceptSession } = useSession();
   const { colors, fonts } = useAppTheme();
   const [email, setEmail] = useState("");
@@ -23,7 +26,7 @@ export default function Login() {
     try {
       const session = await run();
       await acceptSession(session);
-      router.replace("/explore");
+      router.replace(destination as "/explore");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Could not sign in.");
     } finally {
@@ -44,7 +47,7 @@ export default function Login() {
         <Pressable accessibilityRole="link" accessibilityLabel="Forgot password" onPress={() => router.push("/forgot")} style={{ minHeight: 44, justifyContent: "center" }}>
           <Text style={{ fontFamily: fonts.medium, color: colors.accent }}>Forgot password</Text>
         </Pressable>
-        <Pressable accessibilityRole="link" accessibilityLabel="Create an account" onPress={() => router.push("/signup")} style={{ minHeight: 44, justifyContent: "center" }}>
+        <Pressable accessibilityRole="link" accessibilityLabel="Create an account" onPress={() => router.push(destination === "/explore" ? "/signup" : { pathname: "/signup", params: { next: destination } })} style={{ minHeight: 44, justifyContent: "center" }}>
           <Text style={{ fontFamily: fonts.body, color: colors.ink }}>New here? Create an account</Text>
         </Pressable>
       </View>
