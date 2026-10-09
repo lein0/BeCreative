@@ -1,3 +1,4 @@
+import { unsubscribeBlocksEmail } from "@/lib/messaging-rules";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 
 export type ChannelPrefs = { email: boolean; inApp: boolean; sms: boolean; push: boolean; cadence: "instant" | "daily" };
@@ -20,10 +21,12 @@ export function channelsFor(prefs: ChannelPrefs, input: {
   emailSuppressed?: boolean;
   consent?: "transactional" | "marketing";
   marketingOptIn?: boolean;
+  event?: string;
 }) {
   const marketingBlocked = input.consent === "marketing" && input.marketingOptIn !== true;
+  const unsubscribedBlocks = input.unsubscribed && unsubscribeBlocksEmail(input.event);
   return {
-    email: prefs.email && !input.unsubscribed && !input.emailSuppressed && !marketingBlocked,
+    email: prefs.email && !unsubscribedBlocks && !input.emailSuppressed && !marketingBlocked,
     inApp: prefs.inApp,
     sms: prefs.sms && input.smsConfigured && input.smsOptIn !== false,
     push: prefs.push && input.webPushEnabled,
@@ -50,5 +53,28 @@ export function smsAllowedNow(localMinutes: number, start = SHIP_DEFAULTS.quietH
 }
 
 export function unsubscribeUrl(origin: string, token: string) {
-  return `${origin.replace(/\/$/, "")}/unsubscribe?token=${encodeURIComponent(token)}`;
+  return `${origin.replace(/\/$/, "")}/unsubscribe/${encodeURIComponent(token)}`;
+}
+
+/** Other channels can be marked sent while a quiet-hours text is still waiting. */
+export function outboxStatusAfterDelivery(smsDeferred: boolean) {
+  return smsDeferred ? "sms_pending" : "sent";
+}
+
+export function deferredSmsStillPending(status: string) {
+  return status === "sms_pending";
+}
+
+/** Event saves must not write the credit preference. Only the credit form does. */
+export function creditOptInFromForm(input: { saveCredit: boolean; checked: boolean }) {
+  if (!input.saveCredit) return null;
+  return input.checked;
+}
+
+/** Saving an enabled email channel turns booking mail back on. */
+export function prefSaveUserPatch(input: { emailEnabled: boolean; creditOptIn: boolean }) {
+  return {
+    creditOptIn: input.creditOptIn,
+    ...(input.emailEnabled ? { emailUnsubscribed: false as const } : {}),
+  };
 }

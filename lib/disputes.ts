@@ -1,9 +1,9 @@
-import { eq } from "drizzle-orm";
-import { disputeLiability, earlyFraudDecision, evidenceForReason, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
+import { and, arrayContains, eq, inArray } from "drizzle-orm";
+import { classHasStarted, disputeLiability, disputeUpdateFromStripe, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
 import { textPdf } from "@/lib/evidence-pdf";
 import { db } from "@/lib/db";
 import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, orders, platformSettings, policyAcceptances, sessions, teachers, user, waiverSignatures } from "@/lib/db/schema";
-import { enqueueJob } from "@/lib/jobs";
+import { ensureQueuedJob } from "@/lib/jobs";
 import { emitNotification } from "@/lib/notifications";
 import { issueRefund } from "@/lib/refunds";
 import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
@@ -47,13 +47,27 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
   const links = booking ? await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id)) : [];
   const sessionRows = links.length ? await db.select().from(sessions).where(eq(sessions.id, links[0]!.sessionId)) : [];
   const [acceptance] = await db.select().from(policyAcceptances).where(eq(policyAcceptances.orderId, order.id)).limit(1);
-  const emails = order.teacherId ? await db.select().from(emailOutbox).where(eq(emailOutbox.teacherId, order.teacherId)).limit(5) : [];
-  const prior = order.userId && order.teacherId
-    ? await db.select().from(bookings).innerJoin(classes, eq(classes.id, bookings.classId)).where(eq(bookings.userId, order.userId))
+  const emailRows = order.teacherId && person?.email
+    ? await db.select().from(emailOutbox).where(and(eq(emailOutbox.teacherId, order.teacherId), arrayContains(emailOutbox.toAddresses, [person.email]))).limit(5)
     : [];
-  const signature = order.userId && order.teacherId
-    ? (await db.select().from(waiverSignatures).where(eq(waiverSignatures.userId, order.userId)).limit(1))[0]
-    : undefined;
+  const history = order.userId ? await db.select().from(bookings).where(eq(bookings.userId, order.userId)) : [];
+  const classIds = [...new Set(history.map((row) => row.classId))];
+  const historyClasses = classIds.length ? await db.select().from(classes).where(inArray(classes.id, classIds)) : [];
+  const waiverRows = order.userId && order.teacherId
+    ? await db.select().from(waiverSignatures).where(and(eq(waiverSignatures.userId, order.userId), eq(waiverSignatures.teacherId, order.teacherId))).limit(5)
+    : [];
+  const scoped = scopedDisputeRecords({
+    teacherId: order.teacherId ?? "",
+    userId: order.userId ?? "",
+    customerEmail: person?.email ?? "",
+    emails: emailRows,
+    waivers: waiverRows,
+    bookings: history,
+    classTeacherIds: new Map(historyClasses.map((row) => [row.id, row.teacherId])),
+  });
+  const emails = scoped.emails;
+  const signature = scoped.waiver;
+  const priorCount = scoped.priorBookings.length;
   return {
     customerName: person?.name || "Customer",
     customerEmail: person?.email || "",
@@ -68,7 +82,7 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
     messages: emails.map((email) => email.subject).join("; "),
     emailsSent: emails.map((email) => email.subject).join("; "),
     serviceNotes: klass?.whatToBring || klass?.outcomes || "",
-    priorBookings: String(prior.filter((row) => row.bookings.status === "confirmed" || row.bookings.status === "cancelled").length),
+    priorBookings: String(priorCount),
     refundExplanation: `Order ${order.id} charged ${(order.studentPaysCents / 100).toFixed(2)} and has refunded ${(order.refundedCents / 100).toFixed(2)}.`,
   };
 }
@@ -98,8 +112,14 @@ export async function recordDispute(input: { id: string; paymentIntentId?: strin
     evidence,
     updatedAt: new Date(),
   };
+  const due = input.dueBy ?? existing[0]?.dueBy ?? null;
+  const confirmed = Boolean(existing[0]?.attendanceConfirmed) || attendance;
+  const runAt = confirmed || !due ? new Date() : new Date(due.getTime() - policy.leadHours * 3_600_000);
   if (existing[0]) {
-    await db.update(disputes).set(row).where(eq(disputes.id, input.id));
+    await db.update(disputes).set(disputeUpdateFromStripe(existing[0], row)).where(eq(disputes.id, input.id));
+    if (existing[0].evidenceStatus !== "submitted" && existing[0].evidenceStatus !== "held") {
+      await ensureQueuedJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
+    }
   } else {
     await db.insert(disputes).values({ id: input.id, evidenceStatus: "assembling", ...row });
     if (order?.teacherId) {
@@ -115,38 +135,48 @@ export async function recordDispute(input: { id: string; paymentIntentId?: strin
         });
       }
     }
-    const due = input.dueBy ?? null;
-    const runAt = attendance || !due ? new Date() : new Date(due.getTime() - policy.leadHours * 3_600_000);
-    await enqueueJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
+    await ensureQueuedJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
   }
   return { id: input.id, evidence };
 }
 
-export async function submitDispute(disputeId: string, actorUserId?: string | null) {
+type SubmitResult = { ok: boolean; replayed?: boolean; skipped?: boolean; waiting?: boolean; retry?: boolean; error?: string; runAt?: Date };
+
+export async function submitDispute(disputeId: string, actorUserId?: string | null): Promise<SubmitResult> {
   const [row] = await db.select().from(disputes).where(eq(disputes.id, disputeId)).limit(1);
   if (!row || row.evidenceStatus === "submitted") return { ok: true, replayed: true };
   const policy = await settings();
+  const now = new Date();
+  if (!actorUserId && (row.evidenceStatus === "held" || !policy.autoSubmit)) return { ok: true, skipped: true };
   const ready = shouldAutoSubmit({
     autoSubmit: policy.autoSubmit || Boolean(actorUserId),
-    held: row.evidenceStatus === "held" && !actorUserId,
+    held: false,
     attendanceConfirmed: row.attendanceConfirmed,
     dueBy: row.dueBy,
-    now: new Date(),
+    now,
     leadHours: policy.leadHours,
   });
-  if (!ready && !actorUserId) return { ok: true, waiting: true };
-  const pdf = textPdf(`Dispute ${row.id}`, row.summary);
-  let fileId: string | null = null;
-  const stripe = getStripe();
-  if (stripe) {
-    const file = await stripe.files.create({
-      purpose: "dispute_evidence",
-      file: { data: pdf, name: `${row.id}.pdf`, type: "application/pdf" },
-    });
-    fileId = file.id;
-    await stripe.disputes.update(row.id, { evidence: { ...row.evidence, uncategorized_file: fileId }, submit: true });
+  if (!ready && !actorUserId) {
+    return { ok: true, waiting: true, runAt: nextDisputeSubmitAt({ dueBy: row.dueBy, leadHours: policy.leadHours, now, retry: false }) };
   }
-  await db.update(disputes).set({ evidenceStatus: "submitted", stripeFileId: fileId, updatedAt: new Date() }).where(eq(disputes.id, row.id));
+  const notes = await db.select().from(disputeNotes).where(eq(disputeNotes.disputeId, row.id));
+  const packet = withTeacherNotes(row.summary, row.evidence ?? {}, notes.map((note) => note.body));
+  const pdf = textPdf(`Dispute ${row.id}`, packet.summary);
+  const stripe = getStripe();
+  if (!stripe) {
+    return {
+      ok: false,
+      retry: !actorUserId,
+      error: "Stripe is not configured",
+      runAt: nextDisputeSubmitAt({ dueBy: row.dueBy, leadHours: policy.leadHours, now, retry: true }),
+    };
+  }
+  const file = await stripe.files.create({
+    purpose: "dispute_evidence",
+    file: { data: pdf, name: `${row.id}.pdf`, type: "application/pdf" },
+  });
+  await stripe.disputes.update(row.id, { evidence: { ...packet.evidence, uncategorized_file: file.id }, submit: true });
+  await db.update(disputes).set({ evidenceStatus: "submitted", stripeFileId: file.id, updatedAt: new Date() }).where(eq(disputes.id, row.id));
   await db.insert(auditLog).values({ id: crypto.randomUUID(), actorUserId: actorUserId ?? null, action: "dispute.submit", entityType: "dispute", entityId: row.id, summary: row.reason });
   return { ok: true };
 }
@@ -177,8 +207,8 @@ export async function handleEarlyFraud(input: { chargeId: string; paymentIntentI
   if (order) {
     const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
     const links = booking ? await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id)) : [];
-    const sessionRows = links.length ? await db.select().from(sessions).where(eq(sessions.id, links[0]!.sessionId)) : [];
-    classStarted = Boolean(sessionRows[0] && sessionRows[0].startsAt <= new Date());
+    const sessionRows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
+    classStarted = classHasStarted(sessionRows.map((session) => session.startsAt), new Date());
   }
   const decision = earlyFraudDecision({ amountCents: input.amountCents, classStarted, thresholdCents: policy.fraudMax });
   if (decision === "refund" && order) {

@@ -11,6 +11,14 @@ export type EmailMessage = {
   headers?: Record<string, string>;
 };
 
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function sameInbox(stored: string, reported: string) {
+  return normalizeEmail(stored) === normalizeEmail(reported);
+}
+
 export function individualDeliveries(recipients: string[]) {
   const seen = new Set<string>();
   const deliveries: string[] = [];

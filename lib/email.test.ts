@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { individualDeliveries } from "@/lib/email";
+import { individualDeliveries, sameInbox } from "@/lib/email";
 
 describe("private recipient delivery", () => {
   it("gives each student their own message and drops duplicates", () => {
@@ -8,5 +8,11 @@ describe("private recipient delivery", () => {
     const messages = deliveries.map((recipient) => ({ to: [recipient] }));
     expect(messages.every((message) => message.to.length === 1)).toBe(true);
     expect(new Set(messages.flatMap((message) => message.to)).size).toBe(messages.length);
+  });
+
+  it("matches a bounce when the stored address differs only by case", () => {
+    expect(sameInbox("Jules@Example.com", "jules@example.com")).toBe(true);
+    expect(sameInbox("  Jules@Example.com ", "jules@example.com")).toBe(true);
+    expect(sameInbox("other@example.com", "jules@example.com")).toBe(false);
   });
 });

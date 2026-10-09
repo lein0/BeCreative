@@ -1,9 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { user } from "@/lib/db/schema";
+import { phoneForStorage } from "@/lib/phone";
 
 export async function applyContactPrefs(userId: string, formData: FormData, mode: "capture" | "checkout") {
-  const phone = String(formData.get("phone") ?? "").trim();
+  const phone = phoneForStorage(String(formData.get("phone") ?? ""));
   const sms = formData.get("smsOptIn") === "1";
   const marketing = formData.get("marketingOptIn") === "1";
   if (mode === "checkout") {

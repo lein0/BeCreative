@@ -81,7 +81,7 @@ export async function resolveTicket(ticketId: string) {
       audience: "student",
       title: `Resolved: ${ticket.subject}`,
       body: "If you have a minute, rate how that went from the ticket.",
-      href: `/admin/support/${ticketId}`,
+      href: `/help/tickets/${ticketId}`,
     });
   }
 }
