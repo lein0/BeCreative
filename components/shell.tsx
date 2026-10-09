@@ -25,6 +25,7 @@ export function SiteFrame({ children, brand = BECREATIVE }: { children: React.Re
           <Link href="/legal/terms">Terms</Link>
           <Link href="/legal/privacy">Privacy</Link>
           <Link href="/legal/refunds">Refunds</Link>
+          <Link href="/legal/sms">SMS</Link>
           <Link href="/settings/privacy">Your data</Link>
         </nav>
       </footer>

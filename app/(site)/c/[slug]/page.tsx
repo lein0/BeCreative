@@ -147,6 +147,14 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
                 <input type="checkbox" name="series" value="1" /> Book the whole series ({money(detail.class.pricePerSeriesCents ?? list)})
               </label>
             ) : null}
+            <label className="block text-sm">
+              Mobile phone
+              <input name="phone" type="tel" className="mt-1 w-full rounded-2xl border border-line bg-white px-3 py-2" placeholder="+1…" />
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" name="smsOptIn" value="1" className="mt-1" />
+              <span>Text me reminders for this studio. Reply STOP to opt out. Msg & data rates may apply. <Link className="underline" href="/legal/sms">SMS terms</Link></span>
+            </label>
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" name="policyAccepted" value="1" required className="mt-1" />
               <span>{policy}</span>

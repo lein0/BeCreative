@@ -40,6 +40,9 @@ async function Body() {
         <label className="flex items-center gap-2"><input type="checkbox" name="webPushEnabled" value="1" defaultChecked={fee?.webPushEnabled ?? false} /> Web push</label>
         <label>Mailing address<input name="mailingAddress" defaultValue={fee?.mailingAddress ?? SHIP_DEFAULTS.mailingAddress} className={control} /></label>
         <label>Policy version<input name="policyVersion" defaultValue={fee?.policyVersion ?? SHIP_DEFAULTS.policyVersion} className={control} /></label>
+        <label>SMS monthly cap (dollars)<input name="smsMonthlyCap" defaultValue={((fee?.smsMonthlyCapCents ?? SHIP_DEFAULTS.smsMonthlyCapCents) / 100).toString()} className={control} /></label>
+        <label>SMS cost per segment (cents)<input name="smsSegmentCostCents" defaultValue={fee?.smsSegmentCostCents ?? SHIP_DEFAULTS.smsSegmentCostCents} className={control} /></label>
+        <label className="flex items-center gap-2"><input type="checkbox" name="imessageEnabled" value="1" defaultChecked={fee?.imessageEnabled ?? false} /> iMessage when the number can take it</label>
         <button className="rounded-full bg-ink px-4 py-2 text-sm text-paper">Save policies</button>
       </form>
     </div>

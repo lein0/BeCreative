@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailOutbox } from "@/lib/db/schema";
+import { emailOutbox, user } from "@/lib/db/schema";
+import { buildRawEmail } from "@/lib/email-mime";
 
 export type EmailMessage = {
   to: string[];
@@ -9,6 +11,21 @@ export type EmailMessage = {
   teacherId?: string | null;
   headers?: Record<string, string>;
 };
+
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function sameInbox(stored: string, reported: string) {
+  return normalizeEmail(stored) === normalizeEmail(reported);
+}
+
+export async function findUserByEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const [row] = await db.select().from(user).where(sql`lower(${user.email}) = ${normalized}`).limit(1);
+  return row ?? null;
+}
 
 export function individualDeliveries(recipients: string[]) {
   const seen = new Set<string>();
@@ -21,39 +38,6 @@ export function individualDeliveries(recipients: string[]) {
     deliveries.push(email);
   }
   return deliveries;
-}
-
-export function headerSafe(value: string) {
-  return value.replace(/[\r\n]+/g, " ").replace(/[^\t\x20-\x7E]/g, "");
-}
-
-export function buildRawEmail(message: { from: string; to: string[]; subject: string; text: string; html?: string; headers?: Record<string, string> }) {
-  const headers = [
-    `From: ${headerSafe(message.from)}`,
-    `To: ${message.to.map(headerSafe).join(", ")}`,
-    `Subject: ${headerSafe(message.subject)}`,
-    ...Object.entries(message.headers ?? {}).map(([key, value]) => `${headerSafe(key)}: ${headerSafe(value)}`),
-    "MIME-Version: 1.0",
-  ];
-  if (!message.html) {
-    return [...headers, "Content-Type: text/plain; charset=UTF-8", "", message.text].join("\r\n");
-  }
-  const boundary = `bc_${crypto.randomUUID().replace(/-/g, "")}`;
-  return [
-    ...headers,
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
-    "",
-    `--${boundary}`,
-    "Content-Type: text/plain; charset=UTF-8",
-    "",
-    message.text,
-    `--${boundary}`,
-    "Content-Type: text/html; charset=UTF-8",
-    "",
-    message.html,
-    `--${boundary}--`,
-    "",
-  ].join("\r\n");
 }
 
 export interface EmailProvider {
@@ -80,14 +64,7 @@ class SesEmailProvider implements EmailProvider {
     const { SESClient, SendRawEmailCommand } = await import("@aws-sdk/client-ses");
     // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
-    const raw = buildRawEmail({
-      from,
-      to: message.to,
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-      headers: message.headers,
-    });
+    const raw = buildRawEmail(message, from, process.env.SES_CONFIGURATION_SET || undefined);
     const result = await client.send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(raw) } }));
     return { providerMessageId: result.MessageId ?? null };
   }

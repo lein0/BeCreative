@@ -22,6 +22,11 @@ export const SHIP_DEFAULTS = {
   webPushEnabled: false,
   mailingAddress: "BeCreative, Los Angeles, CA",
   policyVersion: 1,
+  smsMonthlyCapCents: 5000,
+  smsSegmentCostCents: 1,
+  imessageEnabled: false,
+  winbackInactiveDays: 30,
+  reviewAskHoursAfter: 2,
 };
 
 export type ShipDefaults = typeof SHIP_DEFAULTS;
@@ -37,9 +42,14 @@ export const TEACHER_EVENTS = [
   "dispute.opened",
   "ticket.created",
   "review.created",
+  "teacher.approved",
+  "teacher.stripe_incomplete",
+  "teacher.first_booking",
+  "teacher.weekly_summary",
 ] as const;
 
 export const STUDENT_EVENTS = [
+  "student.welcome",
   "booking.confirmed",
   "booking.reminder",
   "booking.cancelled",
@@ -48,6 +58,10 @@ export const STUDENT_EVENTS = [
   "class.changed",
   "receipt.sent",
   "ticket.updated",
+  "membership.renewal",
+  "membership.payment_failed",
+  "review.ask",
+  "winback",
 ] as const;
 
 export const NOTIFICATION_EVENTS = [...new Set([...TEACHER_EVENTS, ...STUDENT_EVENTS])] as const;

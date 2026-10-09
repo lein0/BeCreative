@@ -3,6 +3,7 @@ import { resolvedPolicy, studentCancelOutcome, teacherRefundChoice, lateCancelFe
 import { sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
 import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, membershipSubscriptions, orders, packPurchases, platformSettings, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
+import { sameLocalDay } from "@/lib/messaging-rules";
 import { emitNotification } from "@/lib/notifications";
 import { packCreditsToRestore } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
@@ -93,6 +94,7 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
         title: `${klass.title} was cancelled`,
         body: input.reason || "Your teacher cancelled this date. A refund or studio credit follows the cancellation policy.",
         href: `/c/${klass.slug}`,
+        textEligible: sameLocalDay(session.startsAt, new Date()),
       });
     }
   }
@@ -153,6 +155,7 @@ export async function studentCancelVisit(userId: string, visitId: string) {
     title: `${service.title} cancelled`,
     body: outcome === "full_refund" ? "A full refund is on the way." : outcome === "credit" ? "Studio credit was added." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
     href: "/bookings",
+    textEligible: outcome !== "full_refund" && sameLocalDay(visit.startsAt, now),
   });
   return { ok: true, outcome, feeCents: fee };
 }
@@ -187,6 +190,7 @@ export async function teacherCancelVisit(input: { visitId: string; actorUserId: 
       title: `${service.title} was cancelled`,
       body: input.reason || "Your practitioner cancelled this appointment. A refund follows unless you opted into studio credit.",
       href: `/s/${service.slug}`,
+      textEligible: sameLocalDay(visit.startsAt, new Date()),
     });
   }
   return { ok: true };

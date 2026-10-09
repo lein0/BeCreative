@@ -5,8 +5,9 @@ import { chargeFullyRefunded, paidInvoiceRenewal } from "@/lib/checkout-rules";
 import { handleEarlyFraud, recordDispute } from "@/lib/disputes";
 import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
-import { stripeEvents, teachers } from "@/lib/db/schema";
+import { membershipSubscriptions, orders, stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
+import { invoiceSubscriptionId } from "@/lib/stripe-invoice";
 import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
 export async function POST(request: Request) {
@@ -74,6 +75,14 @@ async function dispatchStripeEvent(event: Stripe.Event) {
       paymentIntent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id ?? paymentIntent;
     }
     await handleEarlyFraud({ chargeId: chargeId ?? warning.id, paymentIntentId: paymentIntent, amountCents });
+  }
+  if (event.type === "invoice.payment_failed") {
+    const invoice = event.data.object;
+    const subscription = invoiceSubscriptionId(invoice);
+    if (subscription) {
+      const [order] = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, subscription)).limit(1);
+      if (order) await db.update(membershipSubscriptions).set({ status: "past_due" }).where(eq(membershipSubscriptions.orderId, order.id));
+    }
   }
   if (event.type === "account.updated") {
     const account = event.data.object;

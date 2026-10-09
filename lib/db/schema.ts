@@ -15,6 +15,10 @@ export const user = pgTable("user", {
   isDemo: boolean("is_demo").notNull().default(false),
   creditOptIn: boolean("credit_opt_in").notNull().default(false),
   emailUnsubscribed: boolean("email_unsubscribed").notNull().default(false),
+  emailSuppressed: boolean("email_suppressed").notNull().default(false),
+  phone: text("phone"),
+  smsOptIn: boolean("sms_opt_in").notNull().default(false),
+  marketingOptIn: boolean("marketing_opt_in").notNull().default(false),
   deletedAt: timestamp("deleted_at"),
 });
 
@@ -408,6 +412,9 @@ export const platformSettings = pgTable("platform_settings", {
   webPushEnabled: boolean("web_push_enabled").notNull().default(false),
   mailingAddress: text("mailing_address").notNull().default("BeCreative, Los Angeles, CA"),
   policyVersion: integer("policy_version").notNull().default(1),
+  smsMonthlyCapCents: integer("sms_monthly_cap_cents").notNull().default(5000),
+  smsSegmentCostCents: integer("sms_segment_cost_cents").notNull().default(1),
+  imessageEnabled: boolean("imessage_enabled").notNull().default(false),
   updatedAt: ts("updated_at").notNull().defaultNow(),
   updatedBy: text("updated_by"),
 });
@@ -648,6 +655,36 @@ export const rateBuckets = pgTable("rate_buckets", {
   key: text("key").primaryKey(),
   windowStart: ts("window_start").notNull(),
   count: integer("count").notNull().default(0),
+});
+
+export const smsSuppressions = pgTable("sms_suppressions", {
+  phone: text("phone").primaryKey(),
+  reason: text("reason").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const triggerOverrides = pgTable("trigger_overrides", {
+  id: text("id").primaryKey(),
+  enabled: boolean("enabled").notNull().default(true),
+});
+
+export const shortLinks = pgTable("short_links", {
+  code: text("code").primaryKey(),
+  url: text("url").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const messageLog = pgTable("message_log", {
+  id: text("id").primaryKey(),
+  userId: text("user_id"),
+  channel: text("channel").notNull(),
+  provider: text("provider").notNull(),
+  toAddress: text("to_address").notNull(),
+  body: text("body").notNull().default(""),
+  costCents: integer("cost_cents").notNull().default(0),
+  status: text("status").notNull().default("sent"),
+  isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
 });
 
 export const pushSubscriptions = pgTable("push_subscriptions", {

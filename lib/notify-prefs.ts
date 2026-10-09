@@ -1,3 +1,4 @@
+import { unsubscribeBlocksEmail } from "@/lib/messaging-rules";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { addDaysYmd, ymdInZone, zonedTimeToUtc } from "@/lib/time";
 
@@ -13,11 +14,22 @@ export function defaultPrefs(event: NotificationEvent, audience: "teacher" | "st
   };
 }
 
-export function channelsFor(prefs: ChannelPrefs, input: { unsubscribed: boolean; webPushEnabled: boolean; smsConfigured: boolean }) {
+export function channelsFor(prefs: ChannelPrefs, input: {
+  unsubscribed: boolean;
+  webPushEnabled: boolean;
+  smsConfigured: boolean;
+  smsOptIn?: boolean;
+  emailSuppressed?: boolean;
+  consent?: "transactional" | "marketing";
+  marketingOptIn?: boolean;
+  event?: string;
+}) {
+  const marketingBlocked = input.consent === "marketing" && input.marketingOptIn !== true;
+  const unsubscribedBlocks = input.unsubscribed && unsubscribeBlocksEmail(input.event);
   return {
-    email: prefs.email && !input.unsubscribed,
+    email: prefs.email && !unsubscribedBlocks && !input.emailSuppressed && !marketingBlocked,
     inApp: prefs.inApp,
-    sms: prefs.sms && input.smsConfigured,
+    sms: prefs.sms && input.smsConfigured && input.smsOptIn !== false,
     push: prefs.push && input.webPushEnabled,
     digest: prefs.cadence === "daily",
   };
@@ -68,4 +80,12 @@ export function deferredSmsStillPending(status: string) {
 export function creditOptInFromForm(input: { saveCredit: boolean; checked: boolean }) {
   if (!input.saveCredit) return null;
   return input.checked;
+}
+
+/** Saving an enabled email channel turns booking mail back on. */
+export function prefSaveUserPatch(input: { emailEnabled: boolean; creditOptIn: boolean }) {
+  return {
+    creditOptIn: input.creditOptIn,
+    ...(input.emailEnabled ? { emailUnsubscribed: false as const } : {}),
+  };
 }
