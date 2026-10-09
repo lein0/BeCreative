@@ -9,8 +9,9 @@ export type StudentUser = {
 };
 
 export type AuthResult = {
-  token: string;
+  token?: string;
   user: StudentUser;
+  verificationRequired?: boolean;
 };
 
 export type PublicClass = {

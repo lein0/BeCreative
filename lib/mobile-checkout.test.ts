@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -45,6 +45,14 @@ describe("live mobile checkout", () => {
   it("keeps PaymentSheet returns off the bookings route", () => {
     expect(PAYMENT_SHEET_RETURN_URL.includes("bookings")).toBe(false);
     expect(PAYMENT_SHEET_RETURN_URL.startsWith("becreative://")).toBe(true);
+    expect(systemPathForIncomingUrl(PAYMENT_SHEET_RETURN_URL)).toBeNull();
+    expect(systemPathForIncomingUrl("/explore")).toBe("/explore");
+  });
+
+  it("does not treat a verification response as a signed-in session", () => {
+    expect(authNeedsVerification({ verificationRequired: true })).toBe(true);
+    expect(authNeedsVerification({ token: "" })).toBe(true);
+    expect(authNeedsVerification({ token: "bc_tok" })).toBe(false);
   });
 
   it("does not open checkout for a series the student already has", () => {
