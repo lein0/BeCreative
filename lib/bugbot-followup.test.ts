@@ -576,14 +576,18 @@ describe("Bugbot follow-ups", () => {
     const orderId = crypto.randomUUID();
     const bookingId = crypto.randomUUID();
     await db.insert(schema.orders).values({
-      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_${tag}`, createdAt: new Date("2020-01-01T00:00:00Z"),
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_${tag}`,
     });
     await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
     await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
     checkoutRetrieve.mockClear();
+    const booking = await import("@/lib/booking-service");
+    const release = vi.spyOn(booking, "releaseExpiredCheckoutHolds");
     const detail = await classDetail(slug);
     expect(detail?.upcoming.length).toBeGreaterThan(0);
+    expect(release).not.toHaveBeenCalled();
     expect(checkoutRetrieve).not.toHaveBeenCalled();
+    release.mockRestore();
     const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
     expect(order?.status).toBe("pending");
   });
