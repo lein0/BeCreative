@@ -20,10 +20,22 @@ export function formatLabel(value: string): string {
   return FORMAT_LABELS[value as ClassFormat] ?? value;
 }
 
+export const CLASS_TIME_ZONE = "America/Los_Angeles";
+
+export function localDayKey(iso: string, timeZone = CLASS_TIME_ZONE): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+}
+
+export function matchesLocalDay(iso: string | null, day: string, timeZone = CLASS_TIME_ZONE): boolean {
+  if (!day) return true;
+  if (!iso) return false;
+  return localDayKey(iso, timeZone) === day;
+}
+
 export function whenLabel(iso: string | null): string {
   if (!iso) return "Dates soon";
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
+    timeZone: CLASS_TIME_ZONE,
     weekday: "short",
     month: "short",
     day: "numeric",

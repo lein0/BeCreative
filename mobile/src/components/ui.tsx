@@ -76,6 +76,7 @@ export function Field({
   secure = false,
   keyboard = "default",
   testID,
+  onBlur,
 }: {
   label: string;
   value: string;
@@ -84,6 +85,7 @@ export function Field({
   secure?: boolean;
   keyboard?: "default" | "email-address" | "phone-pad";
   testID?: string;
+  onBlur?: () => void;
 }) {
   const { colors, fonts } = useAppTheme();
   return (
@@ -99,6 +101,7 @@ export function Field({
         secureTextEntry={secure}
         autoCapitalize={keyboard === "email-address" ? "none" : "sentences"}
         keyboardType={keyboard}
+        onBlur={onBlur}
         style={{ minHeight: 48, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 14, color: colors.ink, fontFamily: fonts.body, fontSize: 16 }}
       />
     </View>

@@ -1,7 +1,10 @@
-import { useStripe } from "@stripe/stripe-react-native";
+import { StripeProvider, useStripe } from "@stripe/stripe-react-native";
 import { useState } from "react";
 import { View } from "react-native";
 import { Button, Notice } from "../components/ui";
+import { paymentSheetPlan, type PaymentSheetPlan } from "./sheet-plan";
+
+const merchantIdentifier = process.env.APPLE_MERCHANT_ID || "merchant.com.becreative.students";
 
 function intentId(secret: string) {
   const marker = "_secret";
@@ -9,22 +12,26 @@ function intentId(secret: string) {
   return index > 0 ? secret.slice(0, index) : secret;
 }
 
-export function PayActions({
+function PayButton({
   clientSecret,
   onComplete,
   disabled,
+  plan,
 }: {
   clientSecret: string | null;
-  publishableKey?: string | null;
   onComplete: (paymentIntentId: string) => void;
   disabled?: boolean;
+  plan: PaymentSheetPlan;
 }) {
   const stripe = useStripe();
   const [error, setError] = useState<string | null>(null);
-  const liveKey = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   async function pay() {
     if (!clientSecret) return;
-    if (!liveKey) {
+    if (plan.kind === "unavailable") {
+      setError("Card payment needs a Stripe publishable key before it can charge this booking.");
+      return;
+    }
+    if (plan.kind === "mock") {
       onComplete(intentId(clientSecret));
       return;
     }
@@ -51,5 +58,27 @@ export function PayActions({
       {error ? <Notice>{error}</Notice> : null}
       <Button label="Pay" disabled={disabled || !clientSecret} onPress={() => void pay()} testID="pay-sheet" />
     </View>
+  );
+}
+
+export function PayActions({
+  clientSecret,
+  publishableKey,
+  onComplete,
+  disabled,
+}: {
+  clientSecret: string | null;
+  publishableKey?: string | null;
+  onComplete: (paymentIntentId: string) => void;
+  disabled?: boolean;
+}) {
+  const plan = clientSecret
+    ? paymentSheetPlan({ clientSecret, envKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY, apiKey: publishableKey })
+    : { kind: "unavailable" as const };
+  const key = plan.kind === "sheet" ? plan.publishableKey : process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || "pk_test_mock";
+  return (
+    <StripeProvider publishableKey={key} merchantIdentifier={merchantIdentifier} urlScheme="becreative">
+      <PayButton clientSecret={clientSecret} onComplete={onComplete} disabled={disabled} plan={plan} />
+    </StripeProvider>
   );
 }
