@@ -41,10 +41,12 @@ async function Body() {
         <button className="rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Save contact</button>
       </form>
       <form action={notificationPrefAction} className="mt-4">
+        <input type="hidden" name="saveCredit" value="1" />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" name="creditOptIn" value="1" defaultChecked={person?.creditOptIn} />
           If a teacher cancels, I will take studio credit instead of a refund
         </label>
+        <button className="mt-3 rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Save</button>
       </form>
       <div className="mt-6 space-y-4">
         {events.map((event) => {
@@ -52,7 +54,6 @@ async function Body() {
           return (
             <form key={event} action={notificationPrefAction} className="rounded-3xl bg-white p-4 ring-1 ring-line">
               <input type="hidden" name="event" value={event} />
-              <input type="hidden" name="creditOptIn" value={person?.creditOptIn ? "1" : "0"} />
               <p className="font-medium">{event}</p>
               <div className="mt-2 flex flex-wrap gap-3 text-sm">
                 <label className="flex items-center gap-1"><input type="checkbox" name="email" value="1" defaultChecked={pref?.email ?? true} /> Email</label>

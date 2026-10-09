@@ -1,8 +1,10 @@
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, sessions, teachers } from "@/lib/db/schema";
-import { claimJobs, enqueueJob, finishJob } from "@/lib/jobs";
+import { DISPUTE_SUBMIT_ATTEMPTS } from "@/lib/dispute-evidence";
+import { claimJobs, enqueueJob, finishJob, requeueJob } from "@/lib/jobs";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
+import { captureException } from "@/lib/sentry";
 
 export async function workJobs(limit = 20) {
   const claimed = await claimJobs(limit);
@@ -19,7 +21,16 @@ export async function workJobs(limit = 20) {
       }
       if (job.kind === "dispute.submit") {
         const { submitDispute } = await import("@/lib/disputes");
-        await submitDispute(String(payload.disputeId ?? ""));
+        const result = await submitDispute(String(payload.disputeId ?? ""));
+        if (result.waiting) {
+          await requeueJob(job.id, result.runAt ?? new Date(Date.now() + 60 * 60 * 1000));
+          continue;
+        }
+        if (result.retry) {
+          if (job.attempts >= DISPUTE_SUBMIT_ATTEMPTS) await finishJob(job.id, result.error ?? "Dispute submit failed");
+          else await requeueJob(job.id, result.runAt ?? new Date(Date.now() + 15 * 60 * 1000), result.error);
+          continue;
+        }
       }
       if (job.kind === "reminder.send" || job.kind === "lifecycle.notify") {
         await emitNotification({
@@ -35,7 +46,20 @@ export async function workJobs(limit = 20) {
       await finishJob(job.id);
       done += 1;
     } catch (error) {
-      await finishJob(job.id, error instanceof Error ? error.message : "Job failed");
+      const message = error instanceof Error ? error.message : "Job failed";
+      if (job.kind === "dispute.submit") {
+        try {
+          await captureException(error, { job: job.id, kind: job.kind });
+        } catch {
+          /* monitoring must not block the worker */
+        }
+      }
+      if (job.kind === "dispute.submit" && job.attempts < DISPUTE_SUBMIT_ATTEMPTS) {
+        const delay = Math.min(6 * 3_600_000, 15 * 60 * 1000 * 2 ** Math.max(0, job.attempts - 1));
+        await requeueJob(job.id, new Date(Date.now() + delay), message);
+      } else {
+        await finishJob(job.id, message);
+      }
     }
   }
   return { claimed: claimed.length, done };

@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import { ClassCard, control, fromPrice } from "@/components/bits";
 import { StudioMap } from "@/components/map-loader";
 import { CLASS_FORMATS, DELIVERY_MODES, FORMAT_LABELS, LEVEL_LABELS, NEIGHBORHOODS, SKILL_LEVELS, type ClassFormat, type SkillLevel } from "@/lib/constants";
-import { catalog, categoryTree, publishedServices } from "@/lib/queries";
+import { visitMatchesExploreFilters } from "@/lib/explore-filters";
+import { catalog, categoryTree, publishedServiceExplore } from "@/lib/queries";
 import { money, one } from "@/lib/utils";
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
@@ -35,23 +36,50 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
     miles: place ? Number(one(sp.miles) || 8) : undefined,
     vertical: vertical || undefined,
   });
-  const services = vertical === "wellness" ? await publishedServices() : [];
-  const serviceRows = services.filter((row) => {
-    const query = (one(sp.q) ?? "").toLowerCase();
-    if (query && !`${row.service.title} ${row.teacher.studioName ?? ""} ${row.category.name}`.toLowerCase().includes(query)) return false;
-    if (one(sp.category) && row.category.slug !== one(sp.category)) return false;
-    return true;
-  });
-  const points = rows
-    .filter((row) => row.location)
-    .map((row) => ({
-      id: row.class.id,
-      title: row.class.title,
-      href: `/c/${row.class.slug}`,
-      lat: row.location!.lat,
-      lng: row.location!.lng,
-      meta: row.location!.neighborhood,
-    }));
+  const services = vertical === "wellness" ? await publishedServiceExplore() : [];
+  const visitFilters = {
+    q: one(sp.q),
+    category: one(sp.category),
+    maxPrice: one(sp.max) ? Number(one(sp.max)) : undefined,
+    date: one(sp.date),
+    lat: place?.lat,
+    lng: place?.lng,
+    miles: place ? Number(one(sp.miles) || 8) : undefined,
+  };
+  const serviceRows = services.filter((row) => visitMatchesExploreFilters({
+    title: row.service.title,
+    studioName: row.teacher.studioName ?? "",
+    categoryName: row.category.name,
+    categorySlug: row.category.slug,
+    priceCents: row.priceCents,
+    lat: row.location?.lat ?? null,
+    lng: row.location?.lng ?? null,
+    windows: row.windows,
+    durationMinutes: row.durationMinutes,
+    leadTimeHours: row.service.leadTimeHours,
+  }, visitFilters));
+  const points = [
+    ...rows
+      .filter((row) => row.location)
+      .map((row) => ({
+        id: row.class.id,
+        title: row.class.title,
+        href: `/c/${row.class.slug}`,
+        lat: row.location!.lat,
+        lng: row.location!.lng,
+        meta: row.location!.neighborhood,
+      })),
+    ...serviceRows
+      .filter((row) => row.location)
+      .map((row) => ({
+        id: row.service.id,
+        title: row.service.title,
+        href: `/s/${row.service.slug}`,
+        lat: row.location!.lat,
+        lng: row.location!.lng,
+        meta: row.location!.neighborhood,
+      })),
+  ];
   return (
     <div data-brand={vertical === "wellness" ? "bewell" : undefined} className="mx-auto grid max-w-6xl gap-6 px-5 py-8 lg:grid-cols-[280px_1fr]">
       <form className="space-y-3 lg:sticky lg:top-24 lg:self-start">

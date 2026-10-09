@@ -5,6 +5,17 @@ const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notificat
 
 export function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
+  if (request.method === "POST") {
+    const pathToken = pathname.match(/^\/unsubscribe\/([^/]+)$/)?.[1];
+    const queryToken = pathname === "/unsubscribe" ? searchParams.get("token") : null;
+    const token = pathToken || queryToken;
+    if (token) {
+      const url = request.nextUrl.clone();
+      url.pathname = `/api/unsubscribe/${token}`;
+      url.search = "";
+      return NextResponse.rewrite(url);
+    }
+  }
   const token = request.cookies.get("better-auth.session_token") ?? request.cookies.get("__Secure-better-auth.session_token");
   if (guarded.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) && !token) {
     const url = request.nextUrl.clone();
