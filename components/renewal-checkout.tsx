@@ -14,12 +14,12 @@ export function RenewalCheckout({
 }) {
   const [agreed, setAgreed] = useState(false);
   return (
-    <form action={action} className="mt-5 space-y-4">
+    <form action={action} className="mt-3 space-y-3">
       {Object.entries(hidden).map(([key, value]) => <input key={key} type="hidden" name={key} value={value} />)}
       <input type="hidden" name="disclosureVersion" value={disclosure.version} />
-      <section aria-label="Auto-renewal disclosure" className="rounded-2xl border-2 border-ink bg-white p-4 text-base leading-6 text-ink">
+      <section aria-label="Auto-renewal disclosure" className="rounded-2xl border-2 border-ink bg-white p-3 text-base leading-6 text-ink">
         {disclosure.lines.map((item) => (
-          <p key={item.segments.map((segment) => segment.text).join("")} className={item.bold ? "mb-3 font-semibold" : "mb-3"}>
+          <p key={item.segments.map((segment) => segment.text).join("")} className={item.bold ? "mb-2 font-semibold last:mb-0" : "mb-2 last:mb-0"}>
             {item.segments.map((segment) => segment.href ? <a key={segment.href} href={segment.href} className="underline">{segment.text}</a> : <span key={segment.text}>{segment.text}</span>)}
           </p>
         ))}
