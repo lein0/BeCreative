@@ -210,10 +210,11 @@ describe("dispute persistence", () => {
     seedTable(schema.sessions, [{ id: "sess-ci", startsAt: new Date("2026-10-13T19:00:00Z") }]);
     await recordDispute({ id: "dp_ci", paymentIntentId: "pi_ci", amountCents: 2000, reason: "general", status: "needs_response" });
     const dispute = readTable(schema.disputes).find((row) => row.id === "dp_ci")!;
-    expect(String(dispute.evidence.uncategorized_text)).toContain("Check-in: no");
+    const evidence = () => dispute.evidence as { uncategorized_text?: string };
+    expect(String(evidence().uncategorized_text)).toContain("Check-in: no");
     readTable(schema.bookingSessions)[0]!.checkedIn = true;
     await recordDispute({ id: "dp_ci", paymentIntentId: "pi_ci", amountCents: 2000, reason: "general", status: "under_review" });
-    expect(String(dispute.evidence.uncategorized_text)).toContain("Check-in: yes");
+    expect(String(evidence().uncategorized_text)).toContain("Check-in: yes");
     expect(dispute.attendanceConfirmed).toBe(true);
   });
 });
