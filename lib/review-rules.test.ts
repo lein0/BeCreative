@@ -88,6 +88,7 @@ describe("class promo preview uses live limits", () => {
 describe("paid card bookings send confirmation", () => {
   it("emails a booking when checkout completes and skips pack purchases", () => {
     expect(paidCheckoutSendsBookingEmail("booking")).toBe(true);
+    expect(paidCheckoutSendsBookingEmail("visit")).toBe(true);
     expect(paidCheckoutSendsBookingEmail("pack")).toBe(false);
   });
 });

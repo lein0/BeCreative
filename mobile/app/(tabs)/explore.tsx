@@ -6,6 +6,7 @@ import type { PublicClass, Vertical } from "@mobile/api/types";
 import { ClassCardView } from "@mobile/components/ClassCardView";
 import { MapCanvas } from "@mobile/components/MapCanvas";
 import { Body, Button, Chip, Display, Segmented, Sheet } from "@mobile/components/ui";
+import { matchesLocalDay } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -35,7 +36,7 @@ export default function Explore() {
     if (category && item.category !== category) return false;
     if (maxPriceCents != null && (item.priceCents ?? 0) > maxPriceCents) return false;
     if (freeOnly && item.priceCents !== 0) return false;
-    if (date && item.nextStartsAt && !item.nextStartsAt.startsWith(date)) return false;
+    if (date && item.nextStartsAt && !matchesLocalDay(item.nextStartsAt, date)) return false;
     return true;
   });
 

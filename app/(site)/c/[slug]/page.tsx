@@ -144,6 +144,7 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
                 {wallet?.subs.map((item) => (
                   <option key={item.sub.id} value={`membership:${item.sub.id}`}>{item.plan.name}</option>
                 ))}
+                {wallet && wallet.studioCreditCents > 0 ? <option value="credit">Studio credit · {money(wallet.studioCreditCents)}</option> : null}
               </select>
             </label>
             {detail.class.seriesBookingEnabled ? (

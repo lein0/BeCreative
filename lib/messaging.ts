@@ -3,6 +3,7 @@ import { PinpointSMSVoiceV2Client, SendTextMessageCommand } from "@aws-sdk/clien
 import { db } from "@/lib/db";
 import { messageLog, platformSettings, smsSuppressions, user } from "@/lib/db/schema";
 import { channelAfterAttempt, chooseTextChannel, guardSms, withinMonthlyCap } from "@/lib/messaging-rules";
+import { canonicalPhone, phoneDigitsMatch } from "@/lib/phone";
 import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
 import { twilioConfigured } from "@/lib/sms";
 
@@ -108,7 +109,8 @@ async function sendSms(to: string, body: string): Promise<SendResult> {
 
 export async function dispatchText(input: { to: string; body: string; userId?: string | null; imessageEnabled: boolean }) {
   const body = guardSms(input.body);
-  const [suppressed] = await db.select().from(smsSuppressions).where(eq(smsSuppressions.phone, input.to)).limit(1);
+  const destination = canonicalPhone(input.to) || input.to;
+  const [suppressed] = await db.select().from(smsSuppressions).where(phoneDigitsMatch(smsSuppressions.phone, destination)).limit(1);
   if (suppressed) return { ok: false as const, skipped: true as const, reason: "opt_out" };
   const [settings] = await db.select().from(platformSettings).limit(1);
   const cost = settings?.smsSegmentCostCents ?? SHIP_DEFAULTS.smsSegmentCostCents;
@@ -118,25 +120,25 @@ export async function dispatchText(input: { to: string; body: string; userId?: s
   start.setUTCHours(0, 0, 0, 0);
   const [spent] = await db.select({ total: sql<number>`coalesce(sum(${messageLog.costCents}), 0)::int` }).from(messageLog).where(and(gte(messageLog.createdAt, start), eq(messageLog.status, "sent")));
   if (!withinMonthlyCap(Number(spent?.total ?? 0), cost, cap)) {
-    await db.insert(messageLog).values({ id: crypto.randomUUID(), userId: input.userId, channel: "sms", provider: providerName(), toAddress: input.to, body, costCents: 0, status: "capped" });
+    await db.insert(messageLog).values({ id: crypto.randomUUID(), userId: input.userId, channel: "sms", provider: providerName(), toAddress: destination, body, costCents: 0, status: "capped" });
     return { ok: false as const, skipped: true as const, reason: "cap" };
   }
-  const capable = input.imessageEnabled && imessageConfigured() ? await imessageCapable(input.to) : false;
+  const capable = input.imessageEnabled && imessageConfigured() ? await imessageCapable(destination) : false;
   const preferred = chooseTextChannel({ imessageEnabled: input.imessageEnabled && imessageConfigured(), imessageCapable: capable });
   let provider = preferred === "imessage" ? "imessage" : providerName();
   if (preferred === "sms" && !smsProviderConfigured()) return { ok: false as const, skipped: true as const, reason: "unconfigured" };
-  let result = preferred === "imessage" ? await sendImessage(input.to, body) : await sendSms(input.to, body);
+  let result = preferred === "imessage" ? await sendImessage(destination, body) : await sendSms(destination, body);
   const channel = channelAfterAttempt(preferred, result.ok, smsProviderConfigured());
   if (channel === "sms" && preferred === "imessage") {
     provider = providerName();
-    result = await sendSms(input.to, body);
+    result = await sendSms(destination, body);
   }
   await db.insert(messageLog).values({
     id: crypto.randomUUID(),
     userId: input.userId,
     channel,
     provider,
-    toAddress: input.to,
+    toAddress: destination,
     body,
     costCents: result.ok ? cost : 0,
     status: result.ok ? "sent" : "failed",
@@ -144,18 +146,26 @@ export async function dispatchText(input: { to: string; body: string; userId?: s
   return { ok: result.ok, skipped: false as const, channel, error: result.error };
 }
 
+export async function sendKeywordReply(to: string, body: string) {
+  const destination = canonicalPhone(to) || to.trim();
+  if (!destination || !body.trim()) return { ok: false as const, skipped: true as const, reason: "empty" as const };
+  if (!smsProviderConfigured()) return { ok: false as const, skipped: true as const, reason: "unconfigured" as const };
+  return sendSms(destination, body);
+}
+
 export async function applySmsKeyword(phone: string, body: string) {
   const { smsKeyword } = await import("@/lib/messaging-rules");
   const keyword = smsKeyword(body);
   if (!keyword) return { keyword: null as null };
+  const stored = canonicalPhone(phone) || phone;
   if (keyword === "stop") {
-    await db.insert(smsSuppressions).values({ phone, reason: "stop" }).onConflictDoNothing();
-    await db.update(user).set({ smsOptIn: false }).where(eq(user.phone, phone));
+    await db.insert(smsSuppressions).values({ phone: stored, reason: "stop" }).onConflictDoNothing();
+    await db.update(user).set({ smsOptIn: false }).where(phoneDigitsMatch(user.phone, phone));
     return { keyword, reply: "You are opted out of BeCreative texts. Reply START to opt in again. Msg & data rates may apply." };
   }
   if (keyword === "start") {
-    await db.delete(smsSuppressions).where(eq(smsSuppressions.phone, phone));
-    await db.update(user).set({ smsOptIn: true }).where(eq(user.phone, phone));
+    await db.delete(smsSuppressions).where(phoneDigitsMatch(smsSuppressions.phone, phone));
+    await db.update(user).set({ smsOptIn: true }).where(phoneDigitsMatch(user.phone, phone));
     return { keyword, reply: "You are opted in to BeCreative class texts. Reply STOP to opt out. Reply HELP for help." };
   }
   return { keyword, reply: "BeCreative class reminders. Reply STOP to opt out, START to opt in. Help: hello@becreative.local. Msg & data rates may apply." };

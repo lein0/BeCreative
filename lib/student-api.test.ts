@@ -57,6 +57,19 @@ describe("student API contract helpers", () => {
     expect(pickBookingSession([], now)).toBeNull();
   });
 
+  it("does not let a cancelled or skipped date become the booking time", () => {
+    const now = new Date("2026-05-01T00:00:00Z");
+    const past = { startsAt: new Date("2026-01-01T18:00:00Z"), endsAt: new Date("2026-01-01T19:00:00Z"), status: "scheduled", exception: null };
+    const skipped = { startsAt: new Date("2026-06-01T18:00:00Z"), endsAt: new Date("2026-06-01T19:00:00Z"), status: "scheduled", exception: "skipped" };
+    const cancelled = { startsAt: new Date("2026-06-15T18:00:00Z"), endsAt: new Date("2026-06-15T19:00:00Z"), status: "cancelled", exception: null };
+    const paused = { startsAt: new Date("2026-07-01T18:00:00Z"), endsAt: new Date("2026-07-01T19:00:00Z"), status: "paused", exception: null };
+    const scheduled = { startsAt: new Date("2026-08-01T18:00:00Z"), endsAt: new Date("2026-08-01T19:00:00Z"), status: "scheduled", exception: "moved" };
+    expect(pickBookingSession([skipped, cancelled, scheduled, past], now)).toBe(scheduled);
+    expect(pickBookingSession([cancelled, skipped, paused, past], now)).toBe(paused);
+    expect(pickBookingSession([cancelled, skipped], now)).toBeNull();
+    expect(pickBookingSession([cancelled, past], now)).toBe(past);
+  });
+
   it("uses the class timezone and falls back to Los Angeles", () => {
     expect(bookingTimezone(["", "America/New_York"])).toBe("America/New_York");
     expect(bookingTimezone([])).toBe("America/Los_Angeles");

@@ -48,6 +48,11 @@ export function withinMonthlyCap(spentCents: number, nextCostCents: number, capC
   return spentCents + nextCostCents <= capCents;
 }
 
+/** A paid-class receipt still goes out after unsubscribe. Other email does not. */
+export function unsubscribeBlocksEmail(event?: string) {
+  return event !== "receipt.sent";
+}
+
 export function maySend(input: {
   channel: "email" | "sms";
   consent: "transactional" | "marketing";
@@ -56,8 +61,27 @@ export function maySend(input: {
   marketingOptIn: boolean;
   smsOptIn: boolean;
   smsSuppressed: boolean;
+  event?: string;
 }) {
   if (input.consent === "marketing" && !input.marketingOptIn) return false;
-  if (input.channel === "email") return !input.emailUnsubscribed && !input.emailSuppressed;
+  if (input.channel === "email") {
+    if (input.emailSuppressed) return false;
+    if (input.emailUnsubscribed && unsubscribeBlocksEmail(input.event)) return false;
+    return true;
+  }
   return input.smsOptIn && !input.smsSuppressed;
+}
+
+export function smsWebhookIsForm(contentType: string) {
+  return contentType.toLowerCase().includes("application/x-www-form-urlencoded");
+}
+
+export function twimlMessage(body: string) {
+  const text = body
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${text}</Message></Response>`;
 }

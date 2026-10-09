@@ -7,6 +7,7 @@ import type { DeleteAccountInput, SocialProvider } from "@mobile/api/types";
 import { friendlySocialError } from "@mobile/auth/messages";
 import { Body, Button, Card, ConfirmDialog, Display, Field, Notice, Title, ToggleRow } from "@mobile/components/ui";
 import { appleSignIn, googleSignIn } from "@mobile/device/social";
+import { phoneDraftToSave } from "@mobile/profile/phone";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -15,6 +16,7 @@ export default function You() {
   const router = useRouter();
   const { colors } = useAppTheme();
   const [phone, setPhone] = useState("");
+  const [savedPhone, setSavedPhone] = useState("");
   const [sms, setSms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -27,6 +29,7 @@ export default function You() {
     if (!ready || !user) return;
     void api.preferences().then((prefs) => {
       setPhone(prefs.phone ?? "");
+      setSavedPhone(prefs.phone ?? "");
       setSms(prefs.smsOptIn);
     }).catch(() => undefined);
   }, [api, ready, user]);
@@ -36,9 +39,24 @@ export default function You() {
     try {
       await api.updatePreferences({ phone, smsOptIn: next });
       setSms(next);
+      setSavedPhone(phone.trim());
       setNote(next ? "Texts are on for booking updates." : "Texts are off.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not update texts.");
+    }
+  }
+
+  async function savePhone() {
+    const update = phoneDraftToSave(savedPhone, phone, sms);
+    if (!update) return;
+    setError(null);
+    try {
+      await api.updatePreferences(update);
+      setPhone(update.phone);
+      setSavedPhone(update.phone);
+      setNote("Mobile number saved.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the mobile number.");
     }
   }
 
@@ -108,7 +126,7 @@ export default function You() {
         {note ? <Body>{note}</Body> : null}
         <Card>
           <Title>Texts</Title>
-          <Field label="Mobile number" value={phone} onChangeText={setPhone} keyboard="phone-pad" />
+          <Field label="Mobile number" value={phone} onChangeText={setPhone} keyboard="phone-pad" onBlur={() => void savePhone()} />
           <ToggleRow label="SMS opt-in" value={sms} onChange={(value) => void saveSms(value)} hint="Booking reminders only. You can turn this off any time." />
         </Card>
         <Card>

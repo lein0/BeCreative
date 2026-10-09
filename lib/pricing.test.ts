@@ -93,6 +93,15 @@ describe("promo limits and first class free", () => {
     expect(validatePromo({ promo: promo({ firstTimeOnly: true }), now, listPriceCents: 4000, totalRedemptions: 0, customerRedemptions: 0, isFirstTimeStudent: false, product }).ok).toBe(false);
     expect(validatePromo({ promo: promo({ minPurchaseCents: 5000 }), now, listPriceCents: 4000, totalRedemptions: 0, customerRedemptions: 0, isFirstTimeStudent: true, product }).ok).toBe(false);
     expect(validatePromo({ promo: promo({ classIds: ["other"] }), now, listPriceCents: 4000, totalRedemptions: 0, customerRedemptions: 0, isFirstTimeStudent: true, product }).ok).toBe(false);
+    expect(validatePromo({
+      promo: promo({ classIds: ["scene-study"] }),
+      now,
+      listPriceCents: 4000,
+      totalRedemptions: 0,
+      customerRedemptions: 0,
+      isFirstTimeStudent: true,
+      product: { kind: "class", teacherId: "t1", categoryId: "acting", city: "Los Angeles" },
+    }).ok).toBe(false);
     expect(normalizeCodes(["maya15", " SAVE10 "])).toEqual({ code: null, error: "Only one promo code can be used per order." });
     expect(normalizeCodes([" becreative15 "]).code).toBe("BECREATIVE15");
     expect(checkoutPromoCode("form20", "cookie10")).toEqual({ code: "FORM20", error: null });
