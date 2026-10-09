@@ -1,7 +1,9 @@
-import { eq } from "drizzle-orm";
+import { verifyProviderIdToken } from "better-auth/oauth2";
+import { and, eq } from "drizzle-orm";
+import { releaseSocialLogin } from "@/lib/account-data";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { session } from "@/lib/db/schema";
+import { account, user } from "@/lib/db/schema";
 import { socialIdTokenReady } from "@/lib/env";
 import { APP_EMAIL_VERIFY_PATH, APP_PASSWORD_RESET_PATH, reauthMethod, type ReauthBody } from "@/lib/student-api";
 
@@ -10,7 +12,7 @@ type ExchangeResult =
   | { error: string; status: 401 | 503 }
   | { user: { id: string; name: string; email: string }; sessionToken?: string };
 
-export async function exchangeSocialToken(input: { provider: SocialProvider; idToken: string; nonce?: string; firstName?: string; lastName?: string }): Promise<ExchangeResult> {
+async function requestSocialSignIn(input: { provider: SocialProvider; idToken: string; nonce?: string; firstName?: string; lastName?: string }): Promise<ExchangeResult> {
   if (!socialIdTokenReady(input.provider)) {
     return { error: `${input.provider === "apple" ? "Apple" : "Google"} sign-in is not configured.`, status: 503 as const };
   }
@@ -26,13 +28,28 @@ export async function exchangeSocialToken(input: { provider: SocialProvider; idT
         },
       },
     });
-    const user = result && "user" in result ? result.user : null;
-    if (!user?.id || !user.email) return { error: "Could not sign in.", status: 401 as const };
+    const signedIn = result && "user" in result ? result.user : null;
+    if (!signedIn?.id || !signedIn.email) return { error: "Could not sign in.", status: 401 as const };
     const sessionToken = result && "token" in result && typeof result.token === "string" ? result.token : undefined;
-    return { user: { id: user.id, name: user.name, email: user.email }, sessionToken };
+    return { user: { id: signedIn.id, name: signedIn.name, email: signedIn.email }, sessionToken };
   } catch {
     return { error: "That sign-in could not be verified.", status: 401 as const };
   }
+}
+
+async function isDeletedUser(userId: string) {
+  const [person] = await db.select({ deletedAt: user.deletedAt }).from(user).where(eq(user.id, userId)).limit(1);
+  return Boolean(person?.deletedAt);
+}
+
+export async function exchangeSocialToken(input: { provider: SocialProvider; idToken: string; nonce?: string; firstName?: string; lastName?: string }): Promise<ExchangeResult> {
+  const first = await requestSocialSignIn(input);
+  if (!("user" in first) || !(await isDeletedUser(first.user.id))) return first;
+  await releaseSocialLogin(first.user.id);
+  const second = await requestSocialSignIn(input);
+  if (!("user" in second) || !(await isDeletedUser(second.user.id))) return second;
+  await releaseSocialLogin(second.user.id);
+  return { error: "This account was deleted.", status: 401 as const };
 }
 
 export async function requestAppPasswordReset(email: string) {
@@ -53,29 +70,50 @@ export async function confirmAppEmailVerification(token: string) {
   if (result && result.status === false) throw new Error("invalid");
 }
 
-async function dropSession(token: string | undefined) {
-  if (!token) return;
-  await db.delete(session).where(eq(session.token, token));
+async function passwordMatches(actorId: string, password: string) {
+  const [credential] = await db
+    .select({ password: account.password })
+    .from(account)
+    .where(and(eq(account.userId, actorId), eq(account.providerId, "credential"), eq(account.accountId, actorId)))
+    .limit(1);
+  if (!credential?.password) return false;
+  const ctx = await auth.$context;
+  return ctx.password.verify({ hash: credential.password, password });
+}
+
+async function socialIdentityMatches(actorId: string, providerName: SocialProvider, idToken: string, nonce?: string) {
+  const ctx = await auth.$context;
+  const provider = ctx.socialProviders.find((item) => item.id === providerName);
+  if (!provider) return false;
+  const valid = await verifyProviderIdToken(provider, idToken, nonce);
+  if (!valid) return false;
+  const info = await provider.getUserInfo({ idToken });
+  if (!info?.data) return false;
+  const subject = String(await provider.accountSubject({ tokens: { idToken }, profile: info.data })).trim();
+  if (!subject || subject === "undefined" || subject === "null") return false;
+  const [linked] = await db
+    .select({ id: account.id })
+    .from(account)
+    .where(and(eq(account.userId, actorId), eq(account.providerId, providerName), eq(account.accountId, subject)))
+    .limit(1);
+  return Boolean(linked);
 }
 
 export async function reauthMatches(actor: { id: string; email: string }, body: ReauthBody) {
   const method = reauthMethod(body);
   if (method === "password" && body.password) {
     try {
-      const result = await auth.api.signInEmail({ body: { email: actor.email, password: body.password } });
-      const matches = result.user.id === actor.id;
-      if (!matches) await dropSession(result.token);
-      return matches;
+      return await passwordMatches(actor.id, body.password);
     } catch {
       return false;
     }
   }
   if (method === "social" && body.idToken && (body.provider === "apple" || body.provider === "google")) {
-    const exchanged = await exchangeSocialToken({ provider: body.provider, idToken: body.idToken, nonce: body.nonce });
-    if (!("user" in exchanged)) return false;
-    const matches = exchanged.user.id === actor.id;
-    if (!matches) await dropSession(exchanged.sessionToken);
-    return matches;
+    try {
+      return await socialIdentityMatches(actor.id, body.provider, body.idToken, body.nonce);
+    } catch {
+      return false;
+    }
   }
   return false;
 }

@@ -25,6 +25,7 @@ describe("account deletion retention", () => {
     const sessionId = crypto.randomUUID();
     await db.insert(schema.user).values({ id: userId, name: "Jules Navarro", email: `delete-${userId}@example.com`, emailVerified: true });
     await db.insert(schema.session).values({ id: sessionId, userId, token: `sess-${userId}`, expiresAt: new Date(Date.now() + 3_600_000) });
+    await db.insert(schema.account).values({ id: crypto.randomUUID(), userId, accountId: `apple-${userId}`, providerId: "apple" });
     await db.insert(schema.apiTokens).values({ id: tokenId, userId, tokenHash: `hash-${userId}`, expiresAt: new Date(Date.now() + 86_400_000) });
     await db.insert(schema.orders).values({ id: orderId, userId, kind: "class", status: "paid", studentPaysCents: 2500 });
 
@@ -37,6 +38,8 @@ describe("account deletion retention", () => {
     expect(person?.emailUnsubscribed).toBe(true);
     const sessions = await db.select().from(schema.session).where(eq(schema.session.userId, userId));
     expect(sessions).toHaveLength(0);
+    const accounts = await db.select().from(schema.account).where(eq(schema.account.userId, userId));
+    expect(accounts).toHaveLength(0);
     const [token] = await db.select().from(schema.apiTokens).where(eq(schema.apiTokens.id, tokenId));
     expect(token?.revokedAt).toBeTruthy();
     const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));

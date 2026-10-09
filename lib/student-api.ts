@@ -36,11 +36,16 @@ export function teacherOffers(packs: OfferPack[], memberships: OfferMembership[]
   };
 }
 
-export function pickBookingSession<T extends { startsAt: Date; endsAt: Date }>(rows: T[], now = new Date()) {
-  if (!rows.length) return null;
-  const upcoming = rows.filter((row) => row.startsAt.getTime() >= now.getTime()).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+function sessionStillHappening(row: { status?: string | null; exception?: string | null }) {
+  return row.status !== "cancelled" && row.exception !== "skipped";
+}
+
+export function pickBookingSession<T extends { startsAt: Date; endsAt: Date; status?: string | null; exception?: string | null }>(rows: T[], now = new Date()) {
+  const active = rows.filter(sessionStillHappening);
+  if (!active.length) return null;
+  const upcoming = active.filter((row) => row.startsAt.getTime() >= now.getTime()).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
   if (upcoming[0]) return upcoming[0];
-  return [...rows].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0] ?? null;
+  return [...active].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0] ?? null;
 }
 
 export function bookingTimezone(timezones: string[]) {

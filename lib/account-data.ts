@@ -1,6 +1,8 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
+import { account, apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
+
+const SOCIAL_PROVIDER_IDS = ["apple", "google"];
 
 export async function exportAccount(userId: string) {
   const [person] = await db.select().from(user).where(eq(user.id, userId)).limit(1);
@@ -16,6 +18,12 @@ export async function exportAccount(userId: string) {
   };
 }
 
+export async function releaseSocialLogin(userId: string) {
+  await db.delete(account).where(and(eq(account.userId, userId), inArray(account.providerId, SOCIAL_PROVIDER_IDS)));
+  await db.delete(session).where(eq(session.userId, userId));
+  await db.update(apiTokens).set({ revokedAt: new Date() }).where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+}
+
 export async function deleteAccount(userId: string) {
   await db.update(user).set({
     name: "Deleted account",
@@ -24,6 +32,5 @@ export async function deleteAccount(userId: string) {
     deletedAt: new Date(),
     emailUnsubscribed: true,
   }).where(eq(user.id, userId));
-  await db.delete(session).where(eq(session.userId, userId));
-  await db.update(apiTokens).set({ revokedAt: new Date() }).where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+  await releaseSocialLogin(userId);
 }

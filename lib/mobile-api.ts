@@ -309,7 +309,13 @@ export async function handleMobileApi(request: Request, path: string[]) {
     const classIds = [...new Set(rows.map((row) => row.klass.id))];
     const sessionRows = bookingIds.length
       ? await db
-        .select({ bookingId: bookingSessions.bookingId, startsAt: sessions.startsAt, endsAt: sessions.endsAt })
+        .select({
+          bookingId: bookingSessions.bookingId,
+          startsAt: sessions.startsAt,
+          endsAt: sessions.endsAt,
+          status: sessions.status,
+          exception: sessions.exception,
+        })
         .from(bookingSessions)
         .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
         .where(inArray(bookingSessions.bookingId, bookingIds))
@@ -317,7 +323,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     const rules = classIds.length
       ? await db.select({ classId: recurrences.classId, timezone: recurrences.timezone }).from(recurrences).where(inArray(recurrences.classId, classIds))
       : [];
-    const sessionsByBooking = new Map<string, { startsAt: Date; endsAt: Date }[]>();
+    const sessionsByBooking = new Map<string, { startsAt: Date; endsAt: Date; status: string; exception: string | null }[]>();
     for (const row of sessionRows) {
       const list = sessionsByBooking.get(row.bookingId) ?? [];
       list.push(row);
