@@ -2,13 +2,13 @@
 
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
-import { adminRefundScope } from "@/lib/refund-math";
+import { adminRefundScope, nextAdminRefundKey } from "@/lib/refund-math";
 import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { creditOptInFromForm } from "@/lib/notify-prefs";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
@@ -699,6 +699,14 @@ export async function adminRefundAction(formData: FormData) {
   const { hitRateLimit } = await import("@/lib/rate-limit");
   const limit = await hitRateLimit(`refund:${actor.id}`, 30, 60 * 60 * 1000);
   if (!limit.ok) redirect("/admin/refunds?error=Too%20many%20refunds.%20Wait%20an%20hour.");
+  const jar = await cookies();
+  const submitted = text(formData, "idempotencyKey");
+  const key = nextAdminRefundKey({
+    stored: submitted || jar.get("admin_refund_key")?.value || null,
+    succeeded: false,
+    minted: crypto.randomUUID(),
+  });
+  jar.set("admin_refund_key", key, { httpOnly: true, sameSite: "lax", path: "/admin/refunds" });
   const { issueRefund } = await import("@/lib/refunds");
   const dollars = Math.round(Number(text(formData, "amount") || 0) * 100);
   const result = await issueRefund({
@@ -706,9 +714,10 @@ export async function adminRefundAction(formData: FormData) {
     amountCents: formData.get("full") === "1" ? undefined : dollars,
     reasonCode: text(formData, "reason") || "admin_goodwill",
     actorUserId: actor.id,
-    scope: adminRefundScope(text(formData, "idempotencyKey")),
+    scope: adminRefundScope(key),
   });
   if ("error" in result && result.error) redirect(`/admin/refunds?error=${encodeURIComponent(result.error)}`);
+  jar.set("admin_refund_key", crypto.randomUUID(), { httpOnly: true, sameSite: "lax", path: "/admin/refunds" });
   revalidatePath("/admin/refunds");
   redirect("/admin/refunds?ok=1");
 }

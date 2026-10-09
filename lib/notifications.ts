@@ -4,7 +4,7 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { channelsFor, defaultPrefs, deferredSmsStillPending, minutesOfClock, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, deferredSmsStillPending, minutesOfClock, nextQuietEnd, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { twilioConfigured, sendSms } from "@/lib/sms";
@@ -105,14 +105,6 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
   await db.update(notificationOutbox).set({ status: outboxStatusAfterDelivery(smsDeferred) }).where(eq(notificationOutbox.id, outboxId));
-}
-
-function nextQuietEnd(end: string) {
-  const [hour, minute] = end.split(":").map(Number);
-  const when = new Date();
-  when.setUTCHours(hour + 7, minute, 0, 0);
-  if (when.getTime() < Date.now()) when.setUTCDate(when.getUTCDate() + 1);
-  return when;
 }
 
 export async function unreadCount(userId: string) {

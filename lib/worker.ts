@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { bookingSessions, bookings, classes, sessions } from "@/lib/db/schema";
+import { bookingSessions, bookings, classes, services, sessions, visitBookings } from "@/lib/db/schema";
 import { DISPUTE_SUBMIT_ATTEMPTS } from "@/lib/dispute-evidence";
 import { claimJobs, enqueueJob, finishJob, requeueJob } from "@/lib/jobs";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
@@ -87,6 +87,21 @@ export async function scheduleReminders(now = new Date()) {
         }, new Date(), `reminder:${session.id}:${booking.userId}:${window.hours}`);
         queued += 1;
       }
+    }
+    const visits = await db
+      .select()
+      .from(visitBookings)
+      .where(and(eq(visitBookings.status, "confirmed"), gte(visitBookings.startsAt, from), lte(visitBookings.startsAt, to)));
+    for (const visit of visits) {
+      if (!visit.userId) continue;
+      const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
+      await enqueueJob("reminder.send", {
+        userId: visit.userId,
+        title: `${service?.title ?? "Your visit"} is in ${window.label}`,
+        body: `It starts ${visit.startsAt.toISOString()}.`,
+        href: service ? `/s/${service.slug}` : "/bookings",
+      }, new Date(), `reminder:visit:${visit.id}:${visit.userId}:${window.hours}`);
+      queued += 1;
     }
   }
   return { queued };

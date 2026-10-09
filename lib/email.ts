@@ -23,6 +23,39 @@ export function individualDeliveries(recipients: string[]) {
   return deliveries;
 }
 
+export function headerSafe(value: string) {
+  return value.replace(/[\r\n]+/g, " ").replace(/[^\t\x20-\x7E]/g, "");
+}
+
+export function buildRawEmail(message: { from: string; to: string[]; subject: string; text: string; html?: string; headers?: Record<string, string> }) {
+  const headers = [
+    `From: ${headerSafe(message.from)}`,
+    `To: ${message.to.map(headerSafe).join(", ")}`,
+    `Subject: ${headerSafe(message.subject)}`,
+    ...Object.entries(message.headers ?? {}).map(([key, value]) => `${headerSafe(key)}: ${headerSafe(value)}`),
+    "MIME-Version: 1.0",
+  ];
+  if (!message.html) {
+    return [...headers, "Content-Type: text/plain; charset=UTF-8", "", message.text].join("\r\n");
+  }
+  const boundary = `bc_${crypto.randomUUID().replace(/-/g, "")}`;
+  return [
+    ...headers,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    message.text,
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    message.html,
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+}
+
 export interface EmailProvider {
   readonly name: string;
   send(message: EmailMessage): Promise<{ providerMessageId: string | null }>;
@@ -47,17 +80,14 @@ class SesEmailProvider implements EmailProvider {
     const { SESClient, SendRawEmailCommand } = await import("@aws-sdk/client-ses");
     // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
-    const headerLines = Object.entries(message.headers ?? {}).map(([key, value]) => `${key}: ${value}`);
-    const raw = [
-      `From: ${from}`,
-      `To: ${message.to.join(", ")}`,
-      `Subject: ${message.subject}`,
-      ...headerLines,
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      message.text,
-    ].join("\r\n");
+    const raw = buildRawEmail({
+      from,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+      headers: message.headers,
+    });
     const result = await client.send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(raw) } }));
     return { providerMessageId: result.MessageId ?? null };
   }

@@ -127,6 +127,71 @@ export function chargeFullyRefunded(charge: { amount?: number | null; amount_ref
   return amount > 0 && refunded >= amount;
 }
 
+/** The first invoice is handled by checkout.session.completed. Later invoices extend access only when the period moves forward. */
+export function membershipRenewalExtendsAccess(input: {
+  billingReason: string | null | undefined;
+  currentPeriodEnd: Date;
+  invoicePeriodEnd: Date;
+}) {
+  if (!input.billingReason || input.billingReason === "subscription_create") return false;
+  return input.invoicePeriodEnd.getTime() > input.currentPeriodEnd.getTime();
+}
+
+/** Keep the original order's fee split when a renewal charges the same amount. A different amount keeps that same ratio. */
+export function renewalChargeSplit(
+  original: { studentPaysCents: number; platformFeeCents: number; teacherAmountCents: number; listPriceCents: number; discountCents: number },
+  amountPaidCents: number,
+) {
+  if (amountPaidCents === original.studentPaysCents) {
+    return {
+      listPriceCents: original.listPriceCents,
+      discountCents: original.discountCents,
+      studentPaysCents: amountPaidCents,
+      platformFeeCents: original.platformFeeCents,
+      teacherAmountCents: original.teacherAmountCents,
+    };
+  }
+  const platformFeeCents = original.studentPaysCents > 0 ? Math.round((original.platformFeeCents * amountPaidCents) / original.studentPaysCents) : 0;
+  return {
+    listPriceCents: amountPaidCents,
+    discountCents: 0,
+    studentPaysCents: amountPaidCents,
+    platformFeeCents,
+    teacherAmountCents: Math.max(0, amountPaidCents - platformFeeCents),
+  };
+}
+
+type StripeId = string | { id: string } | null | undefined;
+
+function stripeId(value: StripeId) {
+  if (!value) return null;
+  return typeof value === "string" ? value : value.id;
+}
+
+/** Pull the subscription renewal fields we persist. Returns null when the invoice is not for a subscription. */
+export function paidInvoiceRenewal(invoice: {
+  id: string;
+  billing_reason?: string | null;
+  amount_paid: number;
+  period_start: number;
+  period_end: number;
+  parent?: { subscription_details?: { subscription?: StripeId } | null } | null;
+  payments?: { data?: Array<{ payment?: { payment_intent?: StripeId } | null }> } | null;
+}) {
+  const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription ?? null);
+  if (!subscriptionId) return null;
+  const payment = invoice.payments?.data?.map((row) => stripeId(row.payment?.payment_intent ?? null)).find((id): id is string => Boolean(id)) ?? null;
+  return {
+    subscriptionId,
+    invoiceId: invoice.id,
+    billingReason: invoice.billing_reason ?? null,
+    amountPaidCents: invoice.amount_paid,
+    paymentIntentId: payment,
+    periodStart: new Date(invoice.period_start * 1000),
+    periodEnd: new Date(invoice.period_end * 1000),
+  };
+}
+
 /** Refund only sessions that have not started. Attended dates stay paid. */
 export function unattendedRefundCents(input: { paidCents: number; sessions: { startsAt: Date }[]; now: Date }) {
   if (input.paidCents <= 0 || input.sessions.length === 0) return 0;
