@@ -52,8 +52,13 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `S3_BUCKET` | with S3 | Media bucket. `STORAGE_PROVIDER=s3` |
 | `SES_FROM_EMAIL` | with SES | Verified sender. `EMAIL_PROVIDER=ses` |
 | `EMAIL_PROVIDER` | no | `console` logs mail. `ses` sends through SES |
-| `GOOGLE_CLIENT_ID` | no | Google sign-in is off until both this and `GOOGLE_CLIENT_SECRET` are set |
-| `GOOGLE_CLIENT_SECRET` | no | Pair to the client id |
+| `GOOGLE_CLIENT_ID` | no | Website Google button stays off until both this and `GOOGLE_CLIENT_SECRET` are set. Also an accepted audience for mobile Google id tokens |
+| `GOOGLE_CLIENT_SECRET` | no | Pair to the web client id. Mobile id-token exchange does not need it |
+| `GOOGLE_IOS_CLIENT_ID` | no | Extra audience for a native Google id token. Comma-separated values are fine |
+| `GOOGLE_ANDROID_CLIENT_ID` | no | Extra audience for a native Google id token |
+| `APPLE_CLIENT_ID` | no | Services ID audience for Sign in with Apple. Mobile exchange is off until this or `APPLE_APP_BUNDLE_IDENTIFIER` is set |
+| `APPLE_CLIENT_SECRET` | no | Web Apple client secret. Native identity-token exchange does not need it |
+| `APPLE_APP_BUNDLE_IDENTIFIER` | no | Bundle id audience for the native Apple identity token |
 | `CHECKOUT_HOLD_MINUTES` | no | How long an unpaid Stripe Checkout holds a seat. Default 30 |
 | `FEEDBACK_WEBHOOK_URL` | no | Where approved feedback is POSTed. Unset stores the attempt as undelivered |
 | `FEEDBACK_WEBHOOK_SECRET` | with the webhook | HMAC-SHA256 key for `X-Feedback-Signature: sha256=<hex>` over the raw JSON body |

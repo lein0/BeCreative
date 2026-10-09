@@ -1,6 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { account, bookings, notifications, orders, session, user } from "@/lib/db/schema";
+import { account, apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
+
+const SOCIAL_PROVIDER_IDS = ["apple", "google"];
 
 export async function exportAccount(userId: string) {
   const [person] = await db.select().from(user).where(eq(user.id, userId)).limit(1);
@@ -14,6 +16,12 @@ export async function exportAccount(userId: string) {
     orders: orderRows.map((row) => ({ id: row.id, status: row.status, kind: row.kind, studentPaysCents: row.studentPaysCents, refundedCents: row.refundedCents })),
     notifications: notes.map((row) => ({ title: row.title, body: row.body, createdAt: row.createdAt })),
   };
+}
+
+export async function releaseSocialLogin(userId: string) {
+  await db.delete(account).where(and(eq(account.userId, userId), inArray(account.providerId, SOCIAL_PROVIDER_IDS)));
+  await db.delete(session).where(eq(session.userId, userId));
+  await db.update(apiTokens).set({ revokedAt: new Date() }).where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
 }
 
 export async function sessionAllowedForUser(userId: string) {
@@ -30,6 +38,6 @@ export async function deleteAccount(userId: string) {
     deletedAt: new Date(),
     emailUnsubscribed: true,
   }).where(eq(user.id, userId));
-  await db.delete(session).where(eq(session.userId, userId));
+  await releaseSocialLogin(userId);
   await db.delete(account).where(eq(account.userId, userId));
 }

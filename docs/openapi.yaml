@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: BeCreative student API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
     Versioned JSON API for the student iOS and Android apps. Teachers stay on the web.
     Web server actions and these routes call the same service layer.
@@ -86,6 +86,146 @@ paths:
           description: User
         "401":
           description: Sign in required
+  /auth/social:
+    post:
+      summary: Exchange an Apple or Google identity token for a bearer token
+      description: |
+        Send the native Apple identityToken or Google idToken. Better Auth verifies the token.
+        An existing account is linked when the provider email is verified, the local email is verified, and both addresses match.
+        A new verified email creates a student account. The response is the same `bc_` bearer token as email sign-in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, idToken]
+              properties:
+                provider: { type: string, enum: [apple, google] }
+                idToken: { type: string, description: Apple identityToken or Google idToken }
+                nonce: { type: string, description: Raw nonce. Apple matches the raw value or its SHA-256 hex digest. }
+                firstName: { type: string }
+                lastName: { type: string }
+                anonymousId: { type: string }
+      responses:
+        "200":
+          description: "{ token, user: { id, name, email } }"
+        "400":
+          description: provider and idToken are required
+        "401":
+          description: Token could not be verified
+        "503":
+          description: That provider is not configured
+        "429":
+          description: Rate limited
+  /auth/password/request:
+    post:
+      summary: Email a password reset link
+      description: |
+        Returns `{ ok: true }` when the address is accepted, including when no account exists.
+        The email link is the auth redirect to `/reset?token=`. The app already handles `/reset`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+      responses:
+        "200":
+          description: "{ ok: true }"
+        "400":
+          description: Email missing or rejected
+        "429":
+          description: Rate limited
+  /auth/password/confirm:
+    post:
+      summary: Set a new password with the reset token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: "{ ok: true }"
+        "400":
+          description: Token invalid or password shorter than 8 characters
+  /auth/email/request:
+    post:
+      summary: Email a verification link
+      description: |
+        Returns `{ ok: true }` when the address is accepted, including when the account is missing or already verified.
+        The message links to `/api/auth/verify-email`, which verifies the token and then redirects to `/verify`.
+        The app already handles `/verify`. `POST /auth/email/confirm` submits the token from the app.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+      responses:
+        "200":
+          description: "{ ok: true }"
+        "400":
+          description: Email missing or rejected
+        "429":
+          description: Rate limited
+  /auth/email/confirm:
+    post:
+      summary: Confirm an email verification token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: "{ ok: true }"
+        "400":
+          description: Token is missing or not valid
+  /me:
+    delete:
+      summary: Delete the signed-in account
+      description: |
+        Same `deleteAccount` service as the website Privacy page. Requires the bearer token plus a fresh password, or an Apple or Google identity token for this same user.
+        The profile is anonymized (`name` becomes "Deleted account", email becomes `deleted+<id>@users.invalid`). Sessions and API tokens are revoked.
+        Orders and bookings stay so the ledger is retained.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string }
+                provider: { type: string, enum: [apple, google] }
+                idToken: { type: string }
+                nonce: { type: string }
+      responses:
+        "200":
+          description: "{ ok: true }"
+        "400":
+          description: Confirm your password or sign in with Apple or Google again.
+        "401":
+          description: Missing bearer token, or the fresh sign-in does not match this account
+        "503":
+          description: Apple or Google sign-in is not configured
   /track:
     post:
       summary: Record a catalog event
@@ -197,10 +337,14 @@ paths:
           schema: { type: string, enum: [web, ios, android] }
       responses:
         "200":
-          description: Class list
+          description: |
+            Class list. Each class includes lat, lng, neighborhood, and location { lat, lng, neighborhood, name, city }.
+            Virtual classes send null for those fields.
   /search:
     get:
       summary: Search classes and wellness services
+      description: |
+        Classes use the explore shape. Each service includes lat, lng, neighborhood, and location { lat, lng, neighborhood, name, city }.
       parameters:
         - in: query
           name: q
@@ -221,7 +365,10 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Class, slots, and teacher
+          description: |
+            Class, slots, and teacher. The class includes lat, lng, neighborhood, and location.
+            signatureRequired is false when the teacher has no waiver text. Booking then needs only policyAccepted.
+            policyAcknowledgementRequired is always true.
         "404":
           description: Not found
   /classes/slots:
@@ -246,7 +393,10 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Profile
+          description: |
+            Profile, classes, packs, and memberships.
+            packs are { id, slug, name, priceCents, creditCount }.
+            memberships are { id, slug, name, priceCents }.
         "404":
           description: Not found
   /bookings:
@@ -255,7 +405,11 @@ paths:
       security: [{ bearer: [] }]
       responses:
         "200":
-          description: Booking list
+          description: |
+            Booking list. Each item includes startsAt, endsAt, timezone, and location { lat, lng, neighborhood, name, city }.
+            startsAt is the soonest upcoming session, or the earliest session when every session is in the past.
+            timezone is the class recurrence zone, or America/Los_Angeles when the class has none.
+            location is null for a virtual class.
     post:
       summary: Book a session
       description: Same bookSession service as the web. paymentSheet true returns a Stripe PaymentIntent client secret for PaymentSheet. Otherwise a Checkout Session URL when Stripe is on. Pay-at-studio when Stripe is off. Order responses include listPriceCents, discountCents, studentPaysCents, and codeApplied for the price breakdown. When X-Platform is ios or android, Checkout success and cancel URLs use /mobile/return, which opens becreative://bookings.
@@ -367,7 +521,9 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Waiver
+          description: |
+            Waiver. required is false when body is empty, so the app skips the signature and collects only the cancellation-policy acknowledgement.
+            policyAcknowledgementRequired is true. signed is true only after a signature of the current version.
   /waivers/{teacherSlug}/sign:
     post:
       summary: Sign the current waiver
