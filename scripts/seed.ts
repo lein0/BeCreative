@@ -23,6 +23,7 @@ import {
   locations,
   memberships,
   membershipSubscriptions,
+  notifications,
   orders,
   packPurchases,
   packs,
@@ -703,6 +704,12 @@ async function main() {
     studentId: staffIds.get("student@becreative.demo")!,
     avaId: staffIds.get("ava@becreative.demo")!,
   });
+
+  await db.insert(notifications).values([
+    { id: "note-demo-booking", userId: maya.userId, event: "booking.created", title: "New booking: Scene Study", body: "Jules Navarro booked Scene Study.", href: "/teach/sessions", isDemo: true },
+    { id: "note-demo-student", userId: studentId, event: "booking.confirmed", title: "You're booked: Scene Study", body: "Your seat is reserved. A receipt is in this note.", href: "/bookings", isDemo: true },
+    { id: "note-demo-receipt", userId: studentId, event: "receipt.sent", title: "Receipt for Scene Study", body: "This confirms the amount and the cancellation policy you accepted.", href: "/bookings", isDemo: true },
+  ]);
 
   await ensureBootstrapAdmins();
   console.log(`Seeded ${teacherSeeds.length} teachers, ${classSeeds.length} classes, ${leadsSeed.length} leads.`);

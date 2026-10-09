@@ -13,6 +13,8 @@ export const user = pgTable("user", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   isDemo: boolean("is_demo").notNull().default(false),
+  creditOptIn: boolean("credit_opt_in").notNull().default(false),
+  emailUnsubscribed: boolean("email_unsubscribed").notNull().default(false),
 });
 
 export const session = pgTable("session", {
@@ -78,6 +80,8 @@ export const teachers = pgTable("teachers", {
   stripeAccountId: text("stripe_account_id"),
   stripeDetailsSubmitted: boolean("stripe_details_submitted").notNull().default(false),
   stripeChargesEnabled: boolean("stripe_charges_enabled").notNull().default(false),
+  stripePayoutsEnabled: boolean("stripe_payouts_enabled").notNull().default(false),
+  stripeRequirementsDue: text("stripe_requirements_due"),
   firstClassFree: boolean("first_class_free").notNull().default(false),
   isDemo: boolean("is_demo").notNull().default(false),
   createdAt: ts("created_at").notNull().defaultNow(),
@@ -259,6 +263,7 @@ export const orders = pgTable("orders", {
   paymentPath: text("payment_path").notNull().default("cash"),
   stripeCheckoutSessionId: text("stripe_checkout_session_id"),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
+  refundedCents: integer("refunded_cents").notNull().default(0),
   stripeSubscriptionId: text("stripe_subscription_id"),
   ref: text("ref"),
   utmSource: text("utm_source"),
@@ -384,6 +389,24 @@ export const platformSettings = pgTable("platform_settings", {
   id: integer("id").primaryKey().default(1),
   feePercent: integer("fee_percent").notNull().default(10),
   feeFixedCents: integer("fee_fixed_cents").notNull().default(0),
+  studentFullRefundHours: integer("student_full_refund_hours").notNull().default(24),
+  studentCreditOnlyHours: integer("student_credit_only_hours").notNull().default(2),
+  lateCancelFeeCents: integer("late_cancel_fee_cents").notNull().default(0),
+  noShowFeeCents: integer("no_show_fee_cents").notNull().default(0),
+  creditRequiresOptIn: boolean("credit_requires_opt_in").notNull().default(true),
+  waitlistClaimHours: integer("waitlist_claim_hours").notNull().default(4),
+  quietHoursStart: text("quiet_hours_start").notNull().default("21:00"),
+  quietHoursEnd: text("quiet_hours_end").notNull().default("08:00"),
+  disputeAutoSubmit: boolean("dispute_auto_submit").notNull().default(true),
+  disputeSubmitLeadHours: integer("dispute_submit_lead_hours").notNull().default(48),
+  disputeFeeBearer: text("dispute_fee_bearer").notNull().default("platform"),
+  disputedAmountBearer: text("disputed_amount_bearer").notNull().default("teacher"),
+  earlyFraudRefundMaxCents: integer("early_fraud_refund_max_cents").notNull().default(10000),
+  statementDescriptorPrefix: text("statement_descriptor_prefix").notNull().default("BECREATIVE"),
+  ticketTeacherSlaHours: integer("ticket_teacher_sla_hours").notNull().default(24),
+  webPushEnabled: boolean("web_push_enabled").notNull().default(false),
+  mailingAddress: text("mailing_address").notNull().default("BeCreative, Los Angeles, CA"),
+  policyVersion: integer("policy_version").notNull().default(1),
   updatedAt: ts("updated_at").notNull().defaultNow(),
   updatedBy: text("updated_by"),
 });
@@ -409,6 +432,143 @@ export const emailOutbox = pgTable("email_outbox", {
   status: text("status").notNull(),
   error: text("error"),
   teacherId: text("teacher_id"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const teacherPolicies = pgTable("teacher_policies", {
+  teacherId: text("teacher_id").primaryKey().references(() => teachers.id, { onDelete: "cascade" }),
+  fullRefundHours: integer("full_refund_hours"),
+  creditOnlyHours: integer("credit_only_hours"),
+  lateCancelFeeCents: integer("late_cancel_fee_cents"),
+  noShowFeeCents: integer("no_show_fee_cents"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    runAt: ts("run_at").notNull().defaultNow(),
+    status: text("status").notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    lockedAt: ts("locked_at"),
+    lastError: text("last_error"),
+    idempotencyKey: text("idempotency_key"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("jobs_idempotency").on(table.idempotencyKey)],
+);
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    event: text("event").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    href: text("href"),
+    readAt: ts("read_at"),
+    isDemo: boolean("is_demo").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("notifications_user").on(table.userId, table.createdAt)],
+);
+
+export const notificationPreferences = pgTable(
+  "notification_preferences",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    event: text("event").notNull(),
+    email: boolean("email").notNull().default(true),
+    inApp: boolean("in_app").notNull().default(true),
+    sms: boolean("sms").notNull().default(false),
+    push: boolean("push").notNull().default(false),
+    cadence: text("cadence").notNull().default("instant"),
+  },
+  (table) => [uniqueIndex("notification_pref_user_event").on(table.userId, table.event)],
+);
+
+export const notificationOutbox = pgTable("notification_outbox", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+  event: text("event").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  href: text("href"),
+  status: text("status").notNull().default("pending"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const unsubscribeTokens = pgTable("unsubscribe_tokens", {
+  token: text("token").primaryKey(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const policyAcceptances = pgTable("policy_acceptances", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  orderId: text("order_id"),
+  policyVersion: integer("policy_version").notNull(),
+  policyText: text("policy_text").notNull(),
+  ip: text("ip"),
+  acceptedAt: ts("accepted_at").notNull().defaultNow(),
+});
+
+export const refundLedger = pgTable(
+  "refund_ledger",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    amountCents: integer("amount_cents").notNull(),
+    feeReversedCents: integer("fee_reversed_cents").notNull().default(0),
+    transferReversedCents: integer("transfer_reversed_cents").notNull().default(0),
+    reasonCode: text("reason_code").notNull(),
+    actorUserId: text("actor_user_id"),
+    stripeRefundId: text("stripe_refund_id"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    status: text("status").notNull().default("pending"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("refund_ledger_idempotency").on(table.idempotencyKey)],
+);
+
+export const studioCredits = pgTable(
+  "studio_credits",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+    balanceCents: integer("balance_cents").notNull().default(0),
+  },
+  (table) => [uniqueIndex("studio_credit_user_teacher").on(table.userId, table.teacherId)],
+);
+
+export const follows = pgTable(
+  "follows",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    teacherId: text("teacher_id").notNull().references(() => teachers.id, { onDelete: "cascade" }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("follows_user_teacher").on(table.userId, table.teacherId)],
+);
+
+export const stripeEvents = pgTable("stripe_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  endpoint: text("endpoint").notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 

@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 config({ path: ".env.local" });
 
 const { refundCreate, checkoutRetrieve } = vi.hoisted(() => ({
-  refundCreate: vi.fn(async () => ({ id: "re_test" })),
+  refundCreate: vi.fn(async (_params: { payment_intent?: string; amount?: number }, _options?: { idempotencyKey?: string }) => ({ id: "re_test" })),
   checkoutRetrieve: vi.fn(async () => ({ status: "expired", payment_status: "unpaid" })),
 }));
 
@@ -59,7 +59,7 @@ async function person(name: string) {
 async function studio(ownerId: string, slug: string, status = "approved") {
   const id = crypto.randomUUID();
   teacherIds.push(id);
-  await db.insert(schema.teachers).values({ id, userId: ownerId, slug, studioName: slug, status, bio: "" });
+  await db.insert(schema.teachers).values({ id, userId: ownerId, slug, studioName: slug, status, bio: "", stripeChargesEnabled: true });
   return id;
 }
 
@@ -349,10 +349,12 @@ describe("Bugbot follow-ups", () => {
     ]);
     refundCreate.mockClear();
     const result = await cancelBooking(student, bookingId);
-    expect(result).toEqual({ ok: true });
-    expect(refundCreate).toHaveBeenCalledWith({ payment_intent: `pi_${tag}`, amount: 4000 });
+    expect(result.ok).toBe(true);
+    expect(refundCreate).toHaveBeenCalled();
+    expect(refundCreate.mock.calls[0]?.[0]).toMatchObject({ payment_intent: `pi_${tag}`, amount: 4000 });
     const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
     expect(order?.status).toBe("paid");
+    expect(order?.refundedCents).toBe(4000);
     const [booking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
     expect(booking?.status).toBe("cancelled");
   });

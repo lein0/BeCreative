@@ -115,6 +115,7 @@ describe("wellness bugbot regressions", () => {
   it("releases a confirmed visit when checkout throws", async () => {
     stripe.configured = true;
     stripe.fail = true;
+    await db.update(schema.teachers).set({ stripeChargesEnabled: true }).where(eq(schema.teachers.id, ids.teacher!));
     const { serviceId, optionId } = await appointment("Checkout", ids.teacher!, ids.category!);
     const open = await openSlotsForService(serviceId, new Date(), 2);
     if (open.kind !== "appointment") throw new Error("expected an appointment");

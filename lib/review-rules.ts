@@ -57,6 +57,11 @@ export function paidCheckoutSendsBookingEmail(kind: string) {
   return kind === "booking" || kind === "visit";
 }
 
+/** Card checkout returns before the in-app booking events. Fulfillment emits them for classes and visits. */
+export function paidCheckoutEmitsBookingNotifications(kind: string) {
+  return kind === "booking" || kind === "visit";
+}
+
 export function classPromoDecision(input: {
   promo: PromoRule;
   now: Date;

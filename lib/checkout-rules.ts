@@ -105,6 +105,20 @@ export function refundCancelsBooking(status: string) {
   return status === "confirmed";
 }
 
+export function sessionBelongsToClass(sessionClassId: string | null | undefined, classId: string) {
+  return Boolean(classId) && sessionClassId === classId;
+}
+
+/** A second cancel of a date that is already cancelled must not grant credit or pack credits again. */
+export function sessionCancelAlreadyApplied(status: string) {
+  return status === "cancelled";
+}
+
+/** A pending card checkout that cannot charge has to drop the seat and the order. */
+export function checkoutMustReleaseSeat(input: { paymentsReady: boolean; orderPending: boolean }) {
+  return input.orderPending && !input.paymentsReady;
+}
+
 /** A Stripe `charge.refunded` event also fires for a partial refund. Only a fully refunded charge reverses the order. */
 export function chargeFullyRefunded(charge: { amount?: number | null; amount_refunded?: number | null; refunded?: boolean | null }) {
   if (charge.refunded === true) return true;

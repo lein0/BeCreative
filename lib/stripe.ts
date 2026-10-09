@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { statementDescriptorSuffix } from "@/lib/connect-rules";
 import { appOrigin } from "@/lib/env";
 
 export function stripeConfigured() {
@@ -20,6 +21,7 @@ export async function createCheckout(input: {
   successPath: string;
   cancelPath: string;
   metadata: Record<string, string>;
+  statementDescriptor?: string;
   recurring?: { interval: "month"; intervalCount: number } | null;
 }) {
   const stripe = getStripe();
@@ -53,7 +55,13 @@ export async function createCheckout(input: {
             ...(input.destinationAccountId ? { transfer_data: { destination: input.destinationAccountId }, application_fee_percent: feePercent(input) } : {}),
           },
         }
-      : { payment_intent_data: { metadata: input.metadata, ...transfer } }),
+      : {
+          payment_intent_data: {
+            metadata: input.metadata,
+            ...(input.statementDescriptor ? { statement_descriptor_suffix: statementDescriptorSuffix(input.statementDescriptor) } : {}),
+            ...transfer,
+          },
+        }),
   });
   return session;
 }

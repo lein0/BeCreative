@@ -1,4 +1,4 @@
-import { and, eq, gte, ne, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
 import {
@@ -8,6 +8,7 @@ import {
   credentials,
   creditLedger,
   locations,
+  studioCredits,
   memberships,
   membershipSubscriptions,
   orders,
@@ -32,21 +33,23 @@ import {
   normalizeCodes,
   offerCoversClass,
   quotePrice,
+  quoteWithStudioCredit,
   validatePromo,
   type PromoRule,
 } from "@/lib/pricing";
-import { collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
+import { checkoutMustReleaseSeat, collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
 import { studioCanSell } from "@/lib/review-rules";
-import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds, releaseVisitSeat } from "@/lib/booking-service";
+import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { applyStudioCredit, studioCreditLedgerSource } from "@/lib/refund-math";
 import { sendEmail } from "@/lib/email";
+import { notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 import { coordinatesForVisit } from "@/lib/geocode";
-import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import { createCheckout, stripeConfigured } from "@/lib/stripe";
 import {
   appointmentConflicts,
   canTakeSeat,
   generateOpenSlots,
   needsWaiver,
-  withinCancellationWindow,
   type BusyRange,
 } from "@/lib/slots";
 import { uniqueSlug } from "@/lib/utils";
@@ -208,6 +211,8 @@ export async function bookVisit(input: {
   startsAt: string;
   code?: string;
   payWith?: string;
+  policyAccepted?: boolean;
+  ip?: string | null;
 }) {
   const detail = await db.select().from(services).where(eq(services.id, input.serviceId)).limit(1);
   const service = detail[0];
@@ -336,8 +341,23 @@ export async function bookVisit(input: {
         membershipSubscriptionId = sub.id;
       }
 
+      let studioCreditCents = 0;
+      if (payWith === "credit" && listPrice > 0) {
+        const [credit] = await tx.select().from(studioCredits).where(and(eq(studioCredits.userId, input.userId), eq(studioCredits.teacherId, teacher.id))).limit(1);
+        const spend = applyStudioCredit({ balanceCents: credit?.balanceCents ?? 0, priceCents: listPrice });
+        if (spend.appliedCents <= 0 || !credit) throw new Error("You don't have studio credit with this teacher.");
+        const spent = await tx
+          .update(studioCredits)
+          .set({ balanceCents: sql`${studioCredits.balanceCents} - ${spend.appliedCents}` })
+          .where(and(eq(studioCredits.id, credit.id), sql`${studioCredits.balanceCents} >= ${spend.appliedCents}`))
+          .returning();
+        if (!spent.length) throw new Error("You don't have enough studio credit for this class.");
+        studioCreditCents = spend.appliedCents;
+      }
+
       let promoRow: typeof promoCodes.$inferSelect | null = null;
-      if (normalized.code && !entitlement && listPrice > 0) {
+      const promoBase = Math.max(0, listPrice - studioCreditCents);
+      if (normalized.code && !entitlement && promoBase > 0) {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, normalized.code)).limit(1);
         if (!found) throw new Error("That code is not recognized.");
         const [totals] = await tx.select({ count: sql<number>`count(*)::int` }).from(promoRedemptions).where(and(eq(promoRedemptions.promoCodeId, found.id), eq(promoRedemptions.reversed, false)));
@@ -345,7 +365,7 @@ export async function bookVisit(input: {
         const verdict = validatePromo({
           promo: toRule(found),
           now: new Date(),
-          listPriceCents: listPrice,
+          listPriceCents: promoBase,
           totalRedemptions: Number(totals?.count ?? 0),
           customerRedemptions: Number(mine?.count ?? 0),
           isFirstTimeStudent: !(await priorWithTeacher(input.userId, teacher.id)),
@@ -354,13 +374,21 @@ export async function bookVisit(input: {
         if (!verdict.ok) throw new Error(verdict.reason);
         promoRow = found;
       }
-      const quote = quotePrice({
-        listPriceCents: listPrice,
-        feePercent: fee.feePercent,
-        feeFixedCents: fee.feeFixedCents,
-        promo: promoRow ? toRule(promoRow) : null,
-        entitlement,
-      });
+      const quote = studioCreditCents > 0
+        ? quoteWithStudioCredit({
+            listPriceCents: listPrice,
+            appliedCents: studioCreditCents,
+            feePercent: fee.feePercent,
+            feeFixedCents: fee.feeFixedCents,
+            promo: promoRow ? toRule(promoRow) : null,
+          })
+        : quotePrice({
+            listPriceCents: listPrice,
+            feePercent: fee.feePercent,
+            feeFixedCents: fee.feeFixedCents,
+            promo: promoRow ? toRule(promoRow) : null,
+            entitlement,
+          });
       const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
       const money = orderMoney(quote, online);
       const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
@@ -393,7 +421,7 @@ export async function bookVisit(input: {
           promoCodeId: promoRow.id,
           userId: input.userId,
           orderId,
-          discountCents: quote.discountCents,
+          discountCents: Math.max(0, quote.discountCents - studioCreditCents),
           platformFundedCents: quote.platformFundedCents,
           teacherFundedCents: quote.teacherFundedCents,
         });
@@ -403,6 +431,16 @@ export async function bookVisit(input: {
       }
       if (membershipSubscriptionId) {
         await tx.insert(creditLedger).values({ id: crypto.randomUUID(), userId: input.userId, teacherId: teacher.id, sourceType: "membership", sourceId: membershipSubscriptionId, direction: "consume" });
+      }
+      if (studioCreditCents > 0) {
+        await tx.insert(creditLedger).values({
+          id: crypto.randomUUID(),
+          userId: input.userId,
+          teacherId: teacher.id,
+          sourceType: "studio_credit",
+          sourceId: studioCreditLedgerSource(orderId, studioCreditCents),
+          direction: "consume",
+        });
       }
       const [signature] = waiver
         ? await tx.select().from(waiverSignatures).where(and(eq(waiverSignatures.teacherId, teacher.id), eq(waiverSignatures.userId, input.userId), eq(waiverSignatures.version, waiver.version))).limit(1)
@@ -424,8 +462,33 @@ export async function bookVisit(input: {
       return { orderId, visitId, quote, status, title: service.title };
     });
 
+    if (input.policyAccepted) {
+      const [settings] = await db.select().from(platformSettings).limit(1);
+      const { policySummary, SHIP_DEFAULTS } = await import("@/lib/ship-defaults");
+      const { policyAcceptances } = await import("@/lib/db/schema");
+      await db.insert(policyAcceptances).values({
+        id: crypto.randomUUID(),
+        userId: input.userId,
+        orderId: created.orderId,
+        policyVersion: settings?.policyVersion ?? SHIP_DEFAULTS.policyVersion,
+        policyText: policySummary({
+          fullRefundHours: settings?.studentFullRefundHours ?? SHIP_DEFAULTS.studentFullRefundHours,
+          creditOnlyHours: settings?.studentCreditOnlyHours ?? SHIP_DEFAULTS.studentCreditOnlyHours,
+          lateCancelFeeCents: settings?.lateCancelFeeCents ?? 0,
+          noShowFeeCents: settings?.noShowFeeCents ?? 0,
+        }),
+        ip: input.ip,
+      });
+    }
     let status = created.status;
     if (created.status === "pending") {
+      const { cardPaymentsReady, statementDescriptor } = await import("@/lib/connect-rules");
+      const { SHIP_DEFAULTS } = await import("@/lib/ship-defaults");
+      const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
+      if (!ready.ok && checkoutMustReleaseSeat({ paymentsReady: ready.ok, orderPending: true })) {
+        await abandonFailedCheckout(created.orderId);
+        return { error: ready.reason };
+      }
       try {
         const session = await createCheckout({
           name: created.title,
@@ -435,7 +498,8 @@ export async function bookVisit(input: {
           customerEmail: input.email,
           successPath: "/bookings?reserved=1",
           cancelPath: `/s/${service.slug}?cancelled=1`,
-          metadata: { type: "order", orderId: created.orderId },
+          metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+          statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
         });
         if (session?.url) {
           await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
@@ -455,6 +519,8 @@ export async function bookVisit(input: {
       text: `Your spot is reserved${status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
       teacherId: teacher.id,
     });
+    await notifyStudentConfirmed({ userId: input.userId, title: created.title, href: `/s/${service.slug}` });
+    await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: input.email, title: created.title, href: "/teach" });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
@@ -578,24 +644,6 @@ export async function visitRoster(serviceId: string) {
 }
 
 export async function cancelVisit(userId: string, visitId: string) {
-  const now = new Date();
-  const [visit] = await db.select().from(visitBookings).where(and(eq(visitBookings.id, visitId), eq(visitBookings.userId, userId))).limit(1);
-  if (!visit || visit.status !== "confirmed") return { error: "Booking not found." };
-  const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
-  if (!service || !withinCancellationWindow(visit.startsAt, now, service.cancellationHours)) return { error: "The cancellation window has closed." };
-  await releaseVisitSeat(visit, now);
-  if (!visit.orderId) return { ok: true };
-  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));
-  const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
-  if (!order || order.status === "refunded") return { ok: true };
-  if (order.status === "paid" && order.studentPaysCents > 0 && order.stripePaymentIntentId) {
-    const stripe = getStripe();
-    if (stripe) {
-      await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
-      await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      return { ok: true };
-    }
-  }
-  await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
-  return { ok: true };
+  const { studentCancelVisit } = await import("@/lib/cancellations");
+  return studentCancelVisit(userId, visitId);
 }
