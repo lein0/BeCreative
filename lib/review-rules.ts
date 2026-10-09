@@ -54,7 +54,7 @@ export async function readLimitedBody(request: Request, limit = MAX_UPLOAD_BYTES
 }
 
 export function paidCheckoutSendsBookingEmail(kind: string) {
-  return kind === "booking";
+  return kind === "booking" || kind === "visit";
 }
 
 export function classPromoDecision(input: {

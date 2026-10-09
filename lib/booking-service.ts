@@ -17,6 +17,7 @@ import {
   promoCodes,
   promoRedemptions,
   sessions,
+  services,
   teachers,
   user,
   visitBookings,
@@ -141,13 +142,19 @@ export async function confirmedCount(sessionId: string, tx: typeof db = db) {
   return Number(row?.count ?? 0);
 }
 
-async function priorWithTeacher(userId: string, teacherId: string) {
-  const [row] = await db
+export async function priorWithTeacher(userId: string, teacherId: string) {
+  const [classesRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(bookings)
     .innerJoin(classes, eq(classes.id, bookings.classId))
     .where(and(eq(bookings.userId, userId), eq(classes.teacherId, teacherId), eq(bookings.status, "confirmed")));
-  return Number(row?.count ?? 0) > 0;
+  if (Number(classesRow?.count ?? 0) > 0) return true;
+  const [visitsRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(visitBookings)
+    .innerJoin(services, eq(services.id, visitBookings.serviceId))
+    .where(and(eq(visitBookings.userId, userId), eq(services.teacherId, teacherId), eq(visitBookings.status, "confirmed")));
+  return Number(visitsRow?.count ?? 0) > 0;
 }
 
 export async function bookSession(input: {
@@ -439,6 +446,8 @@ export async function abandonFailedCheckout(orderId: string) {
   const now = new Date();
   const held = await db.select().from(bookings).where(and(eq(bookings.orderId, orderId), eq(bookings.status, "confirmed")));
   for (const booking of held) await releaseBookingSeat(booking, now);
+  const visits = await db.select().from(visitBookings).where(and(eq(visitBookings.orderId, orderId), eq(visitBookings.status, "confirmed")));
+  for (const visit of visits) await releaseVisitSeat(visit, now);
   await db.update(orders).set({ status: "cancelled", updatedAt: now }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
   await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, orderId));
 }
@@ -538,15 +547,28 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
   }
   if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
     const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
-    const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
-    const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
-    if (person?.email && klass) {
-      await sendEmail({
-        to: [person.email],
-        subject: `You're booked: ${klass.title}`,
-        text: "Your spot is reserved.",
-        teacherId: order.teacherId ?? undefined,
-      });
+    if (person?.email && order.kind === "visit") {
+      const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
+      const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
+      if (service) {
+        await sendEmail({
+          to: [person.email],
+          subject: `You're booked: ${service.title}`,
+          text: "Your spot is reserved.",
+          teacherId: order.teacherId ?? undefined,
+        });
+      }
+    } else {
+      const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
+      const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
+      if (person?.email && klass) {
+        await sendEmail({
+          to: [person.email],
+          subject: `You're booked: ${klass.title}`,
+          text: "Your spot is reserved.",
+          teacherId: order.teacherId ?? undefined,
+        });
+      }
     }
   }
 }
