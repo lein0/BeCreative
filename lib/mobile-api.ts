@@ -4,6 +4,7 @@ import { hashToken, parseBearer, tokenUsable } from "@/lib/api-token";
 import { capture, stitchAnonymous } from "@/lib/analytics";
 import { auth, emailVerificationRequired } from "@/lib/auth";
 import { bookSession, cancelBooking, purchaseOffer, rescheduleBooking } from "@/lib/booking-service";
+import { disclosureForMembership, disclosurePayload, cancelMembership } from "@/lib/renewal";
 import { db } from "@/lib/db";
 import {
   apiTokens,
@@ -421,7 +422,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     ]);
     return json({
       packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
-      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd })),
+      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd, cancelAtPeriodEnd: row.sub.cancelAtPeriodEnd, cancelPath: `/account/memberships/${row.sub.id}/cancel` })),
     });
   }
 
@@ -431,9 +432,40 @@ export async function handleMobileApi(request: Request, path: string[]) {
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
+  if (method === "GET" && root === "memberships" && second && third === "disclosure") {
+    const prepared = await disclosureForMembership(decodeURIComponent(second));
+    if (!prepared) return json({ error: "Membership not found." }, 404);
+    return json(disclosurePayload(prepared.disclosure));
+  }
+
+  if (method === "POST" && root === "memberships" && second && third === "cancel") {
+    const result = await cancelMembership({
+      subscriptionId: decodeURIComponent(second),
+      actorUserId: actor.id,
+      source: "member",
+      platform,
+      ip: request.headers.get("x-forwarded-for"),
+      userAgent: request.headers.get("user-agent") || request.headers.get("x-app-version"),
+    });
+    return json(result, "error" in result && result.error ? 400 : 200);
+  }
+
   if (method === "POST" && root === "memberships" && second === "purchase") {
-    const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: true });
+    const body = await request.json() as { id?: string; code?: string; consent?: boolean; disclosureVersion?: string };
+    const result = await purchaseOffer({
+      userId: actor.id,
+      email: actor.email,
+      kind: "membership",
+      id: body.id || "",
+      code: body.code,
+      returnToApp: true,
+      consent: body.consent === true,
+      disclosureVersion: body.disclosureVersion,
+      platform,
+      ip: request.headers.get("x-forwarded-for"),
+      userAgent: request.headers.get("user-agent"),
+      appVersion: request.headers.get("x-app-version"),
+    });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: BeCreative student API
-  version: "1.1.0"
+  version: "1.2.0"
   description: |
     Versioned JSON API for the student iOS and Android apps. Teachers stay on the web.
     Web server actions and these routes call the same service layer.
@@ -493,10 +493,58 @@ paths:
       responses:
         "200":
           description: Order or client secret
+  /memberships/{id}/disclosure:
+    get:
+      summary: Auto-renewal disclosure for a membership
+      description: |
+        Render this non-editable disclosure above an unchecked consent checkbox and a purchase button that uses buttonLabel.
+        The checkbox must not be pre-checked. Send disclosureVersion and consent true to POST /memberships/purchase.
+        Card brand and last4 are "card" and "••••" until the member enters a card.
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disclosure, checkbox, and button label
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disclosureVersion, lines, checkbox, termsLine, buttonLabel, consentRequired]
+                properties:
+                  disclosureVersion: { type: string }
+                  templateVersion: { type: string }
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text: { type: string }
+                        bold: { type: boolean }
+                  checkbox: { type: string }
+                  termsLine: { type: string }
+                  termsUrl: { type: string }
+                  policyUrl: { type: string }
+                  buttonLabel: { type: string }
+                  consentRequired: { type: boolean }
+                  priceCents: { type: integer }
+                  renewalPriceCents: { type: integer }
+                  termMonths: { type: integer }
+                  firstRenewalDate: { type: string }
+                  cardBrand: { type: string }
+                  last4: { type: string }
   /memberships/purchase:
     post:
       summary: Buy a membership
-      description: Recurring memberships return a Stripe Checkout Session URL (checkoutUrl), plus listPriceCents, discountCents, studentPaysCents, and codeApplied. Open checkoutUrl in an in-app browser. On ios and android the session returns through /mobile/return into becreative://bookings. PaymentSheet is not used, because the plan renews.
+      description: |
+        Recurring memberships require consent true and disclosureVersion from GET /memberships/{id}/disclosure.
+        The server rejects a Stripe subscription unless that version matches the disclosure it would show.
+        A successful recurring purchase returns a Stripe Checkout Session URL (checkoutUrl), plus listPriceCents, discountCents, studentPaysCents, and codeApplied.
+        Open checkoutUrl in an in-app browser. On ios and android the session returns through /mobile/return into becreative://bookings.
+        PaymentSheet is not used, because the plan renews.
       security: [{ bearer: [] }]
       requestBody:
         required: true
@@ -504,12 +552,44 @@ paths:
           application/json:
             schema:
               type: object
+              required: [id, consent, disclosureVersion]
               properties:
                 id: { type: string }
                 code: { type: string }
+                consent:
+                  type: boolean
+                  description: Must be true. Never send a pre-checked value from a previous purchase.
+                disclosureVersion:
+                  type: string
+                  description: The disclosureVersion from GET /memberships/{id}/disclosure.
       responses:
         "200":
           description: Checkout URL or confirmation
+        "400":
+          description: Missing consent, or the disclosure version does not match. The body includes error and disclosure.
+  /memberships/{id}/cancel:
+    post:
+      summary: Cancel a membership renewal
+      description: Stops future Stripe renewals immediately (cancel_at_period_end), keeps access until the paid term ends, and sends the cancellation email. One call, no extra confirmation step.
+      security: [{ bearer: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+          description: Membership subscription id from the wallet
+      responses:
+        "200":
+          description: Confirmation screen copy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  screen: { type: string }
+                  membershipName: { type: string }
+                  termEnd: { type: string, format: date-time }
   /waivers/{teacherSlug}:
     get:
       summary: Current waiver and whether this student signed it

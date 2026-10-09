@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { cancelRenewalsForAccountDeletion } from "@/lib/renewal";
 import { account, apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
 
 const SOCIAL_PROVIDER_IDS = ["apple", "google"];
@@ -31,6 +32,8 @@ export async function sessionAllowedForUser(userId: string) {
 }
 
 export async function deleteAccount(userId: string) {
+  const cancelled = await cancelRenewalsForAccountDeletion(userId);
+  if (!cancelled.ok) throw new Error(cancelled.error);
   await db.update(user).set({
     name: "Deleted account",
     email: `deleted+${userId}@users.invalid`,

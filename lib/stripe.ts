@@ -22,7 +22,8 @@ export async function createCheckout(input: {
   cancelPath: string;
   metadata: Record<string, string>;
   statementDescriptor?: string;
-  recurring?: { interval: "month"; intervalCount: number } | null;
+  recurring?: { interval: "month"; intervalCount: number; trialPeriodDays?: number } | null;
+  oneTimeAmountCents?: number;
 }) {
   const stripe = getStripe();
   const appUrl = appOrigin();
@@ -35,6 +36,9 @@ export async function createCheckout(input: {
     mode: input.recurring ? "subscription" : "payment",
     customer_email: input.customerEmail ?? undefined,
     line_items: [
+      ...(input.oneTimeAmountCents && input.oneTimeAmountCents > 0
+        ? [{ quantity: 1, price_data: { currency: "usd" as const, unit_amount: input.oneTimeAmountCents, product_data: { name: `${input.name} intro` } } }]
+        : []),
       {
         quantity: 1,
         price_data: {
@@ -52,6 +56,7 @@ export async function createCheckout(input: {
       ? {
           subscription_data: {
             metadata: input.metadata,
+            ...(input.recurring.trialPeriodDays ? { trial_period_days: input.recurring.trialPeriodDays } : {}),
             ...(input.destinationAccountId ? { transfer_data: { destination: input.destinationAccountId }, application_fee_percent: feePercent(input) } : {}),
           },
         }
@@ -91,4 +96,33 @@ export async function createPaymentIntent(input: {
 function feePercent(input: { amountCents: number; applicationFeeCents: number }) {
   if (input.amountCents <= 0) return 0;
   return Math.min(100, Math.round((input.applicationFeeCents / input.amountCents) * 1000) / 10);
+}
+
+export async function stopSubscriptionRenewal(subscriptionId: string) {
+  const stripe = getStripe();
+  if (!stripe) return { ok: false as const, reason: "unconfigured" as const };
+  await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+  return { ok: true as const };
+}
+
+export async function setSubscriptionRenewalAmount(subscriptionId: string, amountCents: number) {
+  const stripe = getStripe();
+  if (!stripe || amountCents <= 0) return { ok: false as const, reason: "unconfigured" as const };
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  const item = subscription.items.data[0];
+  if (!item?.price.recurring) return { ok: false as const, reason: "missing-item" as const };
+  const product = typeof item.price.product === "string" ? item.price.product : item.price.product.id;
+  await stripe.subscriptions.update(subscriptionId, {
+    proration_behavior: "none",
+    items: [{
+      id: item.id,
+      price_data: {
+        currency: item.price.currency,
+        unit_amount: amountCents,
+        product,
+        recurring: { interval: item.price.recurring.interval, interval_count: item.price.recurring.interval_count ?? 1 },
+      },
+    }],
+  });
+  return { ok: true as const };
 }

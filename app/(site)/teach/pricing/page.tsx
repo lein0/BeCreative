@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { pricingAction } from "@/lib/actions";
+import { scheduleMaterialChangeAction, schedulePriceChangeAction } from "@/lib/renewal-actions";
 import { control, Panel } from "@/components/bits";
 import { ShareButton } from "@/components/share-button";
 import { requireActor } from "@/lib/actor";
@@ -61,6 +62,8 @@ async function Body() {
           <input name="price" defaultValue="120" className={control} />
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="recurring" defaultChecked /> Recurring</label>
           <textarea name="policy" placeholder="Pause and cancel policy" className={control} defaultValue="Cancel anytime before the next renewal. Pause up to 30 days." />
+          <input name="introDays" type="number" min={0} placeholder="Intro days (optional)" className={control} />
+          <input name="introPrice" placeholder="Intro price $ (blank = free intro)" className={control} />
           <button className="rounded-full bg-ink px-4 py-2 text-sm text-paper">Create membership</button>
         </form>
         <div className="mt-4 space-y-2">
@@ -70,6 +73,21 @@ async function Body() {
                 <span>{plan.name} · {money(plan.priceCents)}</span>
                 <ShareButton path={`/t/${teacher.slug}/m/${plan.slug}`} title={plan.name} priceLabel={money(plan.priceCents)} />
               </div>
+              <form action={schedulePriceChangeAction} className="mt-3 space-y-2">
+                <input type="hidden" name="teacherId" value={teacher.id} />
+                <input type="hidden" name="membershipId" value={plan.id} />
+                <input name="price" placeholder="New price $" className={control} />
+                <input name="effective" type="date" required className={control} />
+                <p className="text-xs text-ink/70">Existing members keep this price until a renewal on or after a date at least 14 days out.</p>
+                <button className="rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Schedule price change</button>
+              </form>
+              <form action={scheduleMaterialChangeAction} className="mt-3 space-y-2">
+                <input type="hidden" name="teacherId" value={teacher.id} />
+                <input type="hidden" name="membershipId" value={plan.id} />
+                <input name="summary" placeholder="What is changing" className={control} />
+                <input name="effective" type="date" required className={control} />
+                <button className="rounded-full ring-1 ring-line px-3 py-1.5 text-sm">Schedule term change</button>
+              </form>
             </Panel>
           ))}
         </div>
