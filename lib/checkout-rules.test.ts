@@ -11,7 +11,10 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   chargeFullyRefunded,
+  membershipRenewalExtendsAccess,
+  paidInvoiceRenewal,
   refundCancelsBooking,
+  renewalChargeSplit,
   safeNextPath,
   sessionLockOrder,
   studioOwnsResource,
@@ -122,6 +125,43 @@ describe("membership checkout promos", () => {
     });
     expect(quote.discountCents).toBe(800);
     expect(quote.studentPaysCents).toBe(7200);
+  });
+});
+
+describe("membership renewals", () => {
+  const current = new Date("2026-11-01T00:00:00Z");
+  const next = new Date("2026-12-01T00:00:00Z");
+
+  it("extends access on a later cycle and ignores the first invoice", () => {
+    expect(membershipRenewalExtendsAccess({ billingReason: "subscription_create", currentPeriodEnd: current, invoicePeriodEnd: next })).toBe(false);
+    expect(membershipRenewalExtendsAccess({ billingReason: "subscription_cycle", currentPeriodEnd: current, invoicePeriodEnd: next })).toBe(true);
+    expect(membershipRenewalExtendsAccess({ billingReason: "subscription_cycle", currentPeriodEnd: next, invoicePeriodEnd: next })).toBe(false);
+  });
+
+  it("keeps the original fee split when the renewal charges the same amount", () => {
+    expect(renewalChargeSplit({ studentPaysCents: 8000, platformFeeCents: 800, teacherAmountCents: 7200, listPriceCents: 8000, discountCents: 0 }, 8000)).toEqual({
+      listPriceCents: 8000,
+      discountCents: 0,
+      studentPaysCents: 8000,
+      platformFeeCents: 800,
+      teacherAmountCents: 7200,
+    });
+  });
+
+  it("reads the subscription and payment intent from a paid invoice", () => {
+    const parsed = paidInvoiceRenewal({
+      id: "in_1",
+      billing_reason: "subscription_cycle",
+      amount_paid: 8000,
+      period_start: 1764547200,
+      period_end: 1767225600,
+      parent: { subscription_details: { subscription: "sub_1" } },
+      payments: { data: [{ payment: { payment_intent: "pi_1" } }] },
+    });
+    expect(parsed?.subscriptionId).toBe("sub_1");
+    expect(parsed?.paymentIntentId).toBe("pi_1");
+    expect(parsed?.billingReason).toBe("subscription_cycle");
+    expect(paidInvoiceRenewal({ id: "in_2", amount_paid: 0, period_start: 1, period_end: 2, parent: null })).toBeNull();
   });
 });
 
