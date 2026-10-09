@@ -1,5 +1,6 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
+import { marketingCookiesAllowed } from "@/lib/privacy-server";
 import { db } from "@/lib/db";
 import {
   availabilityWindows,
@@ -102,8 +103,9 @@ async function confirmedAppointmentRanges(teacherId: string, database: Pick<type
 async function requestContext() {
   try {
     const jar = await cookies();
+    const raw = (await marketingCookiesAllowed()) ? jar.get("bc_attr")?.value : undefined;
     return {
-      attr: parseAttributionCookie(jar.get("bc_attr")?.value),
+      attr: parseAttributionCookie(raw),
       extraCode: jar.get("bc_code")?.value ?? "",
     };
   } catch {

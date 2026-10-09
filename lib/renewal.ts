@@ -33,6 +33,7 @@ import {
   legalIdentity,
   membershipOffer,
   mergeTemplates,
+  missedNoticeSkipsCharge,
   noticeAlert,
   noticeMail,
   planNotices,
@@ -263,14 +264,16 @@ async function loadCancelTarget(subscriptionId: string) {
 export async function cancelMembership(input: {
   subscriptionId: string;
   actorUserId: string;
-  source: "member" | "admin" | "account_deletion";
+  source: "member" | "admin" | "account_deletion" | "teacher";
   platform?: string;
   ip?: string | null;
   userAgent?: string | null;
 }) {
   const loaded = await loadCancelTarget(input.subscriptionId);
   if (!loaded) return { error: "Membership not found." };
-  if (input.source !== "admin" && loaded.sub.userId !== input.actorUserId) return { error: "Membership not found." };
+  if (input.source === "teacher") {
+    if (loaded.teacher.userId !== input.actorUserId) return { error: "Membership not found." };
+  } else if (input.source !== "admin" && loaded.sub.userId !== input.actorUserId) return { error: "Membership not found." };
   const templates = await activeTemplates();
   const legal = await contextLegal();
   const screen = cancellationScreen(loaded.plan.name, loaded.sub.currentPeriodEnd, templates, legal);
@@ -389,7 +392,21 @@ export async function saveRenewalTemplate(input: { actorUserId: string; legalSig
 }
 
 function handled(rows: { kind: string; eventOn: string; status: string }[], kind: NoticeKind, eventOn: string) {
-  return rows.some((row) => row.kind === kind && row.eventOn === eventOn);
+  return rows.some((row) => row.kind === kind && row.eventOn === eventOn && row.status === "sent");
+}
+
+async function pauseUnnoticedRenewal(subscriptionId: string, stripeSubscriptionId: string | null) {
+  if (stripeSubscriptionId) {
+    try {
+      const stopped = await stopSubscriptionRenewal(stripeSubscriptionId);
+      if (!stopped.ok && stopped.reason !== "unconfigured") {
+        await alertOps(`Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}. The renewal is paused locally so it is not extended.`);
+      }
+    } catch {
+      await alertOps(`Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}. The renewal is paused locally so it is not extended.`);
+    }
+  }
+  await db.update(membershipSubscriptions).set({ cancelAtPeriodEnd: true, cancelledAt: new Date() }).where(eq(membershipSubscriptions.id, subscriptionId));
 }
 
 export async function scheduleRenewalNotices(now = new Date()) {
@@ -441,6 +458,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
       periodEnd: sub.currentPeriodEnd,
       introEndsAt: sub.introEndsAt,
       introDays: plan.introDays,
+      introPriceCents: plan.introPriceCents,
       priceChange: price ? { effectiveAt: price.effectiveAt, sent: handled(mine, "price_change", isoDate(price.effectiveAt)) } : null,
       materialChange: material ? { effectiveAt: material.effectiveAt, sent: false } : null,
       annualSentFor: mine.filter((notice) => notice.kind === "annual").map((notice) => notice.eventOn),
@@ -448,10 +466,13 @@ export async function scheduleRenewalNotices(now = new Date()) {
       introSent: sub.introEndsAt ? handled(mine, "intro_ending", isoDate(sub.introEndsAt)) : false,
     });
     const cancelUrl = `${legal.siteUrl}/account/memberships/${sub.id}/cancel`;
+    const pauseReasons: string[] = [];
+    let priceFallback = false;
     for (const decision of decisions) {
       if (decision.action === "wait") continue;
       const eventOn = isoDate(decision.eventAt);
       if (handled(mine, decision.kind, eventOn)) continue;
+      const prior = mine.find((notice) => notice.kind === decision.kind && notice.eventOn === eventOn);
       const renewalPrice = sub.renewalPriceCents > 0 ? sub.renewalPriceCents : plan.priceCents;
       const mail = noticeMail({
         kind: decision.kind,
@@ -472,7 +493,53 @@ export async function scheduleRenewalNotices(now = new Date()) {
         changeSummary: material?.summary || "",
         priceStays: !(price && decision.kind === "material_change"),
       }, templates, legal);
-      if (decision.action === "missed") {
+      if (decision.action === "missed" || prior?.status === "missed") {
+        if (!prior) {
+          const inserted = await db.insert(renewalNotices).values({
+            id: crypto.randomUUID(),
+            userId: sub.userId,
+            membershipId: plan.id,
+            teacherId: teacher.id,
+            subscriptionId: sub.id,
+            kind: decision.kind,
+            eventOn,
+            status: "missed",
+            subject: mail.subject,
+            body: mail.text,
+            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
+          }).onConflictDoNothing().returning();
+          if (inserted.length) missed += 1;
+        } else if (prior.status !== "missed") {
+          await db.update(renewalNotices).set({
+            status: "missed",
+            detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
+          }).where(eq(renewalNotices.id, prior.id));
+          missed += 1;
+        }
+        if (missedNoticeSkipsCharge(decision.kind)) pauseReasons.push(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`, true));
+        else if (decision.kind === "price_change") priceFallback = true;
+        else await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
+        continue;
+      }
+      let emailId: string | null = null;
+      let delivery = "skipped";
+      let status: "sent" | "failed" = "failed";
+      if (person.email && !person.email.endsWith("@users.invalid")) {
+        const result = await sendEmail({ to: [person.email], subject: mail.subject, text: mail.text, html: mail.html, teacherId: teacher.id });
+        emailId = result.id;
+        delivery = result.ok ? "sent" : "failed";
+        status = result.ok ? "sent" : "failed";
+      }
+      if (prior) {
+        await db.update(renewalNotices).set({
+          sentAt: status === "sent" ? now : null,
+          status,
+          emailId,
+          deliveryStatus: delivery,
+          subject: mail.subject,
+          body: mail.text,
+        }).where(eq(renewalNotices.id, prior.id));
+      } else {
         const inserted = await db.insert(renewalNotices).values({
           id: crypto.randomUUID(),
           userId: sub.userId,
@@ -481,43 +548,16 @@ export async function scheduleRenewalNotices(now = new Date()) {
           subscriptionId: sub.id,
           kind: decision.kind,
           eventOn,
-          status: "missed",
+          sentAt: status === "sent" ? now : null,
+          status,
+          emailId,
+          deliveryStatus: delivery,
           subject: mail.subject,
           body: mail.text,
-          detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`),
         }).onConflictDoNothing().returning();
-        if (inserted.length) {
-          missed += 1;
-          await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
-        }
-        continue;
+        if (!inserted.length) continue;
       }
-      let emailId: string | null = null;
-      let delivery = "skipped";
-      let status = "sent";
-      if (person.email && !person.email.endsWith("@users.invalid")) {
-        const result = await sendEmail({ to: [person.email], subject: mail.subject, text: mail.text, html: mail.html, teacherId: teacher.id });
-        emailId = result.id;
-        delivery = result.ok ? "sent" : "failed";
-        status = result.ok ? "sent" : "failed";
-      }
-      const inserted = await db.insert(renewalNotices).values({
-        id: crypto.randomUUID(),
-        userId: sub.userId,
-        membershipId: plan.id,
-        teacherId: teacher.id,
-        subscriptionId: sub.id,
-        kind: decision.kind,
-        eventOn,
-        sentAt: status === "sent" ? now : null,
-        status,
-        emailId,
-        deliveryStatus: delivery,
-        subject: mail.subject,
-        body: mail.text,
-      }).onConflictDoNothing().returning();
-      if (!inserted.length) continue;
-      sent += 1;
+      if (status === "sent") sent += 1;
       if (status === "sent" && decision.kind === "price_change" && price) {
         await db.update(membershipPriceChanges).set({ noticeSentAt: now }).where(eq(membershipPriceChanges.id, price.id));
         price.noticeSentAt = now;
@@ -526,7 +566,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
         await db.update(membershipMaterialChanges).set({ noticeSentAt: now }).where(eq(membershipMaterialChanges.id, material.id));
       }
       await rememberInApp(person.id, mail.subject, mail.text.slice(0, 240), `/account/memberships/${sub.id}/cancel`);
-      if (status === "failed") await alertOps(noticeAlert(decision.kind, `email failed for subscription ${sub.id}`));
+      if (status === "failed" && !prior) await alertOps(noticeAlert(decision.kind, `email failed for subscription ${sub.id}`));
     }
 
     const applicable = [...priceChanges].reverse().find((change) => change.membershipId === plan.id && change.effectiveAt <= sub.currentPeriodEnd);
@@ -535,7 +575,17 @@ export async function scheduleRenewalNotices(now = new Date()) {
       catalogPriceCents: plan.priceCents,
       change: applicable ? { newPriceCents: applicable.newPriceCents, effectiveAt: applicable.effectiveAt, noticeSentAt: applicable.noticeSentAt } : null,
       renewsAt: sub.currentPeriodEnd,
+      now,
     });
+    if (pauseReasons.length) {
+      const stripeId = sub.orderId ? ordersById.get(sub.orderId)?.stripeSubscriptionId ?? null : null;
+      await pauseUnnoticedRenewal(sub.id, stripeId);
+      await alertOps(`${pauseReasons.join(" ")} Subscription ${sub.id} is set to cancel at period end.`);
+      continue;
+    }
+    if (priceFallback) {
+      await alertOps(`The price-change notice for subscription ${sub.id} was not sent in its window. The renewal will be charged at the previous price.`);
+    }
     const locked = sub.renewalPriceCents > 0 ? sub.renewalPriceCents : plan.priceCents;
     if (!priced.blockedNewPrice && priced.priceCents !== locked && priced.priceCents > 0) {
       const stripeId = sub.orderId ? ordersById.get(sub.orderId)?.stripeSubscriptionId : null;
@@ -544,16 +594,32 @@ export async function scheduleRenewalNotices(now = new Date()) {
         try {
           const updated = await setSubscriptionRenewalAmount(stripeId, priced.priceCents);
           applied = updated.ok || updated.reason === "unconfigured";
-          if (!updated.ok && updated.reason !== "unconfigured") await alertOps(`Could not apply the noticed price for subscription ${sub.id}. The old price stays.`);
+          if (!updated.ok && updated.reason !== "unconfigured") await alertOps(`Could not apply the noticed price for subscription ${sub.id}. Check it before the renewal.`);
         } catch {
           applied = false;
-          await alertOps(`Could not apply the noticed price for subscription ${sub.id}. The old price stays.`);
+          await alertOps(`Could not apply the noticed price for subscription ${sub.id}. Check it before the renewal.`);
         }
       }
       if (applied) await db.update(membershipSubscriptions).set({ renewalPriceCents: priced.priceCents }).where(eq(membershipSubscriptions.id, sub.id));
     }
   }
   return { sent, missed };
+}
+
+export async function teacherMembershipRoster(teacherId: string) {
+  return db
+    .select({
+      id: membershipSubscriptions.id,
+      membershipId: membershipSubscriptions.membershipId,
+      name: user.name,
+      status: membershipSubscriptions.status,
+      cancelAtPeriodEnd: membershipSubscriptions.cancelAtPeriodEnd,
+      currentPeriodEnd: membershipSubscriptions.currentPeriodEnd,
+    })
+    .from(membershipSubscriptions)
+    .innerJoin(user, eq(user.id, membershipSubscriptions.userId))
+    .where(and(eq(membershipSubscriptions.teacherId, teacherId), ne(membershipSubscriptions.status, "cancelled")))
+    .orderBy(asc(user.name));
 }
 
 export async function listRenewalSubscriptions(limit = 50) {

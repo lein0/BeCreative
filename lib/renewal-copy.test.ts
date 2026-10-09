@@ -12,6 +12,10 @@ import {
   legalIdentity,
   membershipOffer,
   planNotices,
+  missedNoticeSkipsCharge,
+  missedRequiredNotice,
+  noticeAlert,
+  noticeMail,
   priceAfterNotice,
   priceChangeDateError,
   purchaseButtonLabel,
@@ -59,6 +63,8 @@ describe("checkout disclosure and consent", () => {
     expect(text).toContain("Account › Memberships › Cancel membership");
     expect(text).toContain("https://northwind.test/account/memberships");
     expect(text).toContain("No minimum commitment.");
+    expect(text).toContain("Price changes: we'll email you 7 to 30 days before any price change takes effect.");
+    expect(text).not.toContain("prorated");
     expect(text).toContain("Payments already made are not refunded");
     expect(text).not.toContain("full refund of the renewal charge");
     expect(view.checkbox.startsWith("I agree that my Monthly studio membership will automatically renew")).toBe(true);
@@ -119,6 +125,9 @@ describe("checkout disclosure and consent", () => {
     expect(mail.subject).toBe("Your Monthly studio membership is active: renewal details and how to cancel");
     expect(mail.text).toContain("Northwind · Northwind LLC · 1 Market, Los Angeles, CA · hello@northwind.test");
     expect(mail.text).toContain("Cancel membership: https://northwind.test/account/memberships/sub/cancel");
+    expect(mail.text).toContain("If the price ever changes, we'll email you 7 to 30 days before the new price takes effect, so you have time to cancel.");
+    expect(mail.text).not.toContain("prorated");
+    expect(mail.text).not.toContain("14 days");
     expect(mail.text).not.toContain("[PLATFORM NAME]");
     const pdf = textPdf(mail.subject, mail.text);
     expect(Buffer.from(pdf).subarray(0, 8).toString()).toBe("%PDF-1.4");
@@ -140,10 +149,14 @@ describe("notice scheduler windows", () => {
     introSent: false,
   };
 
-  it("sends a 12-month pre-renewal inside 15 to 45 days and misses it after that", () => {
-    const onTime = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 30 * 86_400_000) });
+  it("sends a 12-month pre-renewal at 35 days, inside 30 to 45, and misses it after that", () => {
+    const onTime = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 35 * 86_400_000) });
     expect(onTime.find((item) => item.kind === "pre_renewal")?.action).toBe("send");
     expect(onTime.some((item) => item.kind === "annual")).toBe(false);
+    const stillOnTime = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 30 * 86_400_000) });
+    expect(stillOnTime.find((item) => item.kind === "pre_renewal")?.action).toBe("send");
+    const insideMax = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 40 * 86_400_000) });
+    expect(insideMax.find((item) => item.kind === "pre_renewal")?.action).toBe("wait");
     const early = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 50 * 86_400_000) });
     expect(early.find((item) => item.kind === "pre_renewal")?.action).toBe("wait");
     const late = planNotices({ ...base, periodEnd: new Date(base.now.getTime() + 10 * 86_400_000) });
@@ -179,11 +192,37 @@ describe("notice scheduler windows", () => {
       introEndsAt: new Date(base.now.getTime() + 2 * 86_400_000),
     });
     expect(tooLate.find((item) => item.kind === "intro_ending")?.action).toBe("missed");
+    const discountedWait = planNotices({
+      ...base,
+      termMonths: 1,
+      introDays: 14,
+      introPriceCents: 2000,
+      introEndsAt: new Date(base.now.getTime() + 10 * 86_400_000),
+    });
+    expect(discountedWait.find((item) => item.kind === "intro_ending")?.action).toBe("wait");
+    const discountedSend = planNotices({
+      ...base,
+      termMonths: 1,
+      introDays: 14,
+      introPriceCents: 2000,
+      introEndsAt: new Date(base.now.getTime() + 7 * 86_400_000),
+    });
+    expect(discountedSend.find((item) => item.kind === "intro_ending")?.action).toBe("send");
   });
 
-  it("sends the annual reminder for monthly plans and the price notice only inside 7 to 30 days", () => {
-    const annual = planNotices({ ...base, termMonths: 1, startedAt: noon("2025-06-01"), now: noon("2026-06-02") });
+  it("sends the annual reminder 35 days before the renewal that crosses a year", () => {
+    const periodEnd = noon("2026-06-01");
+    const annual = planNotices({ ...base, termMonths: 1, startedAt: noon("2025-06-01"), periodEnd, now: new Date(periodEnd.getTime() - 35 * 86_400_000) });
     expect(annual.find((item) => item.kind === "annual")?.action).toBe("send");
+    const early = planNotices({ ...base, termMonths: 1, startedAt: noon("2025-06-01"), periodEnd, now: new Date(periodEnd.getTime() - 50 * 86_400_000) });
+    expect(early.find((item) => item.kind === "annual")?.action).toBe("wait");
+    const late = planNotices({ ...base, termMonths: 1, startedAt: noon("2025-06-01"), periodEnd, now: new Date(periodEnd.getTime() - 20 * 86_400_000) });
+    expect(late.find((item) => item.kind === "annual")?.action).toBe("missed");
+    const notThisRenewal = planNotices({ ...base, termMonths: 1, startedAt: noon("2025-06-01"), periodEnd: noon("2026-07-01"), now: noon("2026-06-02") });
+    expect(notThisRenewal.some((item) => item.kind === "annual")).toBe(false);
+    const yearly = planNotices({ ...base, termMonths: 12, periodEnd: noon("2026-06-01"), now: new Date(noon("2026-06-01").getTime() - 35 * 86_400_000) });
+    expect(yearly.some((item) => item.kind === "annual")).toBe(false);
+    expect(yearly.find((item) => item.kind === "pre_renewal")?.action).toBe("send");
     const price = planNotices({
       ...base,
       termMonths: 1,
@@ -198,7 +237,7 @@ describe("notice scheduler windows", () => {
     expect(missedPrice.find((item) => item.kind === "price_change")?.action).toBe("missed");
   });
 
-  it("keeps the old price when the notice was not delivered in the window", () => {
+  it("charges the old price when the price notice missed its window", () => {
     const renewsAt = noon("2026-08-01");
     const effectiveAt = noon("2026-08-01");
     expect(priceAfterNotice({
@@ -206,25 +245,75 @@ describe("notice scheduler windows", () => {
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-11") },
       renewsAt,
-    })).toEqual({ priceCents: 14000, blockedNewPrice: false });
+    })).toEqual({ priceCents: 14000, blockedNewPrice: false, chargeRenewal: true });
     expect(priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-28") },
       renewsAt,
-    })).toEqual({ priceCents: 12000, blockedNewPrice: true });
+      now: noon("2026-07-28"),
+    })).toEqual({ priceCents: 12000, blockedNewPrice: true, chargeRenewal: true });
     expect(priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: null },
       renewsAt,
-    })).toEqual({ priceCents: 12000, blockedNewPrice: true });
+      now: noon("2026-07-28"),
+    })).toEqual({ priceCents: 12000, blockedNewPrice: true, chargeRenewal: true });
     expect(priceAfterNotice({
+      lockedPriceCents: 12000,
+      catalogPriceCents: 14000,
+      change: { newPriceCents: 14000, effectiveAt, noticeSentAt: null },
+      renewsAt,
+      now: noon("2026-07-01"),
+    }).chargeRenewal).toBe(true);
+    const before = priceAfterNotice({
       lockedPriceCents: 12000,
       catalogPriceCents: 14000,
       change: { newPriceCents: 14000, effectiveAt, noticeSentAt: noon("2026-07-11") },
       renewsAt: noon("2026-07-15"),
-    }).priceCents).toBe(12000);
+    });
+    expect(before.priceCents).toBe(12000);
+    expect(before.chargeRenewal).toBe(true);
+    expect(missedRequiredNotice("pre_renewal")).toBe(true);
+    expect(missedRequiredNotice("intro_ending")).toBe(true);
+    expect(missedRequiredNotice("material_change")).toBe(true);
+    expect(missedRequiredNotice("annual")).toBe(true);
+    expect(missedRequiredNotice("price_change")).toBe(true);
+    expect(missedNoticeSkipsCharge("annual")).toBe(true);
+    expect(missedNoticeSkipsCharge("pre_renewal")).toBe(true);
+    expect(missedNoticeSkipsCharge("intro_ending")).toBe(true);
+    expect(missedNoticeSkipsCharge("material_change")).toBe(true);
+    expect(missedNoticeSkipsCharge("price_change")).toBe(false);
+    expect(noticeAlert("pre_renewal", "subscription sub", true)).toContain("will not be charged");
+    expect(noticeAlert("price_change", "subscription sub")).not.toContain("will not be charged");
+  });
+
+  it("shows a cancel-by date and the full terms on every notice", () => {
+    const kinds = ["pre_renewal", "intro_ending", "price_change", "material_change", "annual"] as const;
+    for (const kind of kinds) {
+      const mail = noticeMail({
+        kind,
+        firstName: "Jules",
+        membershipName: "Monthly studio",
+        teacherName: "Maya Alvarez Studio",
+        benefits: "4 classes per period",
+        termMonths: kind === "pre_renewal" ? 12 : 1,
+        renewalPriceCents: 12000,
+        oldPriceCents: 12000,
+        newPriceCents: 14000,
+        cardBrand: "visa",
+        last4: "4242",
+        eventAt: noon("2026-11-09"),
+        nextRenewal: noon("2026-11-09"),
+        startedAt: noon("2026-10-09"),
+        cancelUrl: "https://northwind.test/account/memberships/sub/cancel",
+        changeSummary: "Fewer classes each month",
+        priceStays: true,
+      }, BUILTIN_TEMPLATES, legal);
+      expect(mail.text.toLowerCase()).toContain("cancel by");
+      expect(mail.text).toContain("https://northwind.test/account/memberships/sub/terms");
+    }
   });
 
   it("blocks teacher price dates under 14 days and any date under 8 days", () => {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 import { Suspense } from "react";
 import { CookieNotice } from "@/components/cookie-notice";
+import { LocalTime } from "@/components/local-time";
 import { FeedbackLaunchButton } from "@/components/feedback-widget";
 import { FeedbackSlot } from "@/components/feedback-slot";
 import { getActor } from "@/lib/actor";
@@ -30,6 +31,7 @@ export function SiteFrame({ children, brand = BECREATIVE }: { children: React.Re
         </nav>
       </footer>
       <CookieNotice />
+      <LocalTime />
       <FeedbackSlot />
     </>
   );

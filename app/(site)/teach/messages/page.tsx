@@ -19,7 +19,7 @@ async function Body() {
   return (
     <div>
       <h1 className="display text-5xl">Messages</h1>
-      <p className="mt-2 text-sm text-ink/70">Email goes through the provider interface. Locally that is the console outbox.</p>
+      <p className="mt-2 text-sm text-ink/70">Email goes through the provider interface. Locally that is the console outbox. Studio texts are transactional only: class reminders, same-day cancellations, and waitlist spots. Marketing texts are not sent.</p>
       <div className="mt-4 space-y-2">
         {rows.map((row) => (
           <Panel key={row.id}>

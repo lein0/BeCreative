@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
+import { marketingCookiesAllowed } from "@/lib/privacy-server";
 import { decideBooking, decideSeriesBooking } from "@/lib/booking-rules";
 import { db } from "@/lib/db";
 import {
@@ -85,7 +86,7 @@ async function attribution() {
   let code = "";
   try {
     const jar = await cookies();
-    raw = jar.get("bc_attr")?.value;
+    raw = (await marketingCookiesAllowed()) ? jar.get("bc_attr")?.value : undefined;
     code = jar.get("bc_code")?.value ?? "";
   } catch {
     raw = undefined;

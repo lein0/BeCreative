@@ -57,6 +57,13 @@
       "when": 1791560000000,
       "tag": "0007_membership_autorenewal",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791650000000,
+      "tag": "0008_recipient_timezone",
+      "breakpoints": true
     }
   ]
 }

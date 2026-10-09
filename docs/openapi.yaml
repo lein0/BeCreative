@@ -542,6 +542,7 @@ paths:
       description: |
         Recurring memberships require consent true and disclosureVersion from GET /memberships/{id}/disclosure.
         The server rejects a Stripe subscription unless that version matches the disclosure it would show.
+        A 12-month pre-renewal notice and the annual reminder go out 35 days before renewal, inside a 30 to 45 day window. Every notice includes a cancel-by date and a link to the full terms. If a pre-renewal, intro-ending, material-change, or annual notice is not sent inside its window, that renewal is not charged. The subscription is set to cancel at period end and operations is alerted. If a price-change notice is missed, the renewal is still charged at the previous price.
         A successful recurring purchase returns a Stripe Checkout Session URL (checkoutUrl), plus listPriceCents, discountCents, studentPaysCents, and codeApplied.
         Open checkoutUrl in an in-app browser. On ios and android the session returns through /mobile/return into becreative://bookings.
         PaymentSheet is not used, because the plan renews.
