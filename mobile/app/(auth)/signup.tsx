@@ -4,7 +4,7 @@ import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import { Body, Button, Display, Field, Notice } from "@mobile/components/ui";
-import { postLoginPath } from "../../../lib/mobile-client";
+import { authNeedsVerification, postLoginPath } from "../../../lib/mobile-client";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -23,6 +23,10 @@ export default function Signup() {
     try {
       await track("signup_started", {});
       const session = await api.signUp({ name, email, password });
+      if (authNeedsVerification(session)) {
+        router.replace({ pathname: "/verify-email", params: { email } });
+        return;
+      }
       await acceptSession(session);
       router.replace(destination as "/explore");
     } catch (err) {

@@ -3,6 +3,15 @@ import { offerCoversClass } from "@/lib/pricing";
 /** Stripe PaymentSheet return. Must not be a bookings deep link, or 3DS unmounts checkout. */
 export const PAYMENT_SHEET_RETURN_URL = "becreative://stripe-return";
 
+export function systemPathForIncomingUrl(path: string) {
+  if (path.includes("stripe-return")) return null;
+  return path;
+}
+
+export function authNeedsVerification(result: { token?: string | null; verificationRequired?: boolean }) {
+  return Boolean(result.verificationRequired) || !result.token;
+}
+
 export function paymentSheetForPlatform(platform: string | undefined, requested: boolean | undefined) {
   if ((platform ?? "web") === "web") return false;
   return requested !== false;

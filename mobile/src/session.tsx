@@ -96,6 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [api]);
 
   const acceptSession = useCallback(async (session: AuthResult) => {
+    if (!session.token) return;
     tokenRef.current = session.token;
     userRef.current = session.user;
     setUser(session.user);
