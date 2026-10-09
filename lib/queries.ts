@@ -23,6 +23,7 @@ import {
   reviews,
   services,
   sessions,
+  studioCredits,
   teachers,
   user,
   userRoles,
@@ -354,9 +355,10 @@ export async function recordClick(input: { teacherId: string; targetType: string
 }
 
 export async function walletForClass(userId: string, teacherId: string) {
-  const [ownedPacks, subs] = await Promise.all([
+  const [ownedPacks, subs, creditRows] = await Promise.all([
     db.select({ purchase: packPurchases, pack: packs }).from(packPurchases).innerJoin(packs, eq(packs.id, packPurchases.packId)).where(and(eq(packPurchases.userId, userId), eq(packPurchases.teacherId, teacherId))),
     db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(and(eq(membershipSubscriptions.userId, userId), eq(membershipSubscriptions.teacherId, teacherId), eq(membershipSubscriptions.status, "active"))),
+    db.select().from(studioCredits).where(and(eq(studioCredits.userId, userId), eq(studioCredits.teacherId, teacherId))).limit(1),
   ]);
-  return { ownedPacks, subs };
+  return { ownedPacks, subs, studioCreditCents: creditRows[0]?.balanceCents ?? 0 };
 }

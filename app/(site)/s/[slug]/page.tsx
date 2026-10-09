@@ -68,6 +68,7 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
             covers: offerCoversClass({ classIds: item.plan.classIds, categoryIds: item.plan.categoryIds }, detail.service.id, detail.service.categoryId),
           }).ok)
           .map((item) => ({ id: `membership:${item.sub.id}`, label: item.sub.unlimited ? `${item.plan.name} · unlimited` : `${item.plan.name} · ${item.sub.classesUsedThisPeriod} used` })),
+        ...(wallet.studioCreditCents > 0 ? [{ id: "credit", label: `Studio credit · ${money(wallet.studioCreditCents)}` }] : []),
       ]
     : [];
   const error = one(sp.error);

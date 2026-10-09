@@ -7,6 +7,7 @@ import {
   credentials,
   creditLedger,
   locations,
+  studioCredits,
   memberships,
   membershipSubscriptions,
   orders,
@@ -30,12 +31,14 @@ import {
   normalizeCodes,
   offerCoversClass,
   quotePrice,
+  quoteWithStudioCredit,
   validatePromo,
   type PromoRule,
 } from "@/lib/pricing";
-import { collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
+import { checkoutMustReleaseSeat, collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
 import { studioCanSell } from "@/lib/review-rules";
-import { releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { abandonFailedCheckout, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { applyStudioCredit, studioCreditLedgerSource } from "@/lib/refund-math";
 import { createCheckout, stripeConfigured } from "@/lib/stripe";
 import {
   appointmentConflicts,
@@ -286,8 +289,23 @@ export async function bookVisit(input: {
         membershipSubscriptionId = sub.id;
       }
 
+      let studioCreditCents = 0;
+      if (payWith === "credit" && listPrice > 0) {
+        const [credit] = await tx.select().from(studioCredits).where(and(eq(studioCredits.userId, input.userId), eq(studioCredits.teacherId, teacher.id))).limit(1);
+        const spend = applyStudioCredit({ balanceCents: credit?.balanceCents ?? 0, priceCents: listPrice });
+        if (spend.appliedCents <= 0 || !credit) throw new Error("You don't have studio credit with this teacher.");
+        const spent = await tx
+          .update(studioCredits)
+          .set({ balanceCents: sql`${studioCredits.balanceCents} - ${spend.appliedCents}` })
+          .where(and(eq(studioCredits.id, credit.id), sql`${studioCredits.balanceCents} >= ${spend.appliedCents}`))
+          .returning();
+        if (!spent.length) throw new Error("You don't have enough studio credit for this class.");
+        studioCreditCents = spend.appliedCents;
+      }
+
       let promoRow: typeof promoCodes.$inferSelect | null = null;
-      if (normalized.code && !entitlement && listPrice > 0) {
+      const promoBase = Math.max(0, listPrice - studioCreditCents);
+      if (normalized.code && !entitlement && promoBase > 0) {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, normalized.code)).limit(1);
         if (!found) throw new Error("That code is not recognized.");
         const [totals] = await tx.select({ count: sql<number>`count(*)::int` }).from(promoRedemptions).where(and(eq(promoRedemptions.promoCodeId, found.id), eq(promoRedemptions.reversed, false)));
@@ -296,7 +314,7 @@ export async function bookVisit(input: {
         const verdict = validatePromo({
           promo: toRule(found),
           now: new Date(),
-          listPriceCents: listPrice,
+          listPriceCents: promoBase,
           totalRedemptions: Number(totals?.count ?? 0),
           customerRedemptions: Number(mine?.count ?? 0),
           isFirstTimeStudent: Number(prior?.count ?? 0) === 0,
@@ -305,13 +323,21 @@ export async function bookVisit(input: {
         if (!verdict.ok) throw new Error(verdict.reason);
         promoRow = found;
       }
-      const quote = quotePrice({
-        listPriceCents: listPrice,
-        feePercent: fee.feePercent,
-        feeFixedCents: fee.feeFixedCents,
-        promo: promoRow ? toRule(promoRow) : null,
-        entitlement,
-      });
+      const quote = studioCreditCents > 0
+        ? quoteWithStudioCredit({
+            listPriceCents: listPrice,
+            appliedCents: studioCreditCents,
+            feePercent: fee.feePercent,
+            feeFixedCents: fee.feeFixedCents,
+            promo: promoRow ? toRule(promoRow) : null,
+          })
+        : quotePrice({
+            listPriceCents: listPrice,
+            feePercent: fee.feePercent,
+            feeFixedCents: fee.feeFixedCents,
+            promo: promoRow ? toRule(promoRow) : null,
+            entitlement,
+          });
       const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
       const money = orderMoney(quote, online);
       const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
@@ -344,7 +370,7 @@ export async function bookVisit(input: {
           promoCodeId: promoRow.id,
           userId: input.userId,
           orderId,
-          discountCents: quote.discountCents,
+          discountCents: Math.max(0, quote.discountCents - studioCreditCents),
           platformFundedCents: quote.platformFundedCents,
           teacherFundedCents: quote.teacherFundedCents,
         });
@@ -354,6 +380,16 @@ export async function bookVisit(input: {
       }
       if (membershipSubscriptionId) {
         await tx.insert(creditLedger).values({ id: crypto.randomUUID(), userId: input.userId, teacherId: teacher.id, sourceType: "membership", sourceId: membershipSubscriptionId, direction: "consume" });
+      }
+      if (studioCreditCents > 0) {
+        await tx.insert(creditLedger).values({
+          id: crypto.randomUUID(),
+          userId: input.userId,
+          teacherId: teacher.id,
+          sourceType: "studio_credit",
+          sourceId: studioCreditLedgerSource(orderId, studioCreditCents),
+          direction: "consume",
+        });
       }
       const [signature] = waiver
         ? await tx.select().from(waiverSignatures).where(and(eq(waiverSignatures.teacherId, teacher.id), eq(waiverSignatures.userId, input.userId), eq(waiverSignatures.version, waiver.version))).limit(1)
@@ -397,21 +433,29 @@ export async function bookVisit(input: {
       const { cardPaymentsReady, statementDescriptor } = await import("@/lib/connect-rules");
       const { SHIP_DEFAULTS } = await import("@/lib/ship-defaults");
       const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
-      if (!ready.ok) return { error: ready.reason };
-      const session = await createCheckout({
-        name: created.title,
-        amountCents: created.quote.studentPaysCents,
-        applicationFeeCents: created.quote.platformFeeCents,
-        destinationAccountId: teacher.stripeAccountId,
-        customerEmail: input.email,
-        successPath: "/bookings?reserved=1",
-        cancelPath: `/s/${service.slug}?cancelled=1`,
-        metadata: { type: "order", orderId: created.orderId, userId: input.userId },
-        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-      });
-      if (session?.url) {
-        await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
-        return { checkoutUrl: session.url, orderId: created.orderId };
+      if (!ready.ok && checkoutMustReleaseSeat({ paymentsReady: ready.ok, orderPending: true })) {
+        await abandonFailedCheckout(created.orderId);
+        return { error: ready.reason };
+      }
+      try {
+        const session = await createCheckout({
+          name: created.title,
+          amountCents: created.quote.studentPaysCents,
+          applicationFeeCents: created.quote.platformFeeCents,
+          destinationAccountId: teacher.stripeAccountId,
+          customerEmail: input.email,
+          successPath: "/bookings?reserved=1",
+          cancelPath: `/s/${service.slug}?cancelled=1`,
+          metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+          statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        });
+        if (session?.url) {
+          await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
+          return { checkoutUrl: session.url, orderId: created.orderId };
+        }
+      } catch (error) {
+        await abandonFailedCheckout(created.orderId);
+        return { error: error instanceof Error ? error.message : "Could not book." };
       }
       const offline = orderMoney(created.quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));

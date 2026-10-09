@@ -126,6 +126,34 @@ export function quotePrice(input: {
   };
 }
 
+/** Fees stay on the cash remainder. Credit that covers the price does not charge the student again. */
+export function quoteWithStudioCredit(input: {
+  listPriceCents: number;
+  appliedCents: number;
+  feePercent: number;
+  feeFixedCents: number;
+  promo?: PromoRule | null;
+  promoError?: string | null;
+}): PriceQuote {
+  const list = Math.max(0, input.listPriceCents);
+  const applied = Math.max(0, Math.min(input.appliedCents, list));
+  const remainder = list - applied;
+  const cash = quotePrice({
+    listPriceCents: remainder,
+    feePercent: input.feePercent,
+    feeFixedCents: input.feeFixedCents,
+    promo: remainder > 0 ? input.promo : null,
+    promoError: remainder > 0 ? input.promoError : null,
+  });
+  if (applied <= 0) return { ...cash, listPriceCents: list };
+  return {
+    ...cash,
+    listPriceCents: list,
+    discountCents: applied + cash.discountCents,
+    paymentPath: remainder === 0 ? "free" : cash.paymentPath,
+  };
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }

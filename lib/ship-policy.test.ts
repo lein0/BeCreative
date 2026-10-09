@@ -85,7 +85,7 @@ describe("notification preferences", () => {
   });
 
   it("builds an unsubscribe link", () => {
-    expect(unsubscribeUrl("https://classes.example/", "tok")).toBe("https://classes.example/unsubscribe?token=tok");
+    expect(unsubscribeUrl("https://classes.example/", "tok")).toBe("https://classes.example/unsubscribe/tok");
   });
 });
 

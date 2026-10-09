@@ -41,5 +41,20 @@ export function smsAllowedNow(localMinutes: number, start = SHIP_DEFAULTS.quietH
 }
 
 export function unsubscribeUrl(origin: string, token: string) {
-  return `${origin.replace(/\/$/, "")}/unsubscribe?token=${encodeURIComponent(token)}`;
+  return `${origin.replace(/\/$/, "")}/unsubscribe/${encodeURIComponent(token)}`;
+}
+
+/** Other channels can be marked sent while a quiet-hours text is still waiting. */
+export function outboxStatusAfterDelivery(smsDeferred: boolean) {
+  return smsDeferred ? "sms_pending" : "sent";
+}
+
+export function deferredSmsStillPending(status: string) {
+  return status === "sms_pending";
+}
+
+/** Event saves must not write the credit preference. Only the credit form does. */
+export function creditOptInFromForm(input: { saveCredit: boolean; checked: boolean }) {
+  if (!input.saveCredit) return null;
+  return input.checked;
 }

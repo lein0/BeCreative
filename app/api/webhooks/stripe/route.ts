@@ -1,8 +1,10 @@
 import { eq } from "drizzle-orm";
+import type Stripe from "stripe";
 import { fulfillPaidCheckout, refundOrderByPaymentIntent } from "@/lib/booking-service";
 import { db } from "@/lib/db";
 import { stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
+import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
 export async function POST(request: Request) {
   const stripe = getStripe();
@@ -13,6 +15,19 @@ export async function POST(request: Request) {
   const event = stripe.webhooks.constructEvent(await request.text(), signature, secret);
   const claimed = await db.insert(stripeEvents).values({ id: event.id, type: event.type }).onConflictDoNothing().returning();
   if (!claimed.length) return new Response("ok");
+  try {
+    await dispatchStripeEvent(event);
+  } catch (error) {
+    if (webhookClaimShouldRelease({ claimed: claimed.length > 0, failed: true })) {
+      await db.delete(stripeEvents).where(eq(stripeEvents.id, event.id));
+    }
+    console.error("Stripe webhook failed", event.id, error instanceof Error ? error.message : error);
+    return new Response("Webhook handler failed", { status: 500 });
+  }
+  return new Response("ok");
+}
+
+async function dispatchStripeEvent(event: Stripe.Event) {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
@@ -21,8 +36,9 @@ export async function POST(request: Request) {
     if (orderId) await fulfillPaidCheckout(orderId, paymentIntent ?? null, subscription ?? null);
   }
   if (event.type === "charge.refunded") {
-    const intent = typeof event.data.object.payment_intent === "string" ? event.data.object.payment_intent : event.data.object.payment_intent?.id;
-    if (intent) await refundOrderByPaymentIntent(intent);
+    const charge = event.data.object;
+    const intent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id;
+    if (intent && chargeRefundReleasesSeats(charge.refunded)) await refundOrderByPaymentIntent(intent);
   }
   if (event.type === "account.updated") {
     const account = event.data.object;
@@ -35,5 +51,4 @@ export async function POST(request: Request) {
       updatedAt: new Date(),
     }).where(eq(teachers.stripeAccountId, account.id));
   }
-  return new Response("ok");
 }

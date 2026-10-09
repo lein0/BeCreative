@@ -8,6 +8,7 @@ import {
   classes,
   creditLedger,
   introRedemptions,
+  studioCredits,
   memberships,
   membershipSubscriptions,
   orders,
@@ -32,11 +33,13 @@ import {
   checkoutPromoCode,
   offerCoversClass,
   quotePrice,
+  quoteWithStudioCredit,
   shouldRestoreEntitlement,
   validatePromo,
   type PromoRule,
 } from "@/lib/pricing";
 import {
+  checkoutMustReleaseSeat,
   collectsOnline,
   duplicateSeriesBooking,
   membershipStatusOnAbandon,
@@ -49,12 +52,14 @@ import {
   refundCancelsBooking,
   sessionLockOrder,
 } from "@/lib/checkout-rules";
-import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
+import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
+import { applyStudioCredit, parseStudioCreditLedgerSource, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { grantStudioCredit, issueRefund } from "@/lib/refunds";
+import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
 import { notifyOfferPurchased, notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
@@ -305,9 +310,24 @@ export async function bookSession(input: {
         if (payWith === "first_free" && !firstFree) throw new Error("The intro offer isn't available on this class.");
       }
 
+      let studioCreditCents = 0;
+      if (payWith === "credit" && listPrice > 0) {
+        const [credit] = await tx.select().from(studioCredits).where(and(eq(studioCredits.userId, input.userId), eq(studioCredits.teacherId, teacher.id))).limit(1);
+        const spend = applyStudioCredit({ balanceCents: credit?.balanceCents ?? 0, priceCents: listPrice });
+        if (spend.appliedCents <= 0 || !credit) throw new Error("You don't have studio credit with this teacher.");
+        const spent = await tx
+          .update(studioCredits)
+          .set({ balanceCents: sql`${studioCredits.balanceCents} - ${spend.appliedCents}` })
+          .where(and(eq(studioCredits.id, credit.id), sql`${studioCredits.balanceCents} >= ${spend.appliedCents}`))
+          .returning();
+        if (!spent.length) throw new Error("You don't have enough studio credit for this class.");
+        studioCreditCents = spend.appliedCents;
+      }
+
       let promoRow: typeof promoCodes.$inferSelect | null = null;
       let promoError: string | null = null;
-      if (codeInput.code && !entitlement && !firstFree && listPrice > 0) {
+      const promoBase = Math.max(0, listPrice - studioCreditCents);
+      if (codeInput.code && !entitlement && !firstFree && promoBase > 0) {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, codeInput.code)).limit(1);
         if (!found) promoError = "That code isn't recognized.";
         else {
@@ -322,7 +342,7 @@ export async function bookSession(input: {
           const verdict = validatePromo({
             promo: toRule(found),
             now,
-            listPriceCents: listPrice,
+            listPriceCents: promoBase,
             totalRedemptions: Number(totals?.count ?? 0),
             customerRedemptions: Number(mine?.count ?? 0),
             isFirstTimeStudent: !(await priorWithTeacher(input.userId, teacher.id)),
@@ -333,7 +353,7 @@ export async function bookSession(input: {
         }
       }
 
-      const quote = quotePrice({
+      const quoteInput = {
         listPriceCents: listPrice,
         feePercent: fee.feePercent,
         feeFixedCents: fee.feeFixedCents,
@@ -341,7 +361,8 @@ export async function bookSession(input: {
         promoError,
         entitlement,
         firstClassFree: firstFree,
-      });
+      };
+      const quote = studioCreditCents > 0 ? quoteWithStudioCredit({ ...quoteInput, appliedCents: studioCreditCents }) : quotePrice(quoteInput);
       if (promoError && codeInput.code) throw new Error(promoError);
 
       const orderId = crypto.randomUUID();
@@ -390,7 +411,7 @@ export async function bookSession(input: {
           promoCodeId: promoRow.id,
           userId: input.userId,
           orderId,
-          discountCents: quote.discountCents,
+          discountCents: Math.max(0, quote.discountCents - studioCreditCents),
           platformFundedCents: quote.platformFundedCents,
           teacherFundedCents: quote.teacherFundedCents,
         });
@@ -403,6 +424,17 @@ export async function bookSession(input: {
       }
       if (membershipSubscriptionId) {
         await tx.insert(creditLedger).values({ id: crypto.randomUUID(), userId: input.userId, teacherId: teacher.id, bookingId, sourceType: "membership", sourceId: membershipSubscriptionId, direction: "consume" });
+      }
+      if (studioCreditCents > 0) {
+        await tx.insert(creditLedger).values({
+          id: crypto.randomUUID(),
+          userId: input.userId,
+          teacherId: teacher.id,
+          bookingId,
+          sourceType: "studio_credit",
+          sourceId: studioCreditLedgerSource(orderId, studioCreditCents),
+          direction: "consume",
+        });
       }
       return { waitlisted: false as const, alreadyBooked: false as const, orderId, bookingId, quote, status, klass, teacher, sessionCount: targetSessions.length };
     });
@@ -434,7 +466,7 @@ export async function bookSession(input: {
       });
     }
     const ready = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(created.teacher.stripeChargesEnabled) });
-    if (created.status === "pending" && !ready.ok) {
+    if (!ready.ok && checkoutMustReleaseSeat({ paymentsReady: ready.ok, orderPending: created.status === "pending" })) {
       await abandonFailedCheckout(created.orderId);
       return { error: ready.reason };
     }
@@ -480,6 +512,9 @@ export async function abandonFailedCheckout(orderId: string) {
   const now = new Date();
   const held = await db.select().from(bookings).where(and(eq(bookings.orderId, orderId), eq(bookings.status, "confirmed")));
   for (const booking of held) await releaseBookingSeat(booking, now);
+  const visits = await db.select().from(visitBookings).where(and(eq(visitBookings.orderId, orderId), eq(visitBookings.status, "confirmed")));
+  for (const visit of visits) await releaseVisitSeat(visit, now);
+  await restoreStudioCreditForOrder(orderId, { scope: "abandon", sessionCount: 1, cancelledCount: 1, closeRemainder: true });
   await db.update(orders).set({ status: "cancelled", updatedAt: now }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
   await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, orderId));
 }
@@ -509,6 +544,60 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
     }
   }
   if (restore) await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+}
+
+export async function restoreStudioCreditForOrder(orderId: string, input: { scope: string; sessionCount: number; cancelledCount: number; closeRemainder: boolean }) {
+  const spends = await db
+    .select()
+    .from(creditLedger)
+    .where(and(eq(creditLedger.sourceType, "studio_credit"), eq(creditLedger.direction, "consume"), sql`${creditLedger.sourceId} like ${`order:${orderId}:%`}`));
+  let applied = 0;
+  let userId: string | null = null;
+  let teacherId: string | null = null;
+  let bookingId: string | null = null;
+  for (const spend of spends) {
+    const parsed = parseStudioCreditLedgerSource(spend.sourceId);
+    if (!parsed || parsed.orderId !== orderId) continue;
+    applied += parsed.appliedCents;
+    userId = spend.userId;
+    teacherId = spend.teacherId;
+    bookingId = spend.bookingId;
+  }
+  if (!userId || !teacherId || applied <= 0) return 0;
+  const restores = await db
+    .select()
+    .from(creditLedger)
+    .where(and(eq(creditLedger.sourceType, "studio_credit"), eq(creditLedger.direction, "restore"), sql`${creditLedger.sourceId} like ${`%${orderId}%`}`));
+  let already = 0;
+  for (const row of restores) {
+    if (row.sourceId.endsWith(`:${input.scope}`)) return 0;
+    const current = parseStudioCreditLedgerSource(row.sourceId);
+    if (current?.orderId === orderId) {
+      already += current.appliedCents;
+      continue;
+    }
+    const share = new RegExp(`^restore:${orderId}:(\\d+):`).exec(row.sourceId);
+    if (share) already += Number(share[1]);
+  }
+  const give = studioCreditRestoreCents({
+    appliedCents: applied,
+    alreadyRestoredCents: already,
+    sessionCount: input.sessionCount,
+    cancelledCount: input.cancelledCount,
+    closeRemainder: input.closeRemainder,
+  });
+  if (give <= 0) return 0;
+  await grantStudioCredit(userId, teacherId, give);
+  await db.insert(creditLedger).values({
+    id: crypto.randomUUID(),
+    userId,
+    teacherId,
+    bookingId,
+    sourceType: "studio_credit",
+    sourceId: `restore:${orderId}:${give}:${input.scope}`,
+    direction: "restore",
+  });
+  return give;
 }
 
 export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect, now: Date) {
@@ -557,6 +646,9 @@ export async function cancelBooking(userId: string, bookingId: string) {
   const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
   const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
   await releaseBookingSeat(booking, now);
+  if (booking.orderId && (outcome === "full_refund" || outcome === "credit")) {
+    await restoreStudioCreditForOrder(booking.orderId, { scope: `student-${booking.id}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true });
+  }
   if (booking.orderId && outcome === "full_refund") {
     await issueRefund({ orderId: booking.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: booking.id });
   } else if (booking.orderId && outcome === "credit" && klass) {
@@ -612,8 +704,8 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       const [teacher] = await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1);
       if (teacher) await notifyOfferPurchased({ teacherUserId: teacher.userId, title: order.kind, href: "/teach/billing" });
     }
-    if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
-    const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
+  if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
+    const [person] = await db.select({ email: user.email, name: user.name }).from(user).where(eq(user.id, order.userId)).limit(1);
     const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
     const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
     if (person?.email && klass) {
@@ -624,10 +716,16 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
         teacherId: order.teacherId ?? undefined,
       });
     }
+    if (paidCheckoutEmitsBookingNotifications(order.kind) && klass) {
+      const [teacher] = order.teacherId ? await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1) : [];
+      if (teacher) await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: person?.name || "A student", title: klass.title, href: "/teach" });
+      await notifyStudentConfirmed({ userId: order.userId, title: klass.title, href: `/c/${klass.slug}` });
+    }
   }
 }
 
-export async function refundOrderByPaymentIntent(intent: string) {
+export async function refundOrderByPaymentIntent(intent: string, fullyRefunded = true) {
+  if (!chargeRefundReleasesSeats(fullyRefunded)) return;
   const now = new Date();
   const updated = await db
     .update(orders)

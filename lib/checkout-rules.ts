@@ -104,3 +104,17 @@ export function studioOwnsResource(resourceTeacherId: string | null | undefined,
 export function refundCancelsBooking(status: string) {
   return status === "confirmed";
 }
+
+export function sessionBelongsToClass(sessionClassId: string | null | undefined, classId: string) {
+  return Boolean(classId) && sessionClassId === classId;
+}
+
+/** A second cancel of a date that is already cancelled must not grant credit or pack credits again. */
+export function sessionCancelAlreadyApplied(status: string) {
+  return status === "cancelled";
+}
+
+/** A pending card checkout that cannot charge has to drop the seat and the order. */
+export function checkoutMustReleaseSeat(input: { paymentsReady: boolean; orderPending: boolean }) {
+  return input.orderPending && !input.paymentsReady;
+}
