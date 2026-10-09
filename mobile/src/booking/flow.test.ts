@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { quotePrice } from "../../../lib/pricing";
 import { DEMO_PROMO } from "../api/fixtures";
 import {
+  bookDisplayCents,
   calendarEvent,
   canReschedule,
   cancelDecision,
   googleCalendarLink,
   helpActions,
   needsPaymentSheet,
+  packsForClass,
   priceBooking,
   rescheduleTargetSlot,
   selectionListPrice,
@@ -148,5 +150,17 @@ describe("booking flow", () => {
     const actions = helpActions({ now, startsAt: session(48).startsAt, status: "confirmed", kind: "session" });
     expect(actions.find((item) => item.id === "cancel")?.enabled).toBe(true);
     expect(actions.find((item) => item.id === "safety")?.enabled).toBe(true);
+  });
+
+  it("shows the series price for a series and only packs that cover the class", () => {
+    expect(bookDisplayCents({ series: false, sessionPriceCents: 3600, seriesPriceCents: 24000 })).toBe(3600);
+    expect(bookDisplayCents({ series: true, sessionPriceCents: 3600, seriesPriceCents: 24000 })).toBe(24000);
+    const packs = [
+      { id: "scene", name: "Scene", remaining: 4, total: 5, classIds: ["class-scene"], categoryIds: [], teacherId: "maya" },
+      { id: "yoga", name: "Yoga", remaining: 2, total: 4, classIds: ["class-flow"], categoryIds: [], teacherId: "lena" },
+      { id: "empty", name: "Spent", remaining: 0, total: 5, classIds: ["class-scene"], categoryIds: [], teacherId: "maya" },
+    ];
+    expect(packsForClass(packs, "class-scene", "acting", "maya").map((pack) => pack.id)).toEqual(["scene"]);
+    expect(packsForClass(packs, "class-flow", "yoga", "lena").map((pack) => pack.id)).toEqual(["yoga"]);
   });
 });

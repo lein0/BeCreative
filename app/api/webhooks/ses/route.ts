@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { user } from "@/lib/db/schema";
 import { normalizeEmail } from "@/lib/email";
 import { hitRateLimit } from "@/lib/rate-limit";
+import { snsSubscribeUrlAllowed } from "@/lib/sns-url";
 
 type BounceNotice = {
   notificationType?: string;
@@ -22,6 +23,7 @@ export async function POST(request: Request) {
   if (!limit.ok) return new Response("Too many requests", { status: 429 });
   const json = await request.json() as { Type?: string; SubscribeURL?: string; Message?: string } & BounceNotice;
   if (json.Type === "SubscriptionConfirmation" && json.SubscribeURL) {
+    if (!snsSubscribeUrlAllowed(json.SubscribeURL)) return new Response("Invalid confirmation URL", { status: 400 });
     await fetch(json.SubscribeURL);
     return Response.json({ ok: true });
   }

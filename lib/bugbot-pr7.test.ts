@@ -42,7 +42,7 @@ vi.mock("@/lib/email", () => ({
   sendIndividually: vi.fn(async () => ({ id: "batch" })),
 }));
 
-const { releaseExpiredCheckoutHolds, rescheduleBooking, fulfillPaidCheckout } = await import("@/lib/booking-service");
+const { releaseExpiredCheckoutHolds, rescheduleBooking, fulfillPaidCheckout, purchaseOffer } = await import("@/lib/booking-service");
 const { capture } = await import("@/lib/analytics");
 const { handleMobileApi } = await import("@/lib/mobile-api");
 const { studentFunnel } = await import("@/lib/analytics-report");
@@ -310,6 +310,90 @@ describe("PR 7 bugbot regressions", () => {
     expect(results.filter((result) => "error" in result)).toEqual([{ error: "That date is full." }]);
     const seated = await db.select().from(schema.bookingSessions).where(eq(schema.bookingSessions.sessionId, target));
     expect(seated).toHaveLength(1);
+  });
+
+  it("refuses to move a past or checked-in date", async () => {
+    const categoryId = categoryIds[0] ?? crypto.randomUUID();
+    if (!categoryIds.length) {
+      categoryIds.push(categoryId);
+      await db.insert(schema.categories).values({ id: categoryId, name: "Move", slug: `${tag}-used-cat` });
+    }
+    const owner = await person("used-owner");
+    const student = await person("used-student");
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-used`, studioName: "Used", status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug: `${tag}-used-class`,
+      title: "Used",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 8,
+      durationMinutes: 60,
+      status: "published",
+    });
+    async function session(day: string) {
+      const id = crypto.randomUUID();
+      await db.insert(schema.sessions).values({
+        id,
+        classId,
+        startsAt: new Date(`${day}T18:00:00Z`),
+        endsAt: new Date(`${day}T19:00:00Z`),
+        localDate: day,
+        capacity: 8,
+      });
+      return id;
+    }
+    async function booking(sessionId: string, checkedIn = false) {
+      const id = crypto.randomUUID();
+      await db.insert(schema.bookings).values({ id, userId: student, classId, kind: "session", status: "confirmed" });
+      await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId: id, sessionId, checkedIn });
+      return id;
+    }
+    const past = await session("2020-01-02");
+    const attended = await session("2027-08-01");
+    const open = await session("2027-08-02");
+    const destination = await session("2027-08-03");
+    const pastBooking = await booking(past);
+    const attendedBooking = await booking(attended, true);
+    const openBooking = await booking(open);
+    expect(await rescheduleBooking(student, pastBooking, destination)).toEqual({ error: "That date has already been used." });
+    expect(await rescheduleBooking(student, attendedBooking, destination)).toEqual({ error: "That date has already been used." });
+    expect(await rescheduleBooking(student, openBooking, destination)).toEqual({ ok: true });
+    const stayed = await db.select().from(schema.bookingSessions).where(eq(schema.bookingSessions.bookingId, pastBooking));
+    expect(stayed[0]?.sessionId).toBe(past);
+    const moved = await db.select().from(schema.bookingSessions).where(eq(schema.bookingSessions.bookingId, openBooking));
+    expect(moved[0]?.sessionId).toBe(destination);
+  });
+
+  it("records checkout events for free and studio-pay offers", async () => {
+    const owner = await person("offer-money");
+    const student = await person("offer-buyer");
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-offer-money`, studioName: "Offer", status: "approved", bio: "", stripeChargesEnabled: false });
+    const freeId = crypto.randomUUID();
+    const studioId = crypto.randomUUID();
+    await db.insert(schema.packs).values([
+      { id: freeId, teacherId, slug: `${tag}-free-pack`, name: "Free pack", creditCount: 2, priceCents: 0 },
+      { id: studioId, teacherId, slug: `${tag}-studio-pack`, name: "Studio pack", creditCount: 4, priceCents: 4000 },
+    ]);
+    const free = await purchaseOffer({ userId: student, email: `${tag}-offer-buyer@example.com`, kind: "pack", id: freeId });
+    const studio = await purchaseOffer({ userId: student, email: `${tag}-offer-buyer@example.com`, kind: "pack", id: studioId });
+    expect(free).toMatchObject({ ok: true, studentPaysCents: 0 });
+    expect(studio).toMatchObject({ ok: true, studentPaysCents: 4000 });
+    const events = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.userId, student));
+    const names = events.map((event) => `${event.name}:${event.properties.kind}`);
+    expect(names.filter((name) => name === "checkout_completed:pack")).toHaveLength(2);
+    expect(names.filter((name) => name === "offer_purchased:pack")).toHaveLength(2);
+    const ordersForStudent = await db.select().from(schema.orders).where(eq(schema.orders.userId, student));
+    expect(ordersForStudent.map((order) => order.status).sort()).toEqual(["paid", "pay_at_studio"]);
+    orderIds.push(...ordersForStudent.map((order) => order.id));
   });
 
   it("counts attendance from this period's class payments only", async () => {

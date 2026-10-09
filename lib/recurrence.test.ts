@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeRecurrence, diffSessions, previewOccurrences, type RecurrenceRule } from "@/lib/recurrence";
+import { collectOccurrences, describeRecurrence, diffSessions, occurrencesForSync, previewOccurrences, type RecurrenceRule } from "@/lib/recurrence";
 import { timeInZone } from "@/lib/time";
 
 const base: RecurrenceRule = {
@@ -58,6 +58,24 @@ describe("recurrence", () => {
     );
     expect(monthly.map((item) => item.date)).toEqual(["2026-10-13", "2026-11-10", "2026-12-08"]);
     expect(describeRecurrence({ ...base, frequency: "monthly", days: [{ weekday: 2, time: "19:00" }], endType: "on", endDate: "2026-12-31" })).toContain("2nd Tue");
+  });
+
+  it("keeps upcoming dates on a never-ending series after the historical cap", () => {
+    const rule: RecurrenceRule = {
+      timezone: "America/Los_Angeles",
+      frequency: "weekly",
+      days: [{ weekday: 2, time: "19:00" }],
+      startDate: "2010-01-05",
+      endType: "never",
+    };
+    const capped = collectOccurrences(rule, rule.startDate, "2026-12-01", 60, 400);
+    expect(capped.some((item) => item.date >= "2026-10-06")).toBe(false);
+    const synced = occurrencesForSync(rule, "2026-10-06", 60);
+    expect(synced.from).toBe("2026-10-06");
+    expect(synced.occurrences[0]?.date).toBe("2026-10-06");
+    expect(synced.occurrences.at(-1)!.date <= "2026-12-01").toBe(true);
+    expect(synced.occurrences.length).toBeGreaterThan(0);
+    expect(synced.occurrences.length).toBeLessThan(400);
   });
 
   it("keeps booked sessions and exceptions when the rule changes", () => {

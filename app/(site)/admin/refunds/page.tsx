@@ -1,4 +1,5 @@
 import { desc } from "drizzle-orm";
+import { cookies } from "next/headers";
 import { Suspense } from "react";
 import { adminRefundAction } from "@/lib/actions";
 import { Panel, control } from "@/components/bits";
@@ -16,6 +17,8 @@ export default function RefundsPage({ searchParams }: { searchParams: Promise<{ 
 
 async function Body({ searchParams }: { searchParams: Promise<{ error?: string; ok?: string }> }) {
   const query = await searchParams;
+  const jar = await cookies();
+  const idempotencyKey = jar.get("admin_refund_key")?.value || crypto.randomUUID();
   const rows = await db.select().from(refundLedger).orderBy(desc(refundLedger.createdAt)).limit(40);
   return (
     <div>
@@ -23,7 +26,7 @@ async function Body({ searchParams }: { searchParams: Promise<{ error?: string; 
       {query.error ? <p className="mt-3 text-sm text-clay">{query.error}</p> : null}
       {query.ok ? <p className="mt-3 text-sm">Refund recorded.</p> : null}
       <form action={adminRefundAction} className="mt-4 grid max-w-lg gap-2">
-        <input type="hidden" name="idempotencyKey" value={crypto.randomUUID()} />
+        <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
         <label className="text-sm">Order id<input name="orderId" required className={control} /></label>
         <label className="text-sm">Amount in dollars (leave blank with full refund)<input name="amount" className={control} /></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="full" value="1" defaultChecked /> Full remaining balance</label>

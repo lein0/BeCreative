@@ -140,7 +140,7 @@ function fresh(): State {
     token: null,
     bookings: [bookingRow("book-scene", CLASSES[0]!, "confirmed")],
     wallet: {
-      packs: [{ id: "pack-1", name: "Scene 5-pack", remaining: 4, total: 5 }],
+      packs: [{ id: "pack-1", name: "Scene 5-pack", remaining: 4, total: 5, classIds: ["class-scene"], categoryIds: [], teacherId: "maya-alvarez" }],
       memberships: [{ id: "mem-1", name: "BeWell monthly", status: "active", periodEnd: iso(28, 12) }],
     },
     signed: new Set(),
@@ -244,10 +244,11 @@ export function createMockApi(): MockApi {
       const item = findClass(slug);
       if (!item) throw new ApiError(404, "Class not found.");
       const detail: ClassDetail = {
-        class: publicOf(item),
+        class: { ...publicOf(item), seriesPriceCents: item.seriesCents, categoryId: item.category },
+
         description: item.description,
         slots: [0, 1, 2].map((index) => ({ id: `${item.slug}-slot-${index}`, startsAt: iso(index + 1, 19), spots: 6 })),
-        teacher: { slug: item.teacherSlug, name: item.teacher },
+        teacher: { id: item.teacherSlug, slug: item.teacherSlug, name: item.teacher },
         signatureRequired: item.signatureRequired,
         policyAcknowledgementRequired: true,
       };

@@ -1,7 +1,7 @@
 import { LA_TIMEZONE } from "@/lib/constants";
 
 export const APP_PASSWORD_RESET_PATH = "/reset";
-export const APP_EMAIL_VERIFY_PATH = "/verify";
+export const APP_EMAIL_VERIFY_PATH = "/verify-email";
 
 export type Place = {
   lat: number;

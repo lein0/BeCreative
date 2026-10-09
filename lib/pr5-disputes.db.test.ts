@@ -182,4 +182,39 @@ describe("dispute persistence", () => {
     expect(packet.waiverSigned).not.toContain("Other Studio Waiver");
     expect(packet.priorBookings).toBe("1");
   });
+
+  it("treats a started visit as attended and records its time", async () => {
+    const now = Date.now();
+    seedTable(schema.orders, [{ id: "ord_v", stripePaymentIntentId: "pi_v", kind: "visit", studentPaysCents: 5000, refundedCents: 0, status: "paid", teacherId: "studio-a" }]);
+    seedTable(schema.services, [{ id: "svc_1", title: "Sauna", description: "Heat", teacherId: "studio-a" }]);
+    seedTable(schema.visitBookings, [{ id: "vis_1", orderId: "ord_v", serviceId: "svc_1", startsAt: new Date(now - 3_600_000), status: "confirmed" }]);
+    const packet = await assemblePacket("ord_v");
+    expect(packet.productDescription).toContain("Sauna");
+    expect(packet.sessionWhen).not.toBe("not recorded");
+    const started = await handleEarlyFraud({ chargeId: "ch_v", paymentIntentId: "pi_v", amountCents: 5000 });
+    expect(started.decision).toBe("flag");
+    expect(readTable(schema.refundLedger)).toHaveLength(0);
+  });
+
+  it("does not auto-submit a closed dispute, and updates a later check-in", async () => {
+    await recordDispute({ id: "dp_lost", amountCents: 1000, reason: "general", status: "lost" });
+    expect(readTable(schema.jobs).filter((job) => job.kind === "dispute.submit")).toHaveLength(0);
+    const skipped = await submitDispute("dp_lost");
+    expect(skipped.skipped).toBe(true);
+
+    seedTable(schema.orders, [{ id: "ord_ci", stripePaymentIntentId: "pi_ci", userId: "student-a", teacherId: "studio-a", kind: "booking", studentPaysCents: 2000, refundedCents: 0 }]);
+    seedTable(schema.user, [{ id: "student-a", name: "Ava", email: "a@example.com" }]);
+    seedTable(schema.classes, [{ id: "class-a", teacherId: "studio-a", title: "Floor", description: "Move", whatToBring: "", outcomes: "" }]);
+    seedTable(schema.bookings, [{ id: "book-ci", orderId: "ord_ci", classId: "class-a", userId: "student-a", status: "confirmed" }]);
+    seedTable(schema.bookingSessions, [{ id: "link-ci", bookingId: "book-ci", sessionId: "sess-ci", checkedIn: false }]);
+    seedTable(schema.sessions, [{ id: "sess-ci", startsAt: new Date("2026-10-13T19:00:00Z") }]);
+    await recordDispute({ id: "dp_ci", paymentIntentId: "pi_ci", amountCents: 2000, reason: "general", status: "needs_response" });
+    const dispute = readTable(schema.disputes).find((row) => row.id === "dp_ci")!;
+    const evidence = () => dispute.evidence as { uncategorized_text?: string };
+    expect(String(evidence().uncategorized_text)).toContain("Check-in: no");
+    readTable(schema.bookingSessions)[0]!.checkedIn = true;
+    await recordDispute({ id: "dp_ci", paymentIntentId: "pi_ci", amountCents: 2000, reason: "general", status: "under_review" });
+    expect(String(evidence().uncategorized_text)).toContain("Check-in: yes");
+    expect(dispute.attendanceConfirmed).toBe(true);
+  });
 });

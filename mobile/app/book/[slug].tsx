@@ -1,22 +1,25 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
+import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
+import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function BookScreen() {
-  const { slug, code } = useLocalSearchParams<{ slug: string; code?: string }>();
+  const { slug, code, session: sessionParam, series: seriesParam } = useLocalSearchParams<{ slug: string; code?: string; session?: string; series?: string }>();
   const router = useRouter();
   const { api, user, track, attribution, ready } = useSession();
   const { colors } = useAppTheme();
   const [detail, setDetail] = useState<ClassDetail | null>(null);
-  const [series, setSeries] = useState(false);
+  const [series, setSeries] = useState(seriesParam === "1");
+  const submitLock = useRef(bookingSubmitLock());
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promo, setPromo] = useState(typeof code === "string" ? code : attribution && "code" in attribution && attribution.code ? attribution.code : "");
   const [usePack, setUsePack] = useState(false);
@@ -39,7 +42,8 @@ export default function BookScreen() {
     void api.classDetail(slug).then((next) => {
       setDetail(next);
       setSignatureRequired(next.signatureRequired);
-      setSessionId(next.slots[0]?.id ?? null);
+      const preferred = typeof sessionParam === "string" ? sessionParam : null;
+      setSessionId(next.slots.some((slot) => slot.id === preferred) ? preferred : next.slots[0]?.id ?? null);
       void track("booking_started", { slug: next.class.slug });
       if (user) {
         void api.waiver(next.teacher.slug).then((waiver) => {
@@ -51,15 +55,21 @@ export default function BookScreen() {
       }
     }).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load this class."));
     if (user) void api.wallet().then((wallet) => setPacks(wallet.packs.filter((item) => item.remaining > 0))).catch(() => undefined);
-  }, [api, ready, slug, track, user]);
+  }, [api, ready, sessionParam, slug, track, user]);
+
+  const eligiblePacks = detail ? packsForClass(packs, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
+  const seriesPrice = detail?.class.seriesPriceCents ?? null;
+  const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
 
   async function submit() {
     if (!detail || !user) {
-      router.push("/login");
+      router.push({ pathname: "/login", params: { next: resumeBookingPath({ slug: slug ?? "", sessionId, series, code: promo }) } });
       return;
     }
+    if (!submitLock.current.tryAcquire()) return;
     setBusy(true);
     setError(null);
+    let held = false;
     try {
       if (!agreed) {
         setError("Accept the cancellation policy.");
@@ -78,18 +88,27 @@ export default function BookScreen() {
         classId: detail.class.id,
         series,
         code: promo.trim() || undefined,
-        payWith: usePack && packs[0] ? `pack:${packs[0].id}` : "cash",
+        payWith: usePack && eligiblePacks[0] ? `pack:${eligiblePacks[0].id}` : "cash",
         policyAccepted: true,
-        paymentSheet: true,
+        paymentSheet: Platform.OS !== "web",
       });
+      if (checkoutFollowsBooking(result) === "bookings") {
+        setError("You already have this series booked.");
+        router.push("/bookings");
+        return;
+      }
       if (result.codeApplied) await track("promo_applied", { code: result.codeApplied });
       await track("checkout_started", { orderId: result.orderId ?? "" });
       setCheckoutDraft(draftFromResult(detail.class.title, result));
       router.push("/checkout");
+      held = true;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not start checkout.");
     } finally {
-      setBusy(false);
+      if (!held) {
+        submitLock.current.release();
+        setBusy(false);
+      }
     }
   }
 
@@ -104,12 +123,12 @@ export default function BookScreen() {
         <Body muted>Pick a date, then accept the cancellation policy.</Body>
         <View style={{ flexDirection: "row", gap: 8 }}>
           <View style={{ flex: 1 }}><Button label="This date" tone={!series ? "accent" : "ghost"} onPress={() => setSeries(false)} /></View>
-          <View style={{ flex: 1 }}><Button label="Whole series" tone={series ? "accent" : "ghost"} onPress={() => setSeries(true)} /></View>
+          {seriesPrice != null ? <View style={{ flex: 1 }}><Button label="Whole series" tone={series ? "accent" : "ghost"} onPress={() => setSeries(true)} /></View> : null}
         </View>
         {!series ? detail.slots.map((slot) => (
           <Button key={slot.id} label={`${whenLabel(slot.startsAt)}${slot.spots != null ? ` · ${slot.spots} spots` : ""}`} tone={sessionId === slot.id ? "accent" : "ghost"} onPress={() => setSessionId(slot.id)} />
         )) : <Body>All upcoming dates, one price.</Body>}
-        {packs.length && !series ? <ToggleRow label={`Use ${packs[0]!.name} (${packs[0]!.remaining} left)`} value={usePack} onChange={setUsePack} /> : null}
+        {eligiblePacks.length && !series ? <ToggleRow label={`Use ${eligiblePacks[0]!.name} (${eligiblePacks[0]!.remaining} left)`} value={usePack} onChange={setUsePack} /> : null}
         <Field label="Promo code" value={promo} onChangeText={setPromo} testID="promo" />
         <Card>
           <Body>Cancellation policy</Body>
@@ -119,7 +138,7 @@ export default function BookScreen() {
           {signatureRequired && waiverRequired && !waiverSigned ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
         </Card>
         {error ? <Notice>{error}</Notice> : null}
-        <Body>Price {money(detail.class.priceCents ?? 0)}. The discount is applied at checkout.</Body>
+        <Body>Price {money(shownPrice ?? 0)}. The discount is applied at checkout.</Body>
         <Button label={busy ? "Starting checkout…" : "Continue to checkout"} disabled={busy} onPress={() => void submit()} testID="continue-checkout" />
       </ScrollView>
     </SafeAreaView>

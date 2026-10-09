@@ -1,3 +1,4 @@
+import { paymentSheetForPlatform } from "../../../lib/mobile-client";
 import { paths } from "./paths";
 import { ApiError, type PlatformName, type StudentApi } from "./types";
 
@@ -60,12 +61,12 @@ export function createLiveApi(options: LiveOptions): StudentApi {
     classDetail: (slug) => request(paths.class(slug)),
     slots: (slug) => request(`${paths.slots}?slug=${encodeURIComponent(slug)}`),
     teacher: (slug) => request(paths.teacher(slug)),
-    book: (input) => request(paths.bookings, { method: "POST", body: { ...input, paymentSheet: input.paymentSheet !== false } }),
+    book: (input) => request(paths.bookings, { method: "POST", body: { ...input, paymentSheet: paymentSheetForPlatform(options.getPlatform?.(), input.paymentSheet) } }),
     cancelBooking: (id) => request(paths.bookingCancel(id), { method: "POST", body: {} }),
     rescheduleBooking: (id, sessionId) => request(paths.bookingReschedule(id), { method: "POST", body: { sessionId } }),
     bookings: () => request(paths.bookings),
     wallet: () => request(paths.wallet),
-    purchasePack: (input) => request(paths.purchasePack, { method: "POST", body: { ...input, paymentSheet: input.paymentSheet !== false } }),
+    purchasePack: (input) => request(paths.purchasePack, { method: "POST", body: { ...input, paymentSheet: paymentSheetForPlatform(options.getPlatform?.(), input.paymentSheet) } }),
     purchaseMembership: (input) => request(paths.purchaseMembership, { method: "POST", body: input }),
     waiver: (slug) => request(paths.waiver(slug)),
     signWaiver: (slug, signedName) => request(paths.signWaiver(slug), { method: "POST", body: { signedName } }),

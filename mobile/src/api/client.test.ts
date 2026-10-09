@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { quotePrice } from "../../../lib/pricing";
 import { createStudentApi, resolveApiMode } from "./index";
 import { DEMO_EMAIL, DEMO_PASSWORD, DEMO_PROMO } from "./fixtures";
+import { paymentSheetForPlatform } from "../../../lib/mobile-client";
 import { createLiveApi } from "./live";
 import { createMockApi } from "./mock";
 import { documentedPaths, paths } from "./paths";
@@ -151,6 +152,24 @@ describe("live api", () => {
     const api = createLiveApi({ baseUrl: "https://classes.becreative.app", getToken: () => "bc_tok", fetchImpl: fetchImpl as typeof fetch });
     await expect(api.signInSocial({ provider: "google", idToken: "id-1", nonce: "nonce-1" })).rejects.toMatchObject({ status: 503, message: "Google sign-in is not configured." });
     await expect(api.deleteAccount({ password: DEMO_PASSWORD })).resolves.toEqual({ ok: true });
+  });
+
+  it("asks for a Checkout Session on web and a PaymentSheet on native", async () => {
+    expect(paymentSheetForPlatform("web", true)).toBe(false);
+    expect(paymentSheetForPlatform(undefined, true)).toBe(false);
+    expect(paymentSheetForPlatform("ios", true)).toBe(true);
+    expect(paymentSheetForPlatform("ios", false)).toBe(false);
+    const bodies: unknown[] = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ orderId: "o", checkoutUrl: "https://checkout.stripe.test/c/web" }), { status: 200 });
+    });
+    const web = createLiveApi({ baseUrl: "https://classes.becreative.app", getToken: () => "bc_tok", getPlatform: () => "web", fetchImpl: fetchImpl as typeof fetch });
+    await web.book({ sessionId: "s", policyAccepted: true, paymentSheet: true });
+    const native = createLiveApi({ baseUrl: "https://classes.becreative.app", getToken: () => "bc_tok", getPlatform: () => "ios", fetchImpl: fetchImpl as typeof fetch });
+    await native.purchasePack({ id: "pack-1", paymentSheet: true });
+    expect(bodies[0]).toMatchObject({ paymentSheet: false });
+    expect(bodies[1]).toMatchObject({ paymentSheet: true });
   });
 
   it("reads the API error string", async () => {
