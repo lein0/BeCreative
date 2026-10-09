@@ -38,7 +38,7 @@ export default function Signup() {
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       <View style={{ padding: 24, gap: 16 }}>
         <Display>Create your account</Display>
-        <Body muted>Students only. If you teach, use the website. You're signed in as soon as the account is created.</Body>
+        <Body muted>Students only. If you teach, use the website. If this studio requires email verification, you'll confirm it before the app signs you in.</Body>
         {error ? <Notice>{error}</Notice> : null}
         <Field label="Name" value={name} onChangeText={setName} testID="signup-name" />
         <Field label="Email" value={email} onChangeText={setEmail} keyboard="email-address" />
