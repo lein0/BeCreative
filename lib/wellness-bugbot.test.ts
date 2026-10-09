@@ -313,4 +313,75 @@ describe("wellness bugbot regressions", () => {
       text: "Your spot is reserved.",
     }));
   });
+
+  it("refuses a second booking of the same shared slot", async () => {
+    const serviceId = crypto.randomUUID();
+    await db.insert(schema.services).values({
+      id: serviceId, teacherId: ids.teacher!, categoryId: ids.category!, slug: `${tag}-sauna`, title: "Sauna", kind: "access", slotMinutes: 30, capacity: 4, priceCents: 0, leadTimeHours: 0, status: "published",
+    });
+    for (let weekday = 0; weekday < 7; weekday += 1) {
+      await db.insert(schema.availabilityWindows).values({ id: crypto.randomUUID(), serviceId, weekday, startTime: "00:00", endTime: "23:00" });
+    }
+    const open = await openSlotsForService(serviceId, new Date(), 2);
+    if (open.kind !== "access") throw new Error("expected access");
+    const startsAt = open.slots[0]!.startsAt.toISOString();
+    const student = await person("twice");
+    const first = await bookVisit({ userId: student, email: "twice@example.com", serviceId, startsAt });
+    expect(first).toHaveProperty("orderId");
+    const second = await bookVisit({ userId: student, email: "twice@example.com", serviceId, startsAt });
+    expect(second).toEqual({ error: "You already have this time." });
+  });
+
+  it("hides private hours that overlap a group class", async () => {
+    const { serviceId, optionId } = await appointment("Overlap", ids.teacher!, ids.category!);
+    const open = await openSlotsForService(serviceId, new Date(), 2);
+    if (open.kind !== "appointment") throw new Error("expected an appointment");
+    const slot = open.options[0]!.slots[2]!;
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId: ids.teacher!, categoryId: ids.category!, slug: `${tag}-group`, title: "Group", skillLevel: "all", format: "class", delivery: "in_person", maxSize: 10, durationMinutes: 60, pricePerSessionCents: 2000, status: "published",
+    });
+    await db.insert(schema.sessions).values({
+      id: crypto.randomUUID(), classId, startsAt: slot.startsAt, endsAt: slot.endsAt, localDate: slot.localDate, capacity: 10, status: "scheduled",
+    });
+    const again = await openSlotsForService(serviceId, new Date(), 2);
+    if (again.kind !== "appointment") throw new Error("expected an appointment");
+    expect(again.options[0]!.slots.some((item) => item.startsAt.getTime() === slot.startsAt.getTime())).toBe(false);
+    const booked = await bookVisit({
+      userId: await person("overlap"),
+      email: "overlap@example.com",
+      serviceId,
+      optionId,
+      startsAt: slot.startsAt.toISOString(),
+    });
+    expect(booked).toMatchObject({ error: "That time is not open." });
+  });
+
+  it("does not let two visits spend the same pack credit", async () => {
+    const serviceId = crypto.randomUUID();
+    await db.insert(schema.services).values({
+      id: serviceId, teacherId: ids.teacher!, categoryId: ids.category!, slug: `${tag}-credit`, title: "Credit sauna", kind: "access", slotMinutes: 30, capacity: 4, priceCents: 2000, leadTimeHours: 0, status: "published",
+    });
+    for (let weekday = 0; weekday < 7; weekday += 1) {
+      await db.insert(schema.availabilityWindows).values({ id: crypto.randomUUID(), serviceId, weekday, startTime: "00:00", endTime: "23:00" });
+    }
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId: ids.teacher!, slug: `${tag}-one`, name: "One", creditCount: 1, priceCents: 1000 });
+    const student = await person("credit");
+    const purchaseId = crypto.randomUUID();
+    await db.insert(schema.packPurchases).values({
+      id: purchaseId, userId: student, packId, teacherId: ids.teacher!, creditsTotal: 1, creditsRemaining: 1,
+    });
+    const open = await openSlotsForService(serviceId, new Date(), 2);
+    if (open.kind !== "access") throw new Error("expected access");
+    const [first, second] = await Promise.all([
+      bookVisit({ userId: student, email: "credit@example.com", serviceId, startsAt: open.slots[0]!.startsAt.toISOString(), payWith: `pack:${purchaseId}` }),
+      bookVisit({ userId: student, email: "credit@example.com", serviceId, startsAt: open.slots[1]!.startsAt.toISOString(), payWith: `pack:${purchaseId}` }),
+    ]);
+    const results = [first, second];
+    expect(results.filter((result) => "orderId" in result && result.orderId)).toHaveLength(1);
+    expect(results.some((result) => "error" in result && /credit/i.test(result.error ?? ""))).toBe(true);
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.id, purchaseId));
+    expect(purchase?.creditsRemaining).toBe(0);
+  });
 });

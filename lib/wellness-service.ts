@@ -1,9 +1,10 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, gte, ne, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
 import {
   availabilityWindows,
   categories,
+  classes,
   credentials,
   creditLedger,
   locations,
@@ -18,6 +19,7 @@ import {
   serviceAddons,
   serviceOptions,
   services,
+  sessions,
   teachers,
   user,
   visitBookings,
@@ -80,12 +82,18 @@ async function fees() {
 }
 
 async function confirmedAppointmentRanges(teacherId: string, database: Pick<typeof db, "select"> = db) {
+  const now = new Date();
   const rows = await database
     .select({ startsAt: visitBookings.startsAt, endsAt: visitBookings.endsAt })
     .from(visitBookings)
     .innerJoin(services, eq(services.id, visitBookings.serviceId))
     .where(and(eq(services.teacherId, teacherId), eq(services.kind, "appointment"), eq(visitBookings.status, "confirmed")));
-  return rows.map((row) => ({ startsAt: row.startsAt, endsAt: row.endsAt }));
+  const classesBusy = await database
+    .select({ startsAt: sessions.startsAt, endsAt: sessions.endsAt })
+    .from(sessions)
+    .innerJoin(classes, eq(classes.id, sessions.classId))
+    .where(and(eq(classes.teacherId, teacherId), eq(sessions.status, "scheduled"), gte(sessions.endsAt, now)));
+  return [...rows, ...classesBusy].map((row) => ({ startsAt: row.startsAt, endsAt: row.endsAt }));
 }
 
 async function requestContext() {
@@ -268,23 +276,38 @@ export async function bookVisit(input: {
         const taken = busyRows.filter((row) => row.startsAt.getTime() === startsAt.getTime()).length;
         if (!canTakeSeat(service.capacity, taken)) throw new Error("That slot is full.");
       }
+      const [alreadyVisiting] = await tx
+        .select({ id: visitBookings.id })
+        .from(visitBookings)
+        .where(and(eq(visitBookings.userId, input.userId), eq(visitBookings.serviceId, service.id), eq(visitBookings.startsAt, startsAt), eq(visitBookings.status, "confirmed")))
+        .limit(1);
+      if (alreadyVisiting) throw new Error("You already have this time.");
 
       const payWith = input.payWith ?? "cash";
       let entitlement = false;
       let packPurchaseId: string | null = null;
       let membershipSubscriptionId: string | null = null;
       if (payWith.startsWith("pack:")) {
-        const [purchase] = await tx.select().from(packPurchases).where(and(eq(packPurchases.id, payWith.slice(5)), eq(packPurchases.userId, input.userId))).limit(1);
+        const packPurchaseKey = payWith.slice(5);
+        await tx.execute(sql`select id from pack_purchases where id = ${packPurchaseKey} and user_id = ${input.userId} for update`);
+        const [purchase] = await tx.select().from(packPurchases).where(and(eq(packPurchases.id, packPurchaseKey), eq(packPurchases.userId, input.userId))).limit(1);
         if (!purchase) throw new Error("That pack is not in your wallet.");
         const [pack] = await tx.select().from(packs).where(eq(packs.id, purchase.packId)).limit(1);
         const covers = offerCoversClass({ classIds: pack?.classIds ?? [], categoryIds: pack?.categoryIds ?? [] }, service.id, service.categoryId);
         const check = canSpendPack({ creditsRemaining: purchase.creditsRemaining, expiresAt: purchase.expiresAt, now: new Date(), covers });
         if (!check.ok) throw new Error(check.reason);
-        await tx.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining - 1 }).where(eq(packPurchases.id, purchase.id));
+        const [spent] = await tx
+          .update(packPurchases)
+          .set({ creditsRemaining: sql`${packPurchases.creditsRemaining} - 1` })
+          .where(and(eq(packPurchases.id, purchase.id), sql`${packPurchases.creditsRemaining} >= 1`))
+          .returning({ id: packPurchases.id });
+        if (!spent) throw new Error("This pack has no credits left.");
         entitlement = true;
         packPurchaseId = purchase.id;
       } else if (payWith.startsWith("membership:")) {
-        const [sub] = await tx.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, payWith.slice(11))).limit(1);
+        const subId = payWith.slice(11);
+        await tx.execute(sql`select id from membership_subscriptions where id = ${subId} for update`);
+        const [sub] = await tx.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, subId)).limit(1);
         if (!sub || sub.userId !== input.userId) throw new Error("That membership is not active.");
         const [plan] = await tx.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
         const covers = offerCoversClass({ classIds: plan?.classIds ?? [], categoryIds: plan?.categoryIds ?? [] }, service.id, service.categoryId);
@@ -298,7 +321,17 @@ export async function bookVisit(input: {
           covers,
         });
         if (!check.ok) throw new Error(check.reason);
-        await tx.update(membershipSubscriptions).set({ classesUsedThisPeriod: sub.classesUsedThisPeriod + 1 }).where(eq(membershipSubscriptions.id, sub.id));
+        const [spent] = await tx
+          .update(membershipSubscriptions)
+          .set({ classesUsedThisPeriod: sql`${membershipSubscriptions.classesUsedThisPeriod} + 1` })
+          .where(and(
+            eq(membershipSubscriptions.id, sub.id),
+            sub.unlimited || sub.classesPerPeriod == null
+              ? sql`true`
+              : sql`${membershipSubscriptions.classesUsedThisPeriod} + 1 <= ${membershipSubscriptions.classesPerPeriod}`,
+          ))
+          .returning({ id: membershipSubscriptions.id });
+        if (!spent) throw new Error("This membership doesn't have enough classes left in the period.");
         entitlement = true;
         membershipSubscriptionId = sub.id;
       }
