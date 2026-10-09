@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { studioCanSell } from "@/lib/review-rules";
 import {
+  availabilityWindows,
   bookingSessions,
   bookings,
   categories,
@@ -21,6 +23,7 @@ import {
   promoRedemptions,
   recurrences,
   reviews,
+  serviceOptions,
   services,
   sessions,
   studioCredits,
@@ -30,6 +33,7 @@ import {
   visitBookings,
 } from "@/lib/db/schema";
 import { releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { visitDurationMinutes, visitListPriceCents } from "@/lib/explore-filters";
 import { publicListingVisible } from "@/lib/review-rules";
 import { ymdInZone } from "@/lib/time";
 
@@ -103,6 +107,27 @@ export async function publishedServices() {
     .where(and(eq(services.status, "published"), eq(teachers.status, "approved"), eq(categories.vertical, "wellness")));
 }
 
+export async function publishedServiceExplore() {
+  const rows = await publishedServices();
+  if (!rows.length) return [];
+  const ids = rows.map((row) => row.service.id);
+  const [windows, options] = await Promise.all([
+    db.select().from(availabilityWindows).where(inArray(availabilityWindows.serviceId, ids)),
+    db.select().from(serviceOptions).where(inArray(serviceOptions.serviceId, ids)),
+  ]);
+  return rows.map((row) => {
+    const optionRows = options.filter((option) => option.serviceId === row.service.id);
+    return {
+      ...row,
+      priceCents: visitListPriceCents(row.service.kind, row.service.priceCents, optionRows.map((option) => option.priceCents)),
+      durationMinutes: visitDurationMinutes(row.service.kind, row.service.slotMinutes, optionRows.map((option) => option.minutes)),
+      windows: windows
+        .filter((window) => window.serviceId === row.service.id)
+        .map((window) => ({ weekday: window.weekday, start: window.startTime, end: window.endTime })),
+    };
+  });
+}
+
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {
   const r = 3958.8;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -147,7 +172,7 @@ export async function classDetail(slug: string) {
 
 export async function teacherProfile(slug: string) {
   const [teacher] = await db.select().from(teachers).where(eq(teachers.slug, slug)).limit(1);
-  if (!teacher) return null;
+  if (!teacher || !studioCanSell(teacher.status)) return null;
   const [person] = await db.select().from(user).where(eq(user.id, teacher.userId)).limit(1);
   const offerings = await db.select().from(classes).where(and(eq(classes.teacherId, teacher.id), eq(classes.status, "published")));
   const upcoming = offerings.length

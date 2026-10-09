@@ -199,7 +199,7 @@ export function validatePromo(input: {
     return { ok: false, reason: "This code doesn't apply to this type of purchase." };
   }
   if (product.kind === "class") {
-    if (promo.classIds.length && product.classId && !promo.classIds.includes(product.classId)) return { ok: false, reason: "This code doesn't apply to this class." };
+    if (promo.classIds.length && !promo.classIds.includes(product.classId ?? "")) return { ok: false, reason: "This code doesn't apply to this class." };
     if (promo.categoryIds.length && product.categoryId && !promo.categoryIds.includes(product.categoryId)) return { ok: false, reason: "This code doesn't apply to this category." };
     if (promo.cities.length && product.city && !promo.cities.map((city) => city.toLowerCase()).includes(product.city.toLowerCase())) {
       return { ok: false, reason: "This code doesn't apply in this city." };

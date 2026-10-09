@@ -98,6 +98,13 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
         <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
           {error ? <p className="rounded-2xl bg-sand px-4 py-3 text-sm">{error}</p> : null}
           {one(sp.signed) === "1" ? <p className="rounded-2xl bg-sand px-4 py-3 text-sm">Waiver signed. Pick a time.</p> : null}
+          {waiverDue && !detail.waiver ? (
+            <Panel>
+              <p className="text-xs uppercase tracking-[0.14em] text-ink/50">Liability waiver</p>
+              <h2 className="display mt-1 text-3xl">Waiver required</h2>
+              <p className="mt-3 text-sm leading-relaxed text-ink/80" data-testid="waiver-missing">This studio requires a signed waiver, and the document is not published yet. Booking stays closed until it is.</p>
+            </Panel>
+          ) : null}
           {waiverDue && detail.waiver ? (
             <Panel>
               <p className="text-xs uppercase tracking-[0.14em] text-ink/50">Liability waiver · version {detail.waiver.version}</p>
@@ -117,7 +124,8 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
                 <Link href={`/login?next=/s/${detail.service.slug}`} className="mt-4 inline-flex min-h-11 items-center rounded-full bg-ink px-4 text-sm text-paper">Sign in to sign</Link>
               )}
             </Panel>
-          ) : (
+          ) : null}
+          {waiverDue ? null : (
             <Panel>
               <p className="text-xs uppercase tracking-[0.14em] text-ink/50">{detail.service.kind === "access" ? "Open slots" : "Open hours"}</p>
               <SlotPicker
@@ -138,6 +146,6 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
   );
 }
 
-function serialize(slot: { startsAt: Date; localDate: string; time: string; left?: number }) {
-  return { startsAt: slot.startsAt.toISOString(), localDate: slot.localDate, time: slot.time, left: slot.left };
+function serialize(slot: { startsAt: Date; localDate: string; time: string; left?: number; slackMinutes: number }) {
+  return { startsAt: slot.startsAt.toISOString(), localDate: slot.localDate, time: slot.time, left: slot.left, slackMinutes: slot.slackMinutes };
 }

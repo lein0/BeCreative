@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { bookVisitAction } from "@/lib/actions";
 
-export type PickerSlot = { startsAt: string; localDate: string; time: string; left?: number };
+export type PickerSlot = { startsAt: string; localDate: string; time: string; left?: number; slackMinutes?: number };
 export type PickerOption = { id: string; label: string; minutes: number; priceCents: number; slots: PickerSlot[] };
 export type PickerAddon = { id: string; name: string; priceCents: number; minutes: number };
 
@@ -43,11 +43,17 @@ export function SlotPicker({
     () => (kind === "appointment" ? options.find((option) => option.id === optionId)?.slots ?? [] : slots),
     [kind, options, optionId, slots],
   );
-  const dates = useMemo(() => [...new Set(activeSlots.map((slot) => slot.localDate))], [activeSlots]);
+  const extraMinutes = addons.filter((addon) => pickedAddons.includes(addon.id)).reduce((sum, addon) => sum + addon.minutes, 0);
+  const dates = useMemo(
+    () => [...new Set(activeSlots.filter((slot) => extraMinutes <= (slot.slackMinutes ?? 0)).map((slot) => slot.localDate))],
+    [activeSlots, extraMinutes],
+  );
   const [day, setDay] = useState(dates[0] ?? "");
   const [startsAt, setStartsAt] = useState("");
-  const daySlots = activeSlots.filter((slot) => slot.localDate === (dates.includes(day) ? day : dates[0]));
+  const dayKey = dates.includes(day) ? day : dates[0];
+  const daySlots = activeSlots.filter((slot) => slot.localDate === dayKey && extraMinutes <= (slot.slackMinutes ?? 0));
   const price = kind === "appointment" ? options.find((option) => option.id === optionId)?.priceCents ?? 0 : 0;
+  const selectedStillOpen = activeSlots.some((slot) => slot.startsAt === startsAt && extraMinutes <= (slot.slackMinutes ?? 0));
 
   function toggleAddon(id: string) {
     setPickedAddons((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
@@ -96,7 +102,7 @@ export function SlotPicker({
           <button
             key={date}
             type="button"
-            className={`min-h-11 shrink-0 rounded-full px-3 text-sm ${date === (dates.includes(day) ? day : dates[0]) ? "bg-clay text-white" : "bg-white ring-1 ring-line"}`}
+            className={`min-h-11 shrink-0 rounded-full px-3 text-sm ${date === dayKey ? "bg-clay text-white" : "bg-white ring-1 ring-line"}`}
             onClick={() => {
               setDay(date);
               setStartsAt("");
@@ -138,8 +144,8 @@ export function SlotPicker({
         <input type="checkbox" name="policyAccepted" value="1" required className="mt-1" />
         <span>{policy}</span>
       </label>
-      <button className="min-h-11 w-full rounded-full bg-clay text-sm font-medium text-white" disabled={!startsAt}>
-        {startsAt ? "Book this time" : "Choose a time"}
+      <button className="min-h-11 w-full rounded-full bg-clay text-sm font-medium text-white" disabled={!selectedStillOpen}>
+        {selectedStillOpen ? "Book this time" : "Choose a time"}
       </button>
     </form>
   );

@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type Stripe from "stripe";
 import { fulfillPaidCheckout, refundOrderByPaymentIntent } from "@/lib/booking-service";
+import { chargeFullyRefunded } from "@/lib/checkout-rules";
 import { db } from "@/lib/db";
 import { stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
@@ -38,7 +39,8 @@ async function dispatchStripeEvent(event: Stripe.Event) {
   if (event.type === "charge.refunded") {
     const charge = event.data.object;
     const intent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id;
-    if (intent && chargeRefundReleasesSeats(charge.refunded)) await refundOrderByPaymentIntent(intent);
+    const fullyRefunded = chargeFullyRefunded({ amount: charge.amount, amount_refunded: charge.amount_refunded, refunded: charge.refunded });
+    if (intent && chargeRefundReleasesSeats(fullyRefunded)) await refundOrderByPaymentIntent(intent);
   }
   if (event.type === "account.updated") {
     const account = event.data.object;

@@ -19,6 +19,7 @@ import {
   policyAcceptances,
   promoRedemptions,
   sessions,
+  services,
   teacherPolicies,
   teachers,
   user,
@@ -57,7 +58,7 @@ import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
-import { applyStudioCredit, parseStudioCreditLedgerSource, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
@@ -147,20 +148,26 @@ export async function releaseExpiredCheckoutHolds(now = new Date()) {
 
 export async function confirmedCount(sessionId: string, tx: typeof db = db) {
   const [row] = await tx
-    .select({ count: sql<number>`count(distinct ${bookingSessions.bookingId})::int` })
+    .select({ count: sql<number>`count(distinct coalesce(${bookings.userId}, ${bookings.id}))::int` })
     .from(bookingSessions)
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
   return Number(row?.count ?? 0);
 }
 
-async function priorWithTeacher(userId: string, teacherId: string) {
-  const [row] = await db
+export async function priorWithTeacher(userId: string, teacherId: string) {
+  const [classesRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(bookings)
     .innerJoin(classes, eq(classes.id, bookings.classId))
     .where(and(eq(bookings.userId, userId), eq(classes.teacherId, teacherId), eq(bookings.status, "confirmed")));
-  return Number(row?.count ?? 0) > 0;
+  if (Number(classesRow?.count ?? 0) > 0) return true;
+  const [visitsRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(visitBookings)
+    .innerJoin(services, eq(services.id, visitBookings.serviceId))
+    .where(and(eq(visitBookings.userId, userId), eq(services.teacherId, teacherId), eq(visitBookings.status, "confirmed")));
+  return Number(visitsRow?.count ?? 0) > 0;
 }
 
 export async function bookSession(input: {
@@ -193,9 +200,9 @@ export async function bookSession(input: {
         }
         targetSessions = await tx.select().from(sessions).where(and(eq(sessions.classId, input.classId), eq(sessions.status, "scheduled")));
       } else if (input.sessionId) {
+        await tx.execute(sql`select id from sessions where id = ${input.sessionId} for update`);
         const [one] = await tx.select().from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
         if (!one) throw new Error("That session is no longer listed.");
-        await tx.execute(sql`select id from sessions where id = ${one.id} for update`);
         targetSessions = [one];
       } else throw new Error("Choose a session.");
 
@@ -264,6 +271,7 @@ export async function bookSession(input: {
 
       if (payWith.startsWith("pack:")) {
         const packId = payWith.slice(5);
+        await tx.execute(sql`select id from pack_purchases where id = ${packId} and user_id = ${input.userId} for update`);
         const [purchase] = await tx.select().from(packPurchases).where(and(eq(packPurchases.id, packId), eq(packPurchases.userId, input.userId))).limit(1);
         if (!purchase) throw new Error("That pack isn't in your wallet.");
         const needed = targetSessions.length;
@@ -272,11 +280,17 @@ export async function bookSession(input: {
         const check = canSpendPack({ creditsRemaining: purchase.creditsRemaining, expiresAt: purchase.expiresAt, now, covers });
         if (!check.ok) throw new Error(check.reason);
         if (purchase.creditsRemaining < needed) throw new Error(`This booking needs ${needed} credits and the pack has ${purchase.creditsRemaining}.`);
-        await tx.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining - needed }).where(eq(packPurchases.id, purchase.id));
+        const [spent] = await tx
+          .update(packPurchases)
+          .set({ creditsRemaining: sql`${packPurchases.creditsRemaining} - ${needed}` })
+          .where(and(eq(packPurchases.id, purchase.id), sql`${packPurchases.creditsRemaining} >= ${needed}`))
+          .returning({ id: packPurchases.id });
+        if (!spent) throw new Error(`This booking needs ${needed} credits and the pack has ${purchase.creditsRemaining}.`);
         entitlement = true;
         packPurchaseId = purchase.id;
       } else if (payWith.startsWith("membership:")) {
         const subId = payWith.slice(11);
+        await tx.execute(sql`select id from membership_subscriptions where id = ${subId} for update`);
         const [sub] = await tx.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, subId)).limit(1);
         if (!sub || sub.userId !== input.userId) throw new Error("That membership isn't active.");
         const [plan] = await tx.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
@@ -295,10 +309,21 @@ export async function bookSession(input: {
         if (!sub.unlimited && sub.classesPerPeriod != null && sub.classesUsedThisPeriod + needed > sub.classesPerPeriod) {
           throw new Error("This membership doesn't have enough classes left in the period.");
         }
-        await tx.update(membershipSubscriptions).set({ classesUsedThisPeriod: sub.classesUsedThisPeriod + needed }).where(eq(membershipSubscriptions.id, sub.id));
+        const [spent] = await tx
+          .update(membershipSubscriptions)
+          .set({ classesUsedThisPeriod: sql`${membershipSubscriptions.classesUsedThisPeriod} + ${needed}` })
+          .where(and(
+            eq(membershipSubscriptions.id, sub.id),
+            sub.unlimited || sub.classesPerPeriod == null
+              ? sql`true`
+              : sql`${membershipSubscriptions.classesUsedThisPeriod} + ${needed} <= ${membershipSubscriptions.classesPerPeriod}`,
+          ))
+          .returning({ id: membershipSubscriptions.id });
+        if (!spent) throw new Error("This membership doesn't have enough classes left in the period.");
         entitlement = true;
         membershipSubscriptionId = sub.id;
       } else if (payWith === "first_free" || (!input.series && (klass.firstClassFree || teacher.firstClassFree))) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${input.userId}:${teacher.id}`})::bigint)`);
         const [used] = await tx
           .select()
           .from(introRedemptions)
@@ -528,22 +553,24 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   if (!cancelled.length) return;
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
-  const restore = rows.every((session) => shouldRestoreEntitlement(session.startsAt, now));
-  if (restore && booking.packPurchaseId) {
+  const refundable = rows.filter((session) => shouldRestoreEntitlement(session.startsAt, now));
+  if (refundable.length && booking.packPurchaseId) {
     const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, booking.packPurchaseId)).limit(1);
     if (purchase) {
-      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + links.length }).where(eq(packPurchases.id, purchase.id));
+      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + refundable.length }).where(eq(packPurchases.id, purchase.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
     }
   }
-  if (restore && booking.membershipSubscriptionId) {
+  if (refundable.length && booking.membershipSubscriptionId) {
     const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, booking.membershipSubscriptionId)).limit(1);
     if (sub) {
-      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - links.length) }).where(eq(membershipSubscriptions.id, sub.id));
+      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - refundable.length) }).where(eq(membershipSubscriptions.id, sub.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "membership", sourceId: sub.id, direction: "restore" });
     }
   }
-  if (restore) await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+  if (rows.every((session) => shouldRestoreEntitlement(session.startsAt, now))) {
+    await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+  }
 }
 
 export async function restoreStudioCreditForOrder(orderId: string, input: { scope: string; sessionCount: number; cancelledCount: number; closeRemainder: boolean }) {
@@ -646,23 +673,48 @@ export async function cancelBooking(userId: string, bookingId: string) {
   const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
   const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
   await releaseBookingSeat(booking, now);
+  const sessionCount = Math.max(1, rows.length);
+  const cancelledCount = upcoming.length;
   if (booking.orderId && (outcome === "full_refund" || outcome === "credit")) {
-    await restoreStudioCreditForOrder(booking.orderId, { scope: `student-${booking.id}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true });
+    await restoreStudioCreditForOrder(booking.orderId, {
+      scope: `student-${booking.id}`,
+      sessionCount,
+      cancelledCount,
+      closeRemainder: cancelledCount >= rows.length,
+    });
   }
   if (booking.orderId && outcome === "full_refund") {
-    await issueRefund({ orderId: booking.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: booking.id });
+    await issueRefund({
+      orderId: booking.orderId,
+      reasonCode: "student_cancel",
+      actorUserId: userId,
+      scope: booking.id,
+      sessionCount,
+      cancelledCount,
+    });
   } else if (booking.orderId && outcome === "credit" && klass) {
     const [order] = await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1);
-    if (order) await grantStudioCredit(userId, klass.teacherId, Math.max(0, order.studentPaysCents - order.refundedCents));
+    if (order) {
+      const share = seriesProrate({
+        studentPaysCents: order.studentPaysCents,
+        platformFeeCents: order.platformFeeCents,
+        teacherAmountCents: order.teacherAmountCents,
+        sessionCount,
+        cancelledCount,
+        alreadyRefundedCents: order.refundedCents,
+      });
+      await grantStudioCredit(userId, klass.teacherId, share.refundCents);
+    }
   }
   if (klass) {
     const refunded = outcome === "full_refund";
+    const attendedRemain = rows.some((session) => session.startsAt <= now);
     await emitNotification({
       userId,
       event: refunded ? "booking.refunded" : "booking.cancelled",
       audience: "student",
       title: `Cancelled ${klass.title}`,
-      body: refunded ? "A full refund is on the way to your original payment method." : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
+      body: refunded ? (attendedRemain ? "A refund for the sessions you have not attended is on the way." : "A full refund is on the way to your original payment method.") : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
       href: `/c/${klass.slug}`,
     });
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
@@ -706,15 +758,30 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
     }
   if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
     const [person] = await db.select({ email: user.email, name: user.name }).from(user).where(eq(user.id, order.userId)).limit(1);
-    const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
-    const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
-    if (person?.email && klass) {
-      await sendEmail({
-        to: [person.email],
-        subject: `You're booked: ${klass.title}`,
-        text: "Your spot is reserved.",
-        teacherId: order.teacherId ?? undefined,
-      });
+    let klass: typeof classes.$inferSelect | undefined;
+    if (person?.email && order.kind === "visit") {
+      const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
+      const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
+      if (service) {
+        await sendEmail({
+          to: [person.email],
+          subject: `You're booked: ${service.title}`,
+          text: "Your spot is reserved.",
+          teacherId: order.teacherId ?? undefined,
+        });
+      }
+    } else {
+      const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
+      const [found] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
+      klass = found;
+      if (person?.email && klass) {
+        await sendEmail({
+          to: [person.email],
+          subject: `You're booked: ${klass.title}`,
+          text: "Your spot is reserved.",
+          teacherId: order.teacherId ?? undefined,
+        });
+      }
     }
     if (paidCheckoutEmitsBookingNotifications(order.kind) && klass) {
       const [teacher] = order.teacherId ? await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1) : [];
