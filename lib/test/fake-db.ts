@@ -88,7 +88,7 @@ function chain(rows: Row[]) {
 }
 
 export function createFakeDb() {
-  return {
+  const api = {
     select() {
       return {
         from(table: Table) {
@@ -100,12 +100,18 @@ export function createFakeDb() {
       return {
         set(value: Row) {
           return {
-            async where(condition?: unknown) {
+            where(condition?: unknown) {
               const name = getTableName(table);
               const all = state.tables.get(name) ?? [];
               const matched = condition ? filterRows(all, condition) : all;
               for (const row of matched) Object.assign(row, value);
               state.updates.push({ table: name, value });
+              const pending = Promise.resolve();
+              return Object.assign(pending, {
+                returning() {
+                  return Promise.resolve(matched.map((row) => ({ ...row })));
+                },
+              });
             },
           };
         },
@@ -147,4 +153,17 @@ export function createFakeDb() {
       return Promise.resolve({ rows: [] });
     },
   };
+  return Object.assign(api, {
+    async transaction<T>(run: (tx: typeof api) => Promise<T>) {
+      const snapshot = new Map<string, Row[]>();
+      for (const [name, rows] of state.tables) snapshot.set(name, rows.map((row) => ({ ...row })));
+      try {
+        return await run(api);
+      } catch (error) {
+        state.tables.clear();
+        for (const [name, rows] of snapshot) state.tables.set(name, rows);
+        throw error;
+      }
+    },
+  });
 }
