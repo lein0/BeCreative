@@ -167,7 +167,7 @@ describe("student API bugbot regressions", () => {
       accountSubject({ profile }: { profile: { sub?: string } }) {
         return profile.sub ?? "";
       },
-    } as (typeof ctx.socialProviders)[number]);
+    } as unknown as (typeof ctx.socialProviders)[number]);
     const signInSocial = vi.spyOn(auth.api, "signInSocial").mockRejectedValue(new Error("reauth must not create an account"));
     try {
       const mismatch = await bearer(person.raw, "me", {
@@ -273,7 +273,7 @@ describe("student API bugbot regressions", () => {
       accountSubject({ profile }: { profile: { sub?: string } }) {
         return profile.sub ?? "";
       },
-    } as (typeof ctx.socialProviders)[number]);
+    } as unknown as (typeof ctx.socialProviders)[number]);
     const signInSocial = vi.spyOn(auth.api, "signInSocial").mockResolvedValue({ redirect: false, url: undefined, user: { id: person.id, name: "Reserved", email: person.email } } as never);
     try {
       const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/social", {
@@ -317,7 +317,7 @@ describe("student API bugbot regressions", () => {
       accountSubject({ profile }: { profile: { sub?: string } }) {
         return profile.sub ?? "";
       },
-    } as (typeof ctx.socialProviders)[number]);
+    } as unknown as (typeof ctx.socialProviders)[number]);
     let calls = 0;
     const createdId = crypto.randomUUID();
     userIds.push(createdId);
