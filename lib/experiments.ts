@@ -36,7 +36,7 @@ export async function exposeExperiment(key: string, subjectId: string, userId?: 
     .from(analyticsEvents)
     .where(and(eq(analyticsEvents.name, "experiment_exposed"), eq(analyticsEvents.anonymousId, subjectId), sql`${analyticsEvents.properties}->>'experiment' = ${key}`))
     .limit(1);
-  if (!existing) {
+  if (!existing && assigned.experiment.status === "running") {
     await capture({
       name: "experiment_exposed",
       anonymousId: subjectId,

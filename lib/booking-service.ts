@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { decideBooking, decideSeriesBooking } from "@/lib/booking-rules";
 import { db } from "@/lib/db";
@@ -37,16 +37,19 @@ import {
   quoteWithStudioCredit,
   shouldRestoreEntitlement,
   validatePromo,
+  type ProductScope,
   type PromoRule,
 } from "@/lib/pricing";
 import {
   checkoutMustReleaseSeat,
   collectsOnline,
   duplicateSeriesBooking,
+  membershipRenewalExtendsAccess,
   membershipStatusOnAbandon,
   membershipStatusOnCreate,
   membershipStatusOnPayment,
   orderMoney,
+  renewalChargeSplit,
   packCreditsOnCreate,
   packCreditsOnPayment,
   parseAttributionCookie,
@@ -60,7 +63,7 @@ import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { sameLocalDay } from "@/lib/messaging-rules";
 import { emitNotification } from "@/lib/notifications";
 import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
-import { grantStudioCredit, issueRefund } from "@/lib/refunds";
+import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
 import { createCheckout, createPaymentIntent, getStripe, stripeConfigured } from "@/lib/stripe";
@@ -76,8 +79,15 @@ async function fees() {
 }
 
 async function attribution() {
-  const jar = await cookies();
-  const raw = jar.get("bc_attr")?.value;
+  let raw: string | undefined;
+  let code = "";
+  try {
+    const jar = await cookies();
+    raw = jar.get("bc_attr")?.value;
+    code = jar.get("bc_code")?.value ?? "";
+  } catch {
+    raw = undefined;
+  }
   let ref: string | null = null;
   let utmSource: string | null = null;
   let utmMedium: string | null = null;
@@ -89,7 +99,7 @@ async function attribution() {
     utmMedium = parsed.utmMedium;
     utmCampaign = parsed.utmCampaign;
   }
-  return { ref, utmSource, utmMedium, utmCampaign, code: jar.get("bc_code")?.value ?? "" };
+  return { ref, utmSource, utmMedium, utmCampaign, code };
 }
 
 function toRule(row: typeof promoCodes.$inferSelect): PromoRule {
@@ -154,10 +164,11 @@ async function stripeHoldCanRelease(
   return true;
 }
 
-export async function releaseExpiredCheckoutHolds(now = new Date()) {
+export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { touchStripe?: boolean }) {
   const cutoff = checkoutHoldCutoff(now, checkoutHoldMinutes());
   const stale = await db.select().from(orders).where(and(eq(orders.status, "pending"), lte(orders.createdAt, cutoff)));
-  const stripe = getStripe();
+  const touchStripe = options?.touchStripe !== false;
+  const stripe = touchStripe ? getStripe() : null;
   let released = 0;
   for (const order of stale) {
     if (stripe && !(await stripeHoldCanRelease(stripe, order))) continue;
@@ -167,13 +178,39 @@ export async function releaseExpiredCheckoutHolds(now = new Date()) {
       .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
       .returning({ id: orders.id });
     if (!updated.length) continue;
+    const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+    const seatLinks = linked.length
+      ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
+      : [];
     await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
     await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
     await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+    await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
     released += 1;
   }
+  if (touchStripe) await expireStripeForReleasedHolds();
   return released;
+}
+
+async function expireStripeForReleasedHolds() {
+  const stripe = getStripe();
+  if (!stripe) return;
+  const leftover = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.status, "expired"), sql`${orders.stripeCheckoutSessionId} is not null`))
+    .limit(25);
+  for (const order of leftover) {
+    if (!order.stripeCheckoutSessionId) continue;
+    try {
+      const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    } catch {
+      // Already closed.
+    }
+    await db.update(orders).set({ stripeCheckoutSessionId: null }).where(eq(orders.id, order.id));
+  }
 }
 
 export async function confirmedCount(sessionId: string, tx: typeof db = db) {
@@ -183,6 +220,39 @@ export async function confirmedCount(sessionId: string, tx: typeof db = db) {
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
   return Number(row?.count ?? 0);
+}
+
+export async function offerOpenedSeats(sessionIds: string[]) {
+  const unique = [...new Set(sessionIds)];
+  const now = new Date();
+  for (const sessionId of unique) {
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session || session.startsAt <= now || session.status === "cancelled") continue;
+    const taken = await confirmedCount(sessionId);
+    if (taken >= session.capacity) continue;
+    const [next] = await db
+      .select()
+      .from(waitlistEntries)
+      .where(and(eq(waitlistEntries.sessionId, sessionId), eq(waitlistEntries.status, "waiting")))
+      .orderBy(asc(waitlistEntries.createdAt))
+      .limit(1);
+    if (!next) continue;
+    const claimed = await db
+      .update(waitlistEntries)
+      .set({ status: "offered" })
+      .where(and(eq(waitlistEntries.id, next.id), eq(waitlistEntries.status, "waiting")))
+      .returning({ id: waitlistEntries.id });
+    if (!claimed.length) continue;
+    const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, next.userId)).limit(1);
+    const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
+    if (!person?.email || !klass) continue;
+    await sendEmail({
+      to: [person.email],
+      subject: `A seat opened: ${klass.title}`,
+      text: `A spot opened in ${klass.title}. You do not have a reserved seat yet. Book it from the class page.`,
+      teacherId: klass.teacherId,
+    });
+  }
 }
 
 export async function priorWithTeacher(userId: string, teacherId: string) {
@@ -388,6 +458,7 @@ export async function bookSession(input: {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, codeInput.code)).limit(1);
         if (!found) promoError = "That code isn't recognized.";
         else {
+          await tx.execute(sql`select id from promo_codes where id = ${found.id} for update`);
           const [totals] = await tx
             .select({ count: sql<number>`count(*)::int` })
             .from(promoRedemptions)
@@ -589,12 +660,18 @@ export async function bookSession(input: {
 export async function abandonFailedCheckout(orderId: string) {
   const now = new Date();
   const held = await db.select().from(bookings).where(and(eq(bookings.orderId, orderId), eq(bookings.status, "confirmed")));
+  const links = held.length
+    ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, held.map((booking) => booking.id)))
+    : [];
   for (const booking of held) await releaseBookingSeat(booking, now);
   const visits = await db.select().from(visitBookings).where(and(eq(visitBookings.orderId, orderId), eq(visitBookings.status, "confirmed")));
   for (const visit of visits) await releaseVisitSeat(visit, now);
   await restoreStudioCreditForOrder(orderId, { scope: "abandon", sessionCount: 1, cancelledCount: 1, closeRemainder: true });
   await db.update(orders).set({ status: "cancelled", updatedAt: now }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
   await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, orderId));
+  await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, orderId));
+  await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, orderId));
+  await offerOpenedSeats(links.map((link) => link.sessionId));
 }
 
 async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Date) {
@@ -761,7 +838,8 @@ export async function cancelBooking(userId: string, bookingId: string) {
         cancelledCount,
         alreadyRefundedCents: order.refundedCents,
       });
-      await grantStudioCredit(userId, klass.teacherId, share.refundCents);
+      const applied = await consumeRefundableCash(order.id, share.refundCents);
+      if (applied > 0) await grantStudioCredit(userId, klass.teacherId, applied);
     }
   }
   if (klass) {
@@ -790,6 +868,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       });
     }
   }
+  await offerOpenedSeats(rows.map((session) => session.id));
   return { ok: true, outcome, feeCents: fee };
 }
 
@@ -800,18 +879,29 @@ export async function rescheduleBooking(userId: string, bookingId: string, sessi
       if (!booking) return { error: "Booking not found." };
       const links = await tx.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
       if (links.length !== 1) return { error: "Move one date at a time." };
+      const link = links[0]!;
+      await tx.execute(sql`select id from booking_sessions where id = ${link.id} for update`);
+      const [freshLink] = await tx.select().from(bookingSessions).where(eq(bookingSessions.id, link.id)).limit(1);
+      const [current] = await tx.select().from(sessions).where(eq(sessions.id, link.sessionId)).limit(1);
+      if (!freshLink || !current || freshLink.checkedIn || current.startsAt <= new Date()) return { error: "That date has already been used." };
       await tx.execute(sql`select id from sessions where id = ${sessionId} for update`);
       const [next] = await tx.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
       if (!next || next.classId !== booking.classId || next.status !== "scheduled" || next.startsAt <= new Date()) return { error: "That date is not open." };
-      if (links[0]!.sessionId === next.id) return { ok: true as const };
+      if (link.sessionId === next.id) return { ok: true as const };
       const taken = await confirmedCount(next.id, tx as unknown as typeof db);
       if (taken >= next.capacity) return { error: "That date is full." };
-      await tx.update(bookingSessions).set({ sessionId: next.id }).where(and(eq(bookingSessions.bookingId, booking.id), eq(bookingSessions.sessionId, links[0]!.sessionId)));
+      await tx.update(bookingSessions).set({ sessionId: next.id }).where(and(eq(bookingSessions.bookingId, booking.id), eq(bookingSessions.sessionId, link.sessionId)));
       return { ok: true as const };
     });
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not move that date." };
   }
+}
+
+async function recordOfferMoney(userId: string, orderId: string, kind: string) {
+  const { capture } = await import("@/lib/analytics");
+  await capture({ name: "checkout_completed", userId, properties: { orderId, kind } });
+  if (kind === "pack" || kind === "membership") await capture({ name: "offer_purchased", userId, properties: { orderId, kind } });
 }
 
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
@@ -822,11 +912,7 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
     .returning();
   if (!updated.length) return;
   const order = updated[0]!;
-  if (order.userId) {
-    const { capture } = await import("@/lib/analytics");
-    await capture({ name: "checkout_completed", userId: order.userId, properties: { orderId: order.id, kind: order.kind } });
-    if (order.kind === "pack" || order.kind === "membership") await capture({ name: "offer_purchased", userId: order.userId, properties: { orderId: order.id, kind: order.kind } });
-  }
+  if (order.userId) await recordOfferMoney(order.userId, order.id, order.kind);
   if (order.kind === "pack") {
     const purchases = await db.select().from(packPurchases).where(eq(packPurchases.orderId, order.id));
     for (const purchase of purchases) {
@@ -856,6 +942,11 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
           text: "Your spot is reserved.",
           teacherId: order.teacherId ?? undefined,
         });
+        if (paidCheckoutEmitsBookingNotifications(order.kind)) {
+          const [teacher] = order.teacherId ? await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1) : [];
+          if (teacher) await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: person.name || "A student", title: service.title, href: "/teach" });
+          await notifyStudentConfirmed({ userId: order.userId, title: service.title, href: `/s/${service.slug}` });
+        }
       }
     } else {
       const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
@@ -878,34 +969,117 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
   }
 }
 
+export async function renewMembershipFromInvoice(input: {
+  subscriptionId: string;
+  invoiceId: string;
+  billingReason: string | null;
+  amountPaidCents: number;
+  paymentIntentId: string | null;
+  periodStart: Date;
+  periodEnd: Date;
+}) {
+  const orderId = `renewal:${input.invoiceId}`;
+  const [already] = await db.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (already) return { extended: false };
+  const linked = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, input.subscriptionId));
+  const original = linked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+  if (!original) return { extended: false };
+  const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, original.id)).limit(1);
+  if (!sub) return { extended: false };
+  if (!membershipRenewalExtendsAccess({ billingReason: input.billingReason, currentPeriodEnd: sub.currentPeriodEnd, invoicePeriodEnd: input.periodEnd })) {
+    return { extended: false };
+  }
+  const money = renewalChargeSplit(original, input.amountPaidCents);
+  await db.insert(orders).values({
+    id: orderId,
+    userId: original.userId,
+    teacherId: original.teacherId,
+    kind: "membership",
+    status: "paid",
+    listPriceCents: money.listPriceCents,
+    discountCents: money.discountCents,
+    studentPaysCents: money.studentPaysCents,
+    platformFeeCents: money.platformFeeCents,
+    teacherAmountCents: money.teacherAmountCents,
+    platformFundedCents: 0,
+    teacherFundedCents: 0,
+    platformLiabilityCents: 0,
+    paymentPath: "card",
+    stripePaymentIntentId: input.paymentIntentId,
+    stripeSubscriptionId: input.subscriptionId,
+  });
+  await db.update(membershipSubscriptions).set({
+    status: membershipStatusOnPayment(),
+    currentPeriodStart: input.periodStart,
+    currentPeriodEnd: input.periodEnd,
+    classesUsedThisPeriod: 0,
+  }).where(eq(membershipSubscriptions.id, sub.id));
+  return { extended: true };
+}
+
+export async function releaseSeatsForRefundedOrder(orderId: string, now = new Date()) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return;
+  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+  if (order.kind === "pack") {
+    await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, order.id));
+  }
+  if (order.kind === "membership") {
+    await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+  }
+  const linked = await db.select().from(bookings).where(eq(bookings.orderId, order.id));
+  for (const booking of linked) {
+    if (!refundCancelsBooking(booking.status)) continue;
+    await releaseBookingSeat(booking, now);
+  }
+  const visits = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id));
+  for (const visit of visits) {
+    if (!refundCancelsBooking(visit.status)) continue;
+    await releaseVisitSeat(visit, now);
+  }
+}
+
 export async function refundOrderByPaymentIntent(intent: string, fullyRefunded = true) {
   if (!chargeRefundReleasesSeats(fullyRefunded)) return;
   const now = new Date();
-  const updated = await db
+  await db
     .update(orders)
-    .set({ status: "refunded", updatedAt: now })
-    .where(and(eq(orders.stripePaymentIntentId, intent), ne(orders.status, "refunded")))
-    .returning();
-  if (!updated.length) return;
-  for (const order of updated) {
-    await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    if (order.kind === "pack") {
-      await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, order.id));
-    }
-    if (order.kind === "membership") {
-      await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
-    }
-    const linked = await db.select().from(bookings).where(eq(bookings.orderId, order.id));
-    for (const booking of linked) {
-      if (!refundCancelsBooking(booking.status)) continue;
-      await releaseBookingSeat(booking, now);
-    }
-    const visits = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id));
-    for (const visit of visits) {
-      if (!refundCancelsBooking(visit.status)) continue;
-      await releaseVisitSeat(visit, now);
-    }
-  }
+    .set({ status: "refunded", refundedCents: sql`${orders.studentPaysCents}`, updatedAt: now })
+    .where(and(
+      eq(orders.stripePaymentIntentId, intent),
+      or(ne(orders.status, "refunded"), sql`${orders.refundedCents} < ${orders.studentPaysCents}`),
+    ));
+  const targets = await db.select().from(orders).where(and(eq(orders.stripePaymentIntentId, intent), eq(orders.status, "refunded")));
+  for (const order of targets) await releaseSeatsForRefundedOrder(order.id, now);
+}
+
+async function lockPromo(
+  tx: Pick<typeof db, "execute" | "select">,
+  promo: typeof promoCodes.$inferSelect,
+  userId: string,
+  now: Date,
+  listPriceCents: number,
+  product: ProductScope,
+) {
+  await tx.execute(sql`select id from promo_codes where id = ${promo.id} for update`);
+  const [totals] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(promoRedemptions)
+    .where(and(eq(promoRedemptions.promoCodeId, promo.id), eq(promoRedemptions.reversed, false)));
+  const [mine] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(promoRedemptions)
+    .where(and(eq(promoRedemptions.promoCodeId, promo.id), eq(promoRedemptions.userId, userId), eq(promoRedemptions.reversed, false)));
+  const verdict = validatePromo({
+    promo: toRule(promo),
+    now,
+    listPriceCents,
+    totalRedemptions: Number(totals?.count ?? 0),
+    customerRedemptions: Number(mine?.count ?? 0),
+    isFirstTimeStudent: !(await priorWithTeacher(userId, product.teacherId ?? "")),
+    product,
+  });
+  if (!verdict.ok) throw new Error(verdict.reason);
 }
 
 async function redemptionCounts(promoCodeId: string, userId: string) {
@@ -918,18 +1092,6 @@ async function redemptionCounts(promoCodeId: string, userId: string) {
     .from(promoRedemptions)
     .where(and(eq(promoRedemptions.promoCodeId, promoCodeId), eq(promoRedemptions.userId, userId), eq(promoRedemptions.reversed, false)));
   return { totalRedemptions: Number(totals?.count ?? 0), customerRedemptions: Number(mine?.count ?? 0) };
-}
-
-async function recordPromoRedemption(promoId: string, userId: string, orderId: string, quote: { discountCents: number; platformFundedCents: number; teacherFundedCents: number }) {
-  await db.insert(promoRedemptions).values({
-    id: crypto.randomUUID(),
-    promoCodeId: promoId,
-    userId,
-    orderId,
-    discountCents: quote.discountCents,
-    platformFundedCents: quote.platformFundedCents,
-    teacherFundedCents: quote.teacherFundedCents,
-  });
 }
 
 export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean }) {
@@ -973,38 +1135,55 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
     const money = orderMoney(quote, online);
     const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
-    await db.insert(orders).values({
-      id: orderId,
-      userId: input.userId,
-      teacherId: pack.teacherId,
-      kind: "pack",
-      status,
-      listPriceCents: quote.listPriceCents,
-      discountCents: quote.discountCents,
-      studentPaysCents: quote.studentPaysCents,
-      platformFeeCents: money.platformFeeCents,
-      teacherAmountCents: money.teacherAmountCents,
-      platformFundedCents: quote.platformFundedCents,
-      teacherFundedCents: quote.teacherFundedCents,
-      platformLiabilityCents: money.platformLiabilityCents,
-      promoCodeId: promo?.id,
-      paymentPath: quote.paymentPath,
-      ref: attr.ref,
-      utmSource: attr.utmSource,
-      utmMedium: attr.utmMedium,
-      utmCampaign: attr.utmCampaign,
-    });
-    if (promo) await recordPromoRedemption(promo.id, input.userId, orderId, quote);
-    await db.insert(packPurchases).values({
-      id: purchaseId,
-      orderId,
-      userId: input.userId,
-      packId: pack.id,
-      teacherId: pack.teacherId,
-      creditsTotal: pack.creditCount,
-      creditsRemaining: packCreditsOnCreate({ awaitingCardPayment: status === "pending", creditCount: pack.creditCount }),
-      expiresAt: new Date(now.getTime() + pack.expiryDays * 86_400_000),
-    });
+    try {
+      await db.transaction(async (tx) => {
+        if (promo) await lockPromo(tx, promo, input.userId, now, pack.priceCents, { kind: "pack", teacherId: pack.teacherId, packId: pack.id });
+        await tx.insert(orders).values({
+          id: orderId,
+          userId: input.userId,
+          teacherId: pack.teacherId,
+          kind: "pack",
+          status,
+          listPriceCents: quote.listPriceCents,
+          discountCents: quote.discountCents,
+          studentPaysCents: quote.studentPaysCents,
+          platformFeeCents: money.platformFeeCents,
+          teacherAmountCents: money.teacherAmountCents,
+          platformFundedCents: quote.platformFundedCents,
+          teacherFundedCents: quote.teacherFundedCents,
+          platformLiabilityCents: money.platformLiabilityCents,
+          promoCodeId: promo?.id,
+          paymentPath: quote.paymentPath,
+          ref: attr.ref,
+          utmSource: attr.utmSource,
+          utmMedium: attr.utmMedium,
+          utmCampaign: attr.utmCampaign,
+        });
+        if (promo) {
+          await tx.insert(promoRedemptions).values({
+            id: crypto.randomUUID(),
+            promoCodeId: promo.id,
+            userId: input.userId,
+            orderId,
+            discountCents: quote.discountCents,
+            platformFundedCents: quote.platformFundedCents,
+            teacherFundedCents: quote.teacherFundedCents,
+          });
+        }
+        await tx.insert(packPurchases).values({
+          id: purchaseId,
+          orderId,
+          userId: input.userId,
+          packId: pack.id,
+          teacherId: pack.teacherId,
+          creditsTotal: pack.creditCount,
+          creditsRemaining: packCreditsOnCreate({ awaitingCardPayment: status === "pending", creditCount: pack.creditCount }),
+          expiresAt: new Date(now.getTime() + pack.expiryDays * 86_400_000),
+        });
+      });
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Could not buy." };
+    }
     if (status === "pending" && teacher && input.paymentSheet) {
       const intent = await createPaymentIntent({
         amountCents: quote.studentPaysCents,
@@ -1020,26 +1199,34 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       }
     }
     if (status === "pending" && teacher) {
-      const session = await createCheckout({
-        name: pack.name,
-        amountCents: quote.studentPaysCents,
-        applicationFeeCents: money.platformFeeCents,
-        destinationAccountId: teacher.stripeAccountId,
-        customerEmail: input.email,
-        successPath: "/bookings?pack=1",
-        cancelPath: `/t/${teacher.slug}`,
-        metadata: { type: "order", orderId, userId: input.userId },
-        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-      });
-      if (session?.url) {
-        await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
-        return { checkoutUrl: session.url };
+      try {
+        const session = await createCheckout({
+          name: pack.name,
+          amountCents: quote.studentPaysCents,
+          applicationFeeCents: money.platformFeeCents,
+          destinationAccountId: teacher.stripeAccountId,
+          customerEmail: input.email,
+          successPath: "/bookings?pack=1",
+          cancelPath: `/t/${teacher.slug}`,
+          metadata: { type: "order", orderId, userId: input.userId },
+          statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        });
+        if (session?.url) {
+          await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
+          return { checkoutUrl: session.url };
+        }
+      } catch (error) {
+        await abandonFailedCheckout(orderId);
+        return { error: error instanceof Error ? error.message : "Could not start checkout." };
       }
       const offline = orderMoney(quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
       await db.update(packPurchases).set({ creditsRemaining: packCreditsOnPayment(pack.creditCount) }).where(eq(packPurchases.id, purchaseId));
     }
-    if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: pack.name, href: "/teach/billing" });
+    if (status !== "pending") {
+      await recordOfferMoney(input.userId, orderId, "pack");
+      await notifyOfferPurchased({ teacherUserId: teacher.userId, title: pack.name, href: "/teach/billing" });
+    }
     return { ok: true };
   }
   const [plan] = await db.select().from(memberships).where(eq(memberships.id, input.id)).limit(1);
@@ -1077,53 +1264,76 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
   const periodEnd = new Date(now);
   periodEnd.setMonth(periodEnd.getMonth() + plan.termMonths);
-  await db.insert(orders).values({
-    id: orderId,
-    userId: input.userId,
-    teacherId: plan.teacherId,
-    kind: "membership",
-    status,
-    listPriceCents: quote.listPriceCents,
-    discountCents: quote.discountCents,
-    studentPaysCents: quote.studentPaysCents,
-    platformFeeCents: money.platformFeeCents,
-    teacherAmountCents: money.teacherAmountCents,
-    platformFundedCents: quote.platformFundedCents,
-    teacherFundedCents: quote.teacherFundedCents,
-    platformLiabilityCents: money.platformLiabilityCents,
-    promoCodeId: promo?.id,
-    paymentPath: quote.paymentPath,
-    ref: attr.ref,
-    utmSource: attr.utmSource,
-    utmMedium: attr.utmMedium,
-    utmCampaign: attr.utmCampaign,
-  });
-  if (promo) await recordPromoRedemption(promo.id, input.userId, orderId, quote);
-  await db.insert(membershipSubscriptions).values({
-    id: subId,
-    orderId,
-    userId: input.userId,
-    membershipId: plan.id,
-    teacherId: plan.teacherId,
-    status: membershipStatusOnCreate(status === "pending"),
-    currentPeriodStart: now,
-    currentPeriodEnd: periodEnd,
-    classesPerPeriod: plan.classesPerPeriod,
-    unlimited: plan.kind === "unlimited",
-  });
-  if (status === "pending" && teacher) {
-    const session = await createCheckout({
-      name: plan.name,
-      amountCents: quote.studentPaysCents,
-      applicationFeeCents: money.platformFeeCents,
-      destinationAccountId: teacher.stripeAccountId,
-      customerEmail: input.email,
-      successPath: "/bookings?membership=1",
-      cancelPath: `/t/${teacher.slug}`,
-      metadata: { type: "order", orderId, userId: input.userId },
-      statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-      recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
+  try {
+    await db.transaction(async (tx) => {
+      if (promo) await lockPromo(tx, promo, input.userId, now, plan.priceCents, { kind: "membership", teacherId: plan.teacherId, membershipId: plan.id });
+      await tx.insert(orders).values({
+        id: orderId,
+        userId: input.userId,
+        teacherId: plan.teacherId,
+        kind: "membership",
+        status,
+        listPriceCents: quote.listPriceCents,
+        discountCents: quote.discountCents,
+        studentPaysCents: quote.studentPaysCents,
+        platformFeeCents: money.platformFeeCents,
+        teacherAmountCents: money.teacherAmountCents,
+        platformFundedCents: quote.platformFundedCents,
+        teacherFundedCents: quote.teacherFundedCents,
+        platformLiabilityCents: money.platformLiabilityCents,
+        promoCodeId: promo?.id,
+        paymentPath: quote.paymentPath,
+        ref: attr.ref,
+        utmSource: attr.utmSource,
+        utmMedium: attr.utmMedium,
+        utmCampaign: attr.utmCampaign,
+      });
+      if (promo) {
+        await tx.insert(promoRedemptions).values({
+          id: crypto.randomUUID(),
+          promoCodeId: promo.id,
+          userId: input.userId,
+          orderId,
+          discountCents: quote.discountCents,
+          platformFundedCents: quote.platformFundedCents,
+          teacherFundedCents: quote.teacherFundedCents,
+        });
+      }
+      await tx.insert(membershipSubscriptions).values({
+        id: subId,
+        orderId,
+        userId: input.userId,
+        membershipId: plan.id,
+        teacherId: plan.teacherId,
+        status: membershipStatusOnCreate(status === "pending"),
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        classesPerPeriod: plan.classesPerPeriod,
+        unlimited: plan.kind === "unlimited",
+      });
     });
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not buy." };
+  }
+  if (status === "pending" && teacher) {
+    let session: { id: string; url: string | null } | null = null;
+    try {
+      session = await createCheckout({
+        name: plan.name,
+        amountCents: quote.studentPaysCents,
+        applicationFeeCents: money.platformFeeCents,
+        destinationAccountId: teacher.stripeAccountId,
+        customerEmail: input.email,
+        successPath: "/bookings?membership=1",
+        cancelPath: `/t/${teacher.slug}`,
+        metadata: { type: "order", orderId, userId: input.userId },
+        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
+      });
+    } catch (error) {
+      await abandonFailedCheckout(orderId);
+      return { error: error instanceof Error ? error.message : "Could not start checkout." };
+    }
     if (session?.url) {
       await db.update(orders).set({ stripeCheckoutSessionId: session.id, status: "pending" }).where(eq(orders.id, orderId));
       return { checkoutUrl: session.url };
@@ -1132,6 +1342,9 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, subId));
   }
-  if (status !== "pending") await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
+  if (status !== "pending") {
+    await recordOfferMoney(input.userId, orderId, "membership");
+    await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
+  }
   return { ok: true };
 }

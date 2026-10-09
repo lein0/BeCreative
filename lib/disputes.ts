@@ -1,8 +1,8 @@
 import { and, arrayContains, eq, inArray } from "drizzle-orm";
-import { classHasStarted, disputeLiability, disputeUpdateFromStripe, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
+import { classHasStarted, disputeLiability, disputeUpdateFromStripe, disputeAcceptsEvidence, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, refreshCheckedInEvidence, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
 import { textPdf } from "@/lib/evidence-pdf";
 import { db } from "@/lib/db";
-import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, orders, platformSettings, policyAcceptances, sessions, teachers, user, waiverSignatures } from "@/lib/db/schema";
+import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, orders, platformSettings, policyAcceptances, services, sessions, teachers, user, visitBookings, waiverSignatures } from "@/lib/db/schema";
 import { ensureQueuedJob } from "@/lib/jobs";
 import { emitNotification } from "@/lib/notifications";
 import { issueRefund } from "@/lib/refunds";
@@ -44,6 +44,8 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
   const [person] = order.userId ? await db.select().from(user).where(eq(user.id, order.userId)).limit(1) : [];
   const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
   const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
+  const [visit] = booking ? [] : await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
+  const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
   const links = booking ? await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id)) : [];
   const sessionRows = links.length ? await db.select().from(sessions).where(eq(sessions.id, links[0]!.sessionId)) : [];
   const [acceptance] = await db.select().from(policyAcceptances).where(eq(policyAcceptances.orderId, order.id)).limit(1);
@@ -71,8 +73,8 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
   return {
     customerName: person?.name || "Customer",
     customerEmail: person?.email || "",
-    productDescription: klass ? `${klass.title}. ${klass.description}` : order.kind,
-    sessionWhen: sessionRows[0]?.startsAt.toISOString() ?? "not recorded",
+    productDescription: klass ? `${klass.title}. ${klass.description}` : service ? `${service.title}. ${service.description}` : order.kind,
+    sessionWhen: sessionRows[0]?.startsAt.toISOString() ?? visit?.startsAt.toISOString() ?? "not recorded",
     policyText: acceptance?.policyText || empty.policyText,
     acceptedAt: acceptance?.acceptedAt.toISOString() ?? null,
     acceptedIp: acceptance?.ip ?? null,
@@ -116,8 +118,15 @@ export async function recordDispute(input: { id: string; paymentIntentId?: strin
   const confirmed = Boolean(existing[0]?.attendanceConfirmed) || attendance;
   const runAt = confirmed || !due ? new Date() : new Date(due.getTime() - policy.leadHours * 3_600_000);
   if (existing[0]) {
-    await db.update(disputes).set(disputeUpdateFromStripe(existing[0], row)).where(eq(disputes.id, input.id));
-    if (existing[0].evidenceStatus !== "submitted" && existing[0].evidenceStatus !== "held") {
+    const merged = disputeUpdateFromStripe(existing[0], row);
+    const checkedIn = refreshCheckedInEvidence({
+      summary: merged.summary,
+      evidence: merged.evidence,
+      incomingEvidence: row.evidence,
+      attendanceConfirmed: attendance,
+    });
+    await db.update(disputes).set({ ...merged, summary: checkedIn.summary, evidence: checkedIn.evidence }).where(eq(disputes.id, input.id));
+    if (existing[0].evidenceStatus !== "submitted" && existing[0].evidenceStatus !== "held" && disputeAcceptsEvidence(input.status)) {
       await ensureQueuedJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
     }
   } else {
@@ -135,7 +144,9 @@ export async function recordDispute(input: { id: string; paymentIntentId?: strin
         });
       }
     }
-    await ensureQueuedJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
+    if (disputeAcceptsEvidence(input.status)) {
+      await ensureQueuedJob("dispute.submit", { disputeId: input.id }, runAt, `dispute-submit:${input.id}`);
+    }
   }
   return { id: input.id, evidence };
 }
@@ -145,6 +156,7 @@ type SubmitResult = { ok: boolean; replayed?: boolean; skipped?: boolean; waitin
 export async function submitDispute(disputeId: string, actorUserId?: string | null): Promise<SubmitResult> {
   const [row] = await db.select().from(disputes).where(eq(disputes.id, disputeId)).limit(1);
   if (!row || row.evidenceStatus === "submitted") return { ok: true, replayed: true };
+  if (!disputeAcceptsEvidence(row.status)) return { ok: true, skipped: true };
   const policy = await settings();
   const now = new Date();
   if (!actorUserId && (row.evidenceStatus === "held" || !policy.autoSubmit)) return { ok: true, skipped: true };
@@ -209,6 +221,10 @@ export async function handleEarlyFraud(input: { chargeId: string; paymentIntentI
     const links = booking ? await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id)) : [];
     const sessionRows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
     classStarted = classHasStarted(sessionRows.map((session) => session.startsAt), new Date());
+  }
+  if (order && !classStarted) {
+    const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
+    if (visit) classStarted = classHasStarted([visit.startsAt], new Date());
   }
   const decision = earlyFraudDecision({ amountCents: input.amountCents, classStarted, thresholdCents: policy.fraudMax });
   if (decision === "refund" && order) {
