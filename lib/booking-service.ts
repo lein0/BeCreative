@@ -671,6 +671,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
   if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
+  const upcoming = rows.filter((session) => session.startsAt > now).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
   const startsAt = nextUpcomingStart(rows.map((session) => session.startsAt), now);
   if (!startsAt) return { error: "This class has already started." };
   const [klass] = await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1);

@@ -64,6 +64,8 @@ async function dispatchStripeEvent(event: Stripe.Event) {
     let paymentIntent = typeof warning.payment_intent === "string" ? warning.payment_intent : undefined;
     let amountCents = 0;
     if (chargeId) {
+      const stripe = getStripe();
+      if (!stripe) throw new Error("Stripe is not configured.");
       const charge = await stripe.charges.retrieve(chargeId);
       amountCents = charge.amount;
       paymentIntent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id ?? paymentIntent;
