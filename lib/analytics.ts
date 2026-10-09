@@ -82,7 +82,11 @@ export async function capture(input: TrackInput) {
     ...(input.at ? { createdAt: input.at } : {}),
   });
   const distinctId = input.userId || anonymousId || id;
-  await forwardPostHog({ name: input.name, distinctId, properties: { platform, ...(input.properties ?? {}) }, consent });
+  try {
+    await forwardPostHog({ name: input.name, distinctId, properties: { platform, ...(input.properties ?? {}) }, consent });
+  } catch {
+    // The first-party row is already stored. A PostHog outage must not fail the page.
+  }
   return { ok: true as const, id };
 }
 

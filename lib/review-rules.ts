@@ -54,6 +54,11 @@ export async function readLimitedBody(request: Request, limit = MAX_UPLOAD_BYTES
 }
 
 export function paidCheckoutSendsBookingEmail(kind: string) {
+  return kind === "booking" || kind === "visit";
+}
+
+/** Card checkout returns before the in-app booking events. Fulfillment has to emit them for class bookings. */
+export function paidCheckoutEmitsBookingNotifications(kind: string) {
   return kind === "booking";
 }
 

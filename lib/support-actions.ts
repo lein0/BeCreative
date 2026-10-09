@@ -1,16 +1,17 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
-import { bookings, classes, faqArticles, tickets } from "@/lib/db/schema";
+import { bookings, classes, disputes, faqArticles, teachers, tickets } from "@/lib/db/schema";
 import { hitRateLimit } from "@/lib/rate-limit";
 import { addDisputeNote, editDisputeSummary, holdDispute, overrideLiability, submitDispute } from "@/lib/disputes";
 import { assignTicket, mergeTickets, openTicket, recordCsat, replyToTicket, resolveTicket, saveCannedReply } from "@/lib/support";
 import { deleteAccount } from "@/lib/account-data";
 import { canManageRoles, canViewPlatformStats } from "@/lib/permissions";
+import { canAddDisputeNote, ticketCommandAllowed } from "@/lib/support-access";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -21,7 +22,8 @@ export async function ticketAction(formData: FormData) {
   const limit = await hitRateLimit(`support:${actor.id}`, 10, 60 * 60 * 1000);
   if (!limit.ok) redirect("/help?error=Too%20many%20requests.%20Wait%20an%20hour.");
   const bookingId = text(formData, "bookingId");
-  const [booking] = bookingId ? await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1) : [];
+  const [booking] = bookingId ? await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, actor.id))).limit(1) : [];
+  if (bookingId && (!booking || booking.userId !== actor.id)) redirect("/help?error=That%20booking%20is%20not%20on%20your%20account.");
   const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
   const category = text(formData, "category") || "class";
   await openTicket({
@@ -41,24 +43,37 @@ export async function supportReplyAction(formData: FormData) {
   const actor = await requireActor();
   const ticketId = text(formData, "ticketId");
   const command = text(formData, "command");
+  const [teacher] = await db.select({ id: teachers.id }).from(teachers).where(eq(teachers.userId, actor.id)).limit(1);
+  const [ticket] = ticketId ? await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1) : [];
+  if (command !== "canned" && !ticket) return;
+  const isTicketTeacher = Boolean(teacher && ticket && (await teacherTicketGuard(ticket.id, teacher.id)));
+  const allowed = ticketCommandAllowed(
+    {
+      isAdmin: canViewPlatformStats(actor.roles),
+      isTicketTeacher,
+      isOwner: Boolean(ticket && ticket.userId === actor.id),
+      resolved: ticket?.status === "resolved",
+    },
+    command,
+    formData.get("internal") === "1",
+  );
+  if (!allowed) return;
   if (command === "assign") {
-    if (!canViewPlatformStats(actor.roles)) return;
     await assignTicket(ticketId, text(formData, "assignee") || actor.id);
   } else if (command === "merge") {
-    if (!canViewPlatformStats(actor.roles)) return;
     await mergeTickets(ticketId, text(formData, "targetId"));
   } else if (command === "resolve") {
     await resolveTicket(ticketId);
   } else if (command === "csat") {
     await recordCsat(ticketId, Number(text(formData, "score") || 5));
   } else if (command === "canned") {
-    if (!canViewPlatformStats(actor.roles)) return;
     await saveCannedReply(text(formData, "title"), text(formData, "cannedBody"), text(formData, "category") || "class");
   } else {
     await replyToTicket({ ticketId, authorUserId: actor.id, body: text(formData, "body"), internal: formData.get("internal") === "1", teacherSide: true });
   }
   revalidatePath("/admin/support");
   revalidatePath("/teach/support");
+  if (ticketId) revalidatePath(`/help/tickets/${ticketId}`);
   redirect(text(formData, "back") || "/admin/support");
 }
 
@@ -79,6 +94,9 @@ export async function disputeAction(formData: FormData) {
     if (!canManageRoles(actor.roles)) return;
     await overrideLiability(id, text(formData, "amountBearer") || "teacher", text(formData, "feeBearer") || "platform", actor.id);
   } else {
+    const [teacher] = await db.select({ id: teachers.id }).from(teachers).where(eq(teachers.userId, actor.id)).limit(1);
+    const [dispute] = id ? await db.select({ teacherId: disputes.teacherId }).from(disputes).where(eq(disputes.id, id)).limit(1) : [];
+    if (!canAddDisputeNote({ isAdmin: canManageRoles(actor.roles), actorTeacherId: teacher?.id ?? null, disputeTeacherId: dispute?.teacherId ?? null })) return;
     await addDisputeNote(id, actor.id, text(formData, "body"));
   }
   revalidatePath("/admin/disputes");

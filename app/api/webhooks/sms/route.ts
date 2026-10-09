@@ -1,4 +1,5 @@
-import { applySmsKeyword } from "@/lib/messaging";
+import { applySmsKeyword, sendKeywordReply } from "@/lib/messaging";
+import { smsWebhookIsForm, twimlMessage } from "@/lib/messaging-rules";
 import { hitRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
@@ -29,5 +30,9 @@ export async function POST(request: Request) {
   }
   if (!phone) return Response.json({ ok: false }, { status: 400 });
   const result = await applySmsKeyword(phone, body);
+  if (result.reply && smsWebhookIsForm(contentType)) {
+    return new Response(twimlMessage(result.reply), { headers: { "content-type": "text/xml; charset=utf-8" } });
+  }
+  if (result.reply) await sendKeywordReply(phone, result.reply);
   return Response.json({ ok: true, ...result });
 }

@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type { AppNotification } from "@mobile/api/types";
 import { Body, Button, Card, Display, Title } from "@mobile/components/ui";
 import { registerPush } from "@mobile/device/push";
+import { markNotificationRead } from "@mobile/inbox/read";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -34,7 +35,7 @@ export default function Inbox() {
         <Button label="Allow notifications" onPress={() => void enable()} testID="enable-push" />
         <Button label="Notification preferences" tone="ghost" onPress={() => router.push("/preferences")} />
         {items.map((item) => (
-          <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={item.title} onPress={() => { void api.markNotificationsRead(item.id); void track("notification_opened", { id: item.id }); }}>
+          <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={item.title} onPress={() => { setItems((current) => markNotificationRead(current, item.id, new Date().toISOString())); void api.markNotificationsRead(item.id); void track("notification_opened", { id: item.id }); }}>
             <Card>
               <Title>{item.title}</Title>
               <Body>{item.body}</Body>

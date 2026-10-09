@@ -34,6 +34,10 @@ export default function Checkout() {
         setError("Checkout was cancelled. You can try again.");
         return;
       }
+      if (result !== "success") {
+        setError("Checkout closed before it finished. You can try again.");
+        return;
+      }
       setDone(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open checkout.");

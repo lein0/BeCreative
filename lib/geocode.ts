@@ -59,6 +59,14 @@ export class MapboxGeocoder implements Geocoder {
   }
 }
 
+export async function coordinatesForVisit(
+  input: { address: string; neighborhood?: string; city?: string },
+  coder: Geocoder = geocoder(),
+) {
+  const geo = await coder.geocode(`${input.address}, ${input.neighborhood ?? ""} ${input.city || "Los Angeles"}`);
+  return { lat: geo?.lat ?? 34.05, lng: geo?.lng ?? -118.25 };
+}
+
 export function geocoder(): Geocoder {
   if (process.env.GEOCODER_PROVIDER === "nominatim") return new NominatimGeocoder();
   if (process.env.GEOCODER_PROVIDER === "mapbox") return new MapboxGeocoder();

@@ -24,6 +24,12 @@ export async function releaseSocialLogin(userId: string) {
   await db.update(apiTokens).set({ revokedAt: new Date() }).where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
 }
 
+export async function sessionAllowedForUser(userId: string) {
+  if (!userId) return false;
+  const [row] = await db.select({ deletedAt: user.deletedAt }).from(user).where(eq(user.id, userId)).limit(1);
+  return Boolean(row && !row.deletedAt);
+}
+
 export async function deleteAccount(userId: string) {
   await db.update(user).set({
     name: "Deleted account",
@@ -33,4 +39,5 @@ export async function deleteAccount(userId: string) {
     emailUnsubscribed: true,
   }).where(eq(user.id, userId));
   await releaseSocialLogin(userId);
+  await db.delete(account).where(eq(account.userId, userId));
 }

@@ -1,7 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/lib/db";
-import { bookings, classes, platformSettings, promoCodes, promoRedemptions } from "@/lib/db/schema";
+import { platformSettings, promoCodes, promoRedemptions } from "@/lib/db/schema";
+import { priorWithTeacher } from "@/lib/booking-service";
 import { quotePrice, type PromoRule } from "@/lib/pricing";
 import { classPromoDecision } from "@/lib/review-rules";
 import { recordClick } from "@/lib/queries";
@@ -58,12 +59,7 @@ export async function quoteCode(input: { code?: string; listPriceCents: number; 
   }
   let isFirstTimeStudent = true;
   if (input.userId && input.teacherId) {
-    const [prior] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(bookings)
-      .innerJoin(classes, eq(classes.id, bookings.classId))
-      .where(and(eq(bookings.userId, input.userId), eq(classes.teacherId, input.teacherId), eq(bookings.status, "confirmed")));
-    isFirstTimeStudent = Number(prior?.count ?? 0) === 0;
+    isFirstTimeStudent = !(await priorWithTeacher(input.userId, input.teacherId));
   }
   const check = classPromoDecision({
     promo,
