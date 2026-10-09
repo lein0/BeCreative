@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { studioCanSell } from "@/lib/review-rules";
 import {
   availabilityWindows,
   bookingSessions,
@@ -170,7 +171,7 @@ export async function classDetail(slug: string) {
 
 export async function teacherProfile(slug: string) {
   const [teacher] = await db.select().from(teachers).where(eq(teachers.slug, slug)).limit(1);
-  if (!teacher) return null;
+  if (!teacher || !studioCanSell(teacher.status)) return null;
   const [person] = await db.select().from(user).where(eq(user.id, teacher.userId)).limit(1);
   const offerings = await db.select().from(classes).where(and(eq(classes.teacherId, teacher.id), eq(classes.status, "published")));
   const upcoming = offerings.length
