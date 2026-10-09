@@ -20,8 +20,8 @@ import { decideManualBooking } from "@/lib/booking-rules";
 import { studioOwnsResource } from "@/lib/checkout-rules";
 import { sendIndividually } from "@/lib/email";
 import { geocoder } from "@/lib/geocode";
-import { collectOccurrences, describeRecurrence, diffSessions, previewOccurrences, type RecurrenceRule } from "@/lib/recurrence";
-import { addDaysYmd, ymdInZone, zonedTimeToUtc } from "@/lib/time";
+import { describeRecurrence, diffSessions, occurrencesForSync, type RecurrenceRule } from "@/lib/recurrence";
+import { ymdInZone, zonedTimeToUtc } from "@/lib/time";
 import { uniqueSlug } from "@/lib/utils";
 
 export async function audit(entry: { actorUserId: string; teacherId: string; delegated: boolean; action: string; entityType: string; entityId?: string; summary: string }) {
@@ -49,10 +49,10 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
     endDate: ruleRow.endDate,
     endCount: ruleRow.endCount,
   };
-  const desired = rule.endType === "never"
-    ? collectOccurrences(rule, rule.startDate, addDaysYmd(today > rule.startDate ? today : rule.startDate, 56), ruleRow.durationMinutes)
-    : previewOccurrences(rule, ruleRow.durationMinutes);
+  const planned = occurrencesForSync(rule, today, ruleRow.durationMinutes);
+  const desired = planned.occurrences;
   const existing = await db.select().from(sessions).where(eq(sessions.recurrenceId, recurrenceId));
+  const considered = planned.from ? existing.filter((session) => session.localDate >= planned.from!) : existing;
   const booked = new Set<string>();
   if (existing.length) {
     const links = await db
@@ -70,7 +70,7 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
     return;
   }
   const diff = diffSessions(
-    existing.map((session) => ({
+    considered.map((session) => ({
       id: session.id,
       date: session.localDate,
       hasBookings: booked.has(session.id),

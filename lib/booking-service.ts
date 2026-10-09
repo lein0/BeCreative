@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { decideBooking, decideSeriesBooking } from "@/lib/booking-rules";
 import { db } from "@/lib/db";
@@ -31,15 +31,18 @@ import {
   quotePrice,
   shouldRestoreEntitlement,
   validatePromo,
+  type ProductScope,
   type PromoRule,
 } from "@/lib/pricing";
 import {
   collectsOnline,
   duplicateSeriesBooking,
+  membershipRenewalExtendsAccess,
   membershipStatusOnAbandon,
   membershipStatusOnCreate,
   membershipStatusOnPayment,
   orderMoney,
+  renewalChargeSplit,
   packCreditsOnCreate,
   packCreditsOnPayment,
   parseAttributionCookie,
@@ -102,10 +105,11 @@ function toRule(row: typeof promoCodes.$inferSelect): PromoRule {
   };
 }
 
-export async function releaseExpiredCheckoutHolds(now = new Date()) {
+export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { touchStripe?: boolean }) {
   const cutoff = checkoutHoldCutoff(now, checkoutHoldMinutes());
   const stale = await db.select().from(orders).where(and(eq(orders.status, "pending"), lte(orders.createdAt, cutoff)));
-  const stripe = getStripe();
+  const touchStripe = options?.touchStripe !== false;
+  const stripe = touchStripe ? getStripe() : null;
   let released = 0;
   for (const order of stale) {
     if (stripe && order.stripeCheckoutSessionId) {
@@ -123,12 +127,38 @@ export async function releaseExpiredCheckoutHolds(now = new Date()) {
       .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
       .returning({ id: orders.id });
     if (!updated.length) continue;
+    const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+    const seatLinks = linked.length
+      ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
+      : [];
     await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
     await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+    await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
     released += 1;
   }
+  if (touchStripe) await expireStripeForReleasedHolds();
   return released;
+}
+
+async function expireStripeForReleasedHolds() {
+  const stripe = getStripe();
+  if (!stripe) return;
+  const leftover = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.status, "expired"), sql`${orders.stripeCheckoutSessionId} is not null`))
+    .limit(25);
+  for (const order of leftover) {
+    if (!order.stripeCheckoutSessionId) continue;
+    try {
+      const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    } catch {
+      // Already closed.
+    }
+    await db.update(orders).set({ stripeCheckoutSessionId: null }).where(eq(orders.id, order.id));
+  }
 }
 
 export async function confirmedCount(sessionId: string, tx: typeof db = db) {
@@ -138,6 +168,39 @@ export async function confirmedCount(sessionId: string, tx: typeof db = db) {
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
     .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
   return Number(row?.count ?? 0);
+}
+
+export async function offerOpenedSeats(sessionIds: string[]) {
+  const unique = [...new Set(sessionIds)];
+  const now = new Date();
+  for (const sessionId of unique) {
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session || session.startsAt <= now || session.status === "cancelled") continue;
+    const taken = await confirmedCount(sessionId);
+    if (taken >= session.capacity) continue;
+    const [next] = await db
+      .select()
+      .from(waitlistEntries)
+      .where(and(eq(waitlistEntries.sessionId, sessionId), eq(waitlistEntries.status, "waiting")))
+      .orderBy(asc(waitlistEntries.createdAt))
+      .limit(1);
+    if (!next) continue;
+    const claimed = await db
+      .update(waitlistEntries)
+      .set({ status: "offered" })
+      .where(and(eq(waitlistEntries.id, next.id), eq(waitlistEntries.status, "waiting")))
+      .returning({ id: waitlistEntries.id });
+    if (!claimed.length) continue;
+    const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, next.userId)).limit(1);
+    const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
+    if (!person?.email || !klass) continue;
+    await sendEmail({
+      to: [person.email],
+      subject: `A seat opened: ${klass.title}`,
+      text: `A spot opened in ${klass.title}. You do not have a reserved seat yet. Book it from the class page.`,
+      teacherId: klass.teacherId,
+    });
+  }
 }
 
 async function priorWithTeacher(userId: string, teacherId: string) {
@@ -318,6 +381,7 @@ export async function bookSession(input: {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, codeInput.code)).limit(1);
         if (!found) promoError = "That code isn't recognized.";
         else {
+          await tx.execute(sql`select id from promo_codes where id = ${found.id} for update`);
           const [totals] = await tx
             .select({ count: sql<number>`count(*)::int` })
             .from(promoRedemptions)
@@ -455,9 +519,15 @@ export async function bookSession(input: {
 export async function abandonFailedCheckout(orderId: string) {
   const now = new Date();
   const held = await db.select().from(bookings).where(and(eq(bookings.orderId, orderId), eq(bookings.status, "confirmed")));
+  const links = held.length
+    ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, held.map((booking) => booking.id)))
+    : [];
   for (const booking of held) await releaseBookingSeat(booking, now);
   await db.update(orders).set({ status: "cancelled", updatedAt: now }).where(and(eq(orders.id, orderId), eq(orders.status, "pending")));
   await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, orderId));
+  await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, orderId));
+  await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, orderId));
+  await offerOpenedSeats(links.map((link) => link.sessionId));
 }
 
 async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Date) {
@@ -513,6 +583,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       } else if (coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
     } else if (order && coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
   }
+  await offerOpenedSeats(rows.map((session) => session.id));
   return { ok: true };
 }
 
@@ -551,6 +622,54 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
   }
 }
 
+export async function renewMembershipFromInvoice(input: {
+  subscriptionId: string;
+  invoiceId: string;
+  billingReason: string | null;
+  amountPaidCents: number;
+  paymentIntentId: string | null;
+  periodStart: Date;
+  periodEnd: Date;
+}) {
+  const orderId = `renewal:${input.invoiceId}`;
+  const [already] = await db.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (already) return { extended: false };
+  const linked = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, input.subscriptionId));
+  const original = linked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+  if (!original) return { extended: false };
+  const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, original.id)).limit(1);
+  if (!sub) return { extended: false };
+  if (!membershipRenewalExtendsAccess({ billingReason: input.billingReason, currentPeriodEnd: sub.currentPeriodEnd, invoicePeriodEnd: input.periodEnd })) {
+    return { extended: false };
+  }
+  const money = renewalChargeSplit(original, input.amountPaidCents);
+  await db.insert(orders).values({
+    id: orderId,
+    userId: original.userId,
+    teacherId: original.teacherId,
+    kind: "membership",
+    status: "paid",
+    listPriceCents: money.listPriceCents,
+    discountCents: money.discountCents,
+    studentPaysCents: money.studentPaysCents,
+    platformFeeCents: money.platformFeeCents,
+    teacherAmountCents: money.teacherAmountCents,
+    platformFundedCents: 0,
+    teacherFundedCents: 0,
+    platformLiabilityCents: 0,
+    paymentPath: "card",
+    stripePaymentIntentId: input.paymentIntentId,
+    stripeSubscriptionId: input.subscriptionId,
+  });
+  await db.update(membershipSubscriptions).set({
+    status: membershipStatusOnPayment(),
+    currentPeriodStart: input.periodStart,
+    currentPeriodEnd: input.periodEnd,
+    classesUsedThisPeriod: 0,
+  }).where(eq(membershipSubscriptions.id, sub.id));
+  return { extended: true };
+}
+
 export async function refundOrderByPaymentIntent(intent: string) {
   const now = new Date();
   const updated = await db
@@ -575,6 +694,35 @@ export async function refundOrderByPaymentIntent(intent: string) {
   }
 }
 
+async function lockPromo(
+  tx: Pick<typeof db, "execute" | "select">,
+  promo: typeof promoCodes.$inferSelect,
+  userId: string,
+  now: Date,
+  listPriceCents: number,
+  product: ProductScope,
+) {
+  await tx.execute(sql`select id from promo_codes where id = ${promo.id} for update`);
+  const [totals] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(promoRedemptions)
+    .where(and(eq(promoRedemptions.promoCodeId, promo.id), eq(promoRedemptions.reversed, false)));
+  const [mine] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(promoRedemptions)
+    .where(and(eq(promoRedemptions.promoCodeId, promo.id), eq(promoRedemptions.userId, userId), eq(promoRedemptions.reversed, false)));
+  const verdict = validatePromo({
+    promo: toRule(promo),
+    now,
+    listPriceCents,
+    totalRedemptions: Number(totals?.count ?? 0),
+    customerRedemptions: Number(mine?.count ?? 0),
+    isFirstTimeStudent: !(await priorWithTeacher(userId, product.teacherId ?? "")),
+    product,
+  });
+  if (!verdict.ok) throw new Error(verdict.reason);
+}
+
 async function redemptionCounts(promoCodeId: string, userId: string) {
   const [totals] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -585,18 +733,6 @@ async function redemptionCounts(promoCodeId: string, userId: string) {
     .from(promoRedemptions)
     .where(and(eq(promoRedemptions.promoCodeId, promoCodeId), eq(promoRedemptions.userId, userId), eq(promoRedemptions.reversed, false)));
   return { totalRedemptions: Number(totals?.count ?? 0), customerRedemptions: Number(mine?.count ?? 0) };
-}
-
-async function recordPromoRedemption(promoId: string, userId: string, orderId: string, quote: { discountCents: number; platformFundedCents: number; teacherFundedCents: number }) {
-  await db.insert(promoRedemptions).values({
-    id: crypto.randomUUID(),
-    promoCodeId: promoId,
-    userId,
-    orderId,
-    discountCents: quote.discountCents,
-    platformFundedCents: quote.platformFundedCents,
-    teacherFundedCents: quote.teacherFundedCents,
-  });
 }
 
 export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string }) {
@@ -638,52 +774,74 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     const online = collectsOnline(quote.studentPaysCents, stripeConfigured());
     const money = orderMoney(quote, online);
     const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
-    await db.insert(orders).values({
-      id: orderId,
-      userId: input.userId,
-      teacherId: pack.teacherId,
-      kind: "pack",
-      status,
-      listPriceCents: quote.listPriceCents,
-      discountCents: quote.discountCents,
-      studentPaysCents: quote.studentPaysCents,
-      platformFeeCents: money.platformFeeCents,
-      teacherAmountCents: money.teacherAmountCents,
-      platformFundedCents: quote.platformFundedCents,
-      teacherFundedCents: quote.teacherFundedCents,
-      platformLiabilityCents: money.platformLiabilityCents,
-      promoCodeId: promo?.id,
-      paymentPath: quote.paymentPath,
-      ref: attr.ref,
-      utmSource: attr.utmSource,
-      utmMedium: attr.utmMedium,
-      utmCampaign: attr.utmCampaign,
-    });
-    if (promo) await recordPromoRedemption(promo.id, input.userId, orderId, quote);
-    await db.insert(packPurchases).values({
-      id: purchaseId,
-      orderId,
-      userId: input.userId,
-      packId: pack.id,
-      teacherId: pack.teacherId,
-      creditsTotal: pack.creditCount,
-      creditsRemaining: packCreditsOnCreate({ awaitingCardPayment: status === "pending", creditCount: pack.creditCount }),
-      expiresAt: new Date(now.getTime() + pack.expiryDays * 86_400_000),
-    });
-    if (status === "pending" && teacher) {
-      const session = await createCheckout({
-        name: pack.name,
-        amountCents: quote.studentPaysCents,
-        applicationFeeCents: money.platformFeeCents,
-        destinationAccountId: teacher.stripeAccountId,
-        customerEmail: input.email,
-        successPath: "/bookings?pack=1",
-        cancelPath: `/t/${teacher.slug}`,
-        metadata: { type: "order", orderId },
+    try {
+      await db.transaction(async (tx) => {
+        if (promo) await lockPromo(tx, promo, input.userId, now, pack.priceCents, { kind: "pack", teacherId: pack.teacherId, packId: pack.id });
+        await tx.insert(orders).values({
+          id: orderId,
+          userId: input.userId,
+          teacherId: pack.teacherId,
+          kind: "pack",
+          status,
+          listPriceCents: quote.listPriceCents,
+          discountCents: quote.discountCents,
+          studentPaysCents: quote.studentPaysCents,
+          platformFeeCents: money.platformFeeCents,
+          teacherAmountCents: money.teacherAmountCents,
+          platformFundedCents: quote.platformFundedCents,
+          teacherFundedCents: quote.teacherFundedCents,
+          platformLiabilityCents: money.platformLiabilityCents,
+          promoCodeId: promo?.id,
+          paymentPath: quote.paymentPath,
+          ref: attr.ref,
+          utmSource: attr.utmSource,
+          utmMedium: attr.utmMedium,
+          utmCampaign: attr.utmCampaign,
+        });
+        if (promo) {
+          await tx.insert(promoRedemptions).values({
+            id: crypto.randomUUID(),
+            promoCodeId: promo.id,
+            userId: input.userId,
+            orderId,
+            discountCents: quote.discountCents,
+            platformFundedCents: quote.platformFundedCents,
+            teacherFundedCents: quote.teacherFundedCents,
+          });
+        }
+        await tx.insert(packPurchases).values({
+          id: purchaseId,
+          orderId,
+          userId: input.userId,
+          packId: pack.id,
+          teacherId: pack.teacherId,
+          creditsTotal: pack.creditCount,
+          creditsRemaining: packCreditsOnCreate({ awaitingCardPayment: status === "pending", creditCount: pack.creditCount }),
+          expiresAt: new Date(now.getTime() + pack.expiryDays * 86_400_000),
+        });
       });
-      if (session?.url) {
-        await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
-        return { checkoutUrl: session.url };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "Could not buy." };
+    }
+    if (status === "pending" && teacher) {
+      try {
+        const session = await createCheckout({
+          name: pack.name,
+          amountCents: quote.studentPaysCents,
+          applicationFeeCents: money.platformFeeCents,
+          destinationAccountId: teacher.stripeAccountId,
+          customerEmail: input.email,
+          successPath: "/bookings?pack=1",
+          cancelPath: `/t/${teacher.slug}`,
+          metadata: { type: "order", orderId },
+        });
+        if (session?.url) {
+          await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, orderId));
+          return { checkoutUrl: session.url };
+        }
+      } catch (error) {
+        await abandonFailedCheckout(orderId);
+        return { error: error instanceof Error ? error.message : "Could not start checkout." };
       }
       const offline = orderMoney(quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
@@ -724,52 +882,75 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   const status = quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
   const periodEnd = new Date(now);
   periodEnd.setMonth(periodEnd.getMonth() + plan.termMonths);
-  await db.insert(orders).values({
-    id: orderId,
-    userId: input.userId,
-    teacherId: plan.teacherId,
-    kind: "membership",
-    status,
-    listPriceCents: quote.listPriceCents,
-    discountCents: quote.discountCents,
-    studentPaysCents: quote.studentPaysCents,
-    platformFeeCents: money.platformFeeCents,
-    teacherAmountCents: money.teacherAmountCents,
-    platformFundedCents: quote.platformFundedCents,
-    teacherFundedCents: quote.teacherFundedCents,
-    platformLiabilityCents: money.platformLiabilityCents,
-    promoCodeId: promo?.id,
-    paymentPath: quote.paymentPath,
-    ref: attr.ref,
-    utmSource: attr.utmSource,
-    utmMedium: attr.utmMedium,
-    utmCampaign: attr.utmCampaign,
-  });
-  if (promo) await recordPromoRedemption(promo.id, input.userId, orderId, quote);
-  await db.insert(membershipSubscriptions).values({
-    id: subId,
-    orderId,
-    userId: input.userId,
-    membershipId: plan.id,
-    teacherId: plan.teacherId,
-    status: membershipStatusOnCreate(status === "pending"),
-    currentPeriodStart: now,
-    currentPeriodEnd: periodEnd,
-    classesPerPeriod: plan.classesPerPeriod,
-    unlimited: plan.kind === "unlimited",
-  });
-  if (status === "pending" && teacher) {
-    const session = await createCheckout({
-      name: plan.name,
-      amountCents: quote.studentPaysCents,
-      applicationFeeCents: money.platformFeeCents,
-      destinationAccountId: teacher.stripeAccountId,
-      customerEmail: input.email,
-      successPath: "/bookings?membership=1",
-      cancelPath: `/t/${teacher.slug}`,
-      metadata: { type: "order", orderId },
-      recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
+  try {
+    await db.transaction(async (tx) => {
+      if (promo) await lockPromo(tx, promo, input.userId, now, plan.priceCents, { kind: "membership", teacherId: plan.teacherId, membershipId: plan.id });
+      await tx.insert(orders).values({
+        id: orderId,
+        userId: input.userId,
+        teacherId: plan.teacherId,
+        kind: "membership",
+        status,
+        listPriceCents: quote.listPriceCents,
+        discountCents: quote.discountCents,
+        studentPaysCents: quote.studentPaysCents,
+        platformFeeCents: money.platformFeeCents,
+        teacherAmountCents: money.teacherAmountCents,
+        platformFundedCents: quote.platformFundedCents,
+        teacherFundedCents: quote.teacherFundedCents,
+        platformLiabilityCents: money.platformLiabilityCents,
+        promoCodeId: promo?.id,
+        paymentPath: quote.paymentPath,
+        ref: attr.ref,
+        utmSource: attr.utmSource,
+        utmMedium: attr.utmMedium,
+        utmCampaign: attr.utmCampaign,
+      });
+      if (promo) {
+        await tx.insert(promoRedemptions).values({
+          id: crypto.randomUUID(),
+          promoCodeId: promo.id,
+          userId: input.userId,
+          orderId,
+          discountCents: quote.discountCents,
+          platformFundedCents: quote.platformFundedCents,
+          teacherFundedCents: quote.teacherFundedCents,
+        });
+      }
+      await tx.insert(membershipSubscriptions).values({
+        id: subId,
+        orderId,
+        userId: input.userId,
+        membershipId: plan.id,
+        teacherId: plan.teacherId,
+        status: membershipStatusOnCreate(status === "pending"),
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        classesPerPeriod: plan.classesPerPeriod,
+        unlimited: plan.kind === "unlimited",
+      });
     });
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not buy." };
+  }
+  if (status === "pending" && teacher) {
+    let session: { id: string; url: string | null } | null = null;
+    try {
+      session = await createCheckout({
+        name: plan.name,
+        amountCents: quote.studentPaysCents,
+        applicationFeeCents: money.platformFeeCents,
+        destinationAccountId: teacher.stripeAccountId,
+        customerEmail: input.email,
+        successPath: "/bookings?membership=1",
+        cancelPath: `/t/${teacher.slug}`,
+        metadata: { type: "order", orderId },
+        recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
+      });
+    } catch (error) {
+      await abandonFailedCheckout(orderId);
+      return { error: error instanceof Error ? error.message : "Could not start checkout." };
+    }
     if (session?.url) {
       await db.update(orders).set({ stripeCheckoutSessionId: session.id, status: "pending" }).where(eq(orders.id, orderId));
       return { checkoutUrl: session.url };
