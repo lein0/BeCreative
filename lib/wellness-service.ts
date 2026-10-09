@@ -42,6 +42,7 @@ import { studioCanSell } from "@/lib/review-rules";
 import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { applyStudioCredit, studioCreditLedgerSource } from "@/lib/refund-math";
 import { sendEmail } from "@/lib/email";
+import { notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 import { coordinatesForVisit } from "@/lib/geocode";
 import { createCheckout, stripeConfigured } from "@/lib/stripe";
 import {
@@ -518,6 +519,8 @@ export async function bookVisit(input: {
       text: `Your spot is reserved${status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
       teacherId: teacher.id,
     });
+    await notifyStudentConfirmed({ userId: input.userId, title: created.title, href: `/s/${service.slug}` });
+    await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: input.email, title: created.title, href: "/teach" });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };

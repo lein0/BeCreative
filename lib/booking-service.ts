@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { decideBooking, decideSeriesBooking } from "@/lib/booking-rules";
 import { db } from "@/lib/db";
@@ -62,7 +62,7 @@ import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cance
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
 import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
-import { grantStudioCredit, issueRefund } from "@/lib/refunds";
+import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
@@ -773,7 +773,8 @@ export async function cancelBooking(userId: string, bookingId: string) {
         cancelledCount,
         alreadyRefundedCents: order.refundedCents,
       });
-      await grantStudioCredit(userId, klass.teacherId, share.refundCents);
+      const applied = await consumeRefundableCash(order.id, share.refundCents);
+      if (applied > 0) await grantStudioCredit(userId, klass.teacherId, applied);
     }
   }
   if (klass) {
@@ -840,6 +841,11 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
           text: "Your spot is reserved.",
           teacherId: order.teacherId ?? undefined,
         });
+        if (paidCheckoutEmitsBookingNotifications(order.kind)) {
+          const [teacher] = order.teacherId ? await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1) : [];
+          if (teacher) await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: person.name || "A student", title: service.title, href: "/teach" });
+          await notifyStudentConfirmed({ userId: order.userId, title: service.title, href: `/s/${service.slug}` });
+        }
       }
     } else {
       const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
@@ -910,34 +916,40 @@ export async function renewMembershipFromInvoice(input: {
   return { extended: true };
 }
 
+export async function releaseSeatsForRefundedOrder(orderId: string, now = new Date()) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return;
+  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+  if (order.kind === "pack") {
+    await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, order.id));
+  }
+  if (order.kind === "membership") {
+    await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+  }
+  const linked = await db.select().from(bookings).where(eq(bookings.orderId, order.id));
+  for (const booking of linked) {
+    if (!refundCancelsBooking(booking.status)) continue;
+    await releaseBookingSeat(booking, now);
+  }
+  const visits = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id));
+  for (const visit of visits) {
+    if (!refundCancelsBooking(visit.status)) continue;
+    await releaseVisitSeat(visit, now);
+  }
+}
+
 export async function refundOrderByPaymentIntent(intent: string, fullyRefunded = true) {
   if (!chargeRefundReleasesSeats(fullyRefunded)) return;
   const now = new Date();
-  const updated = await db
+  await db
     .update(orders)
-    .set({ status: "refunded", updatedAt: now })
-    .where(and(eq(orders.stripePaymentIntentId, intent), ne(orders.status, "refunded")))
-    .returning();
-  if (!updated.length) return;
-  for (const order of updated) {
-    await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    if (order.kind === "pack") {
-      await db.update(packPurchases).set({ creditsRemaining: 0 }).where(eq(packPurchases.orderId, order.id));
-    }
-    if (order.kind === "membership") {
-      await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
-    }
-    const linked = await db.select().from(bookings).where(eq(bookings.orderId, order.id));
-    for (const booking of linked) {
-      if (!refundCancelsBooking(booking.status)) continue;
-      await releaseBookingSeat(booking, now);
-    }
-    const visits = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id));
-    for (const visit of visits) {
-      if (!refundCancelsBooking(visit.status)) continue;
-      await releaseVisitSeat(visit, now);
-    }
-  }
+    .set({ status: "refunded", refundedCents: sql`${orders.studentPaysCents}`, updatedAt: now })
+    .where(and(
+      eq(orders.stripePaymentIntentId, intent),
+      or(ne(orders.status, "refunded"), sql`${orders.refundedCents} < ${orders.studentPaysCents}`),
+    ));
+  const targets = await db.select().from(orders).where(and(eq(orders.stripePaymentIntentId, intent), eq(orders.status, "refunded")));
+  for (const order of targets) await releaseSeatsForRefundedOrder(order.id, now);
 }
 
 async function lockPromo(

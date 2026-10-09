@@ -1,4 +1,5 @@
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
+import { addDaysYmd, ymdInZone, zonedTimeToUtc } from "@/lib/time";
 
 export type ChannelPrefs = { email: boolean; inApp: boolean; sms: boolean; push: boolean; cadence: "instant" | "daily" };
 
@@ -38,6 +39,16 @@ export function withinQuietHours(localMinutes: number, start: string, end: strin
 
 export function smsAllowedNow(localMinutes: number, start = SHIP_DEFAULTS.quietHoursStart, end = SHIP_DEFAULTS.quietHoursEnd) {
   return !withinQuietHours(localMinutes, start, end);
+}
+
+/** Next local quiet-hours end, using the zone's offset so winter time is not still quiet. */
+export function nextQuietEnd(end: string, now = new Date(), timeZone = SHIP_DEFAULTS.quietHoursZone) {
+  const [hour, minute] = end.split(":").map(Number);
+  const clock = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const today = ymdInZone(now, timeZone);
+  const sameDay = zonedTimeToUtc(today, clock, timeZone);
+  if (sameDay.getTime() > now.getTime()) return sameDay;
+  return zonedTimeToUtc(addDaysYmd(today, 1), clock, timeZone);
 }
 
 export function unsubscribeUrl(origin: string, token: string) {

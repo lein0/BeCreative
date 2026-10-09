@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, membershipSubscriptions, orders, packPurchases, platformSettings, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
 import { packCreditsToRestore } from "@/lib/refund-math";
-import { grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
+import { consumeRefundableCash, grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
 import { releaseVisitSeat, restoreStudioCreditForOrder } from "@/lib/booking-service";
 
 async function policyForTeacher(teacherId: string) {
@@ -58,8 +58,9 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
       const result = await issueRefund({ orderId: order.id, sessionCount, cancelledCount: 1, reasonCode: "teacher_cancel", actorUserId: input.actorUserId, scope: session.id });
       if ("amountCents" in result) refunded += result.amountCents ?? 0;
     } else if (order && person && choice === "credit") {
-      const share = Math.round(order.studentPaysCents / sessionCount);
-      await grantStudioCredit(person.id, klass.teacherId, share);
+      const share = Math.min(Math.max(0, order.studentPaysCents - order.refundedCents), Math.round(order.studentPaysCents / sessionCount));
+      const applied = await consumeRefundableCash(order.id, share);
+      if (applied > 0) await grantStudioCredit(person.id, klass.teacherId, applied);
     }
     const remainingDates = mates.filter((mate) => mate.sessionId !== session.id);
     const closesBooking = remainingDates.length === 0 || booking.kind === "session";
@@ -140,7 +141,10 @@ export async function studentCancelVisit(userId: string, visitId: string) {
   if (visit.orderId && outcome === "full_refund") await issueRefund({ orderId: visit.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: visit.id });
   else if (visit.orderId && outcome === "credit") {
     const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
-    if (order) await grantStudioCredit(userId, service.teacherId, Math.max(0, order.studentPaysCents - order.refundedCents));
+    if (order) {
+      const applied = await consumeRefundableCash(order.id, Math.max(0, order.studentPaysCents - order.refundedCents));
+      if (applied > 0) await grantStudioCredit(userId, service.teacherId, applied);
+    }
   }
   await emitNotification({
     userId,
@@ -170,7 +174,10 @@ export async function teacherCancelVisit(input: { visitId: string; actorUserId: 
   if (visit.orderId && choice === "full_refund") await issueRefund({ orderId: visit.orderId, reasonCode: "teacher_cancel", actorUserId: input.actorUserId, scope: visit.id });
   else if (visit.orderId && person && choice === "credit") {
     const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
-    if (order) await grantStudioCredit(person.id, service.teacherId, order.studentPaysCents);
+    if (order) {
+      const applied = await consumeRefundableCash(order.id, Math.max(0, order.studentPaysCents - order.refundedCents));
+      if (applied > 0) await grantStudioCredit(person.id, service.teacherId, applied);
+    }
   }
   if (person) {
     await emitNotification({
