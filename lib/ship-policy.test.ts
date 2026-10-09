@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lateCancelFee, resolvedPolicy, studentCancelOutcome, teacherRefundChoice } from "@/lib/cancel-policy";
-import { channelsFor, defaultPrefs, smsAllowedNow, unsubscribeUrl, withinQuietHours } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, prefSaveUserPatch, smsAllowedNow, unsubscribeUrl, withinQuietHours } from "@/lib/notify-prefs";
 import { packCreditsToRestore, partialRefundRemaining, promoReversesOnRefund, refundIdempotencyKey, seriesProrate } from "@/lib/refund-math";
 import { SHIP_DEFAULTS, policySummary } from "@/lib/ship-defaults";
 import { duplicateChargeBlocked, webhookShouldProcess } from "@/lib/webhook-idempotency";
@@ -74,6 +74,14 @@ describe("notification preferences", () => {
     const channels = channelsFor(defaultPrefs("booking.confirmed", "student"), { unsubscribed: false, webPushEnabled: false, smsConfigured: false });
     expect(channels).toMatchObject({ email: true, inApp: true, sms: false, push: false, digest: false });
     expect(channelsFor({ ...defaultPrefs("booking.confirmed", "student"), email: true }, { unsubscribed: true, webPushEnabled: true, smsConfigured: true }).email).toBe(false);
+    expect(channelsFor({ ...defaultPrefs("receipt.sent", "student"), email: true }, { unsubscribed: true, webPushEnabled: false, smsConfigured: false, event: "receipt.sent" }).email).toBe(true);
+    expect(channelsFor({ ...defaultPrefs("booking.confirmed", "student"), email: true }, { unsubscribed: true, webPushEnabled: false, smsConfigured: false, event: "booking.confirmed" }).email).toBe(false);
+    expect(channelsFor({ ...defaultPrefs("receipt.sent", "student"), email: true }, { unsubscribed: true, emailSuppressed: true, webPushEnabled: false, smsConfigured: false, event: "receipt.sent" }).email).toBe(false);
+  });
+
+  it("clears unsubscribe when notification settings turn email back on", () => {
+    expect(prefSaveUserPatch({ emailEnabled: true, creditOptIn: false })).toEqual({ creditOptIn: false, emailUnsubscribed: false });
+    expect(prefSaveUserPatch({ emailEnabled: false, creditOptIn: true })).toEqual({ creditOptIn: true });
   });
 
   it("holds SMS during quiet hours that wrap midnight", () => {
@@ -85,7 +93,7 @@ describe("notification preferences", () => {
   });
 
   it("builds an unsubscribe link", () => {
-    expect(unsubscribeUrl("https://classes.example/", "tok")).toBe("https://classes.example/unsubscribe?token=tok");
+    expect(unsubscribeUrl("https://classes.example/", "tok")).toBe("https://classes.example/unsubscribe/tok");
   });
 });
 

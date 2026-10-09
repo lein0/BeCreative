@@ -1,10 +1,22 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { ANON_COOKIE, bindAnonymousId } from "@/lib/anon";
 import { promoCookieFromLink } from "@/lib/pricing";
 
 const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
 
 export function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
+  if (request.method === "POST") {
+    const pathToken = pathname.match(/^\/unsubscribe\/([^/]+)$/)?.[1];
+    const queryToken = pathname === "/unsubscribe" ? searchParams.get("token") : null;
+    const token = pathToken || queryToken;
+    if (token) {
+      const url = request.nextUrl.clone();
+      url.pathname = `/api/unsubscribe/${token}`;
+      url.search = "";
+      return NextResponse.rewrite(url);
+    }
+  }
   const token = request.cookies.get("better-auth.session_token") ?? request.cookies.get("__Secure-better-auth.session_token");
   if (guarded.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) && !token) {
     const url = request.nextUrl.clone();
@@ -12,7 +24,9 @@ export function proxy(request: NextRequest) {
     url.search = `?next=${encodeURIComponent(pathname + request.nextUrl.search)}`;
     return NextResponse.redirect(url);
   }
-  const response = NextResponse.next();
+  const requestHeaders = new Headers(request.headers);
+  const anon = bindAnonymousId(requestHeaders, request.cookies.get(ANON_COOKIE)?.value);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("X-Frame-Options", "SAMEORIGIN");
@@ -35,8 +49,8 @@ export function proxy(request: NextRequest) {
   }
   const code = promoCookieFromLink(searchParams.get("code"));
   if (code) response.cookies.set("bc_code", code, { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
-  if (!request.cookies.get("bc_anon")) {
-    response.cookies.set("bc_anon", crypto.randomUUID(), { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", secure, httpOnly: true });
+  if (anon.minted) {
+    response.cookies.set(ANON_COOKIE, anon.id, { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", secure, httpOnly: true });
   }
   return response;
 }

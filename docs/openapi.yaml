@@ -89,7 +89,7 @@ paths:
   /track:
     post:
       summary: Record a catalog event
-      description: First-party storage always. PostHog only when POSTHOG_KEY is set and consent is true or the bc_cookie cookie is 1. Money events should be sent from the server, not only from the client.
+      description: First-party storage always. PostHog only when POSTHOG_KEY is set and consent is true or the bc_cookie cookie is 1. Money events (checkout_completed, offer_purchased, booking_cancelled, promo_applied) are rejected here and recorded by the server.
       parameters:
         - in: header
           name: X-Platform

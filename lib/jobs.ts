@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { jobs } from "@/lib/db/schema";
 
@@ -9,6 +9,7 @@ export async function enqueueJob(kind: string, payload: Record<string, unknown>,
     kind,
     payload,
     runAt,
+    status: "queued",
     idempotencyKey: idempotencyKey ?? null,
   }).onConflictDoNothing();
   return id;
@@ -28,6 +29,23 @@ export async function claimJobs(limit = 20) {
     returning id, kind, payload, attempts
   `);
   return result.rows;
+}
+
+export async function ensureQueuedJob(kind: string, payload: Record<string, unknown>, runAt = new Date(), idempotencyKey?: string) {
+  if (!idempotencyKey) return enqueueJob(kind, payload, runAt);
+  const [existing] = await db.select().from(jobs).where(eq(jobs.idempotencyKey, idempotencyKey)).limit(1);
+  if (!existing) return enqueueJob(kind, payload, runAt, idempotencyKey);
+  if (existing.status === "running") return existing.id;
+  if (existing.status === "queued") {
+    if (existing.runAt.getTime() > runAt.getTime()) await db.update(jobs).set({ runAt, payload }).where(eq(jobs.id, existing.id));
+    return existing.id;
+  }
+  await db.update(jobs).set({ status: "queued", runAt, payload, lockedAt: null, lastError: null, attempts: 0 }).where(eq(jobs.id, existing.id));
+  return existing.id;
+}
+
+export async function requeueJob(id: string, runAt: Date, error?: string) {
+  await db.update(jobs).set({ status: "queued", runAt, lockedAt: null, lastError: error ?? null }).where(eq(jobs.id, id));
 }
 
 export async function finishJob(id: string, error?: string) {

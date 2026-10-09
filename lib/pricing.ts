@@ -126,6 +126,34 @@ export function quotePrice(input: {
   };
 }
 
+/** Fees stay on the cash remainder. Credit that covers the price does not charge the student again. */
+export function quoteWithStudioCredit(input: {
+  listPriceCents: number;
+  appliedCents: number;
+  feePercent: number;
+  feeFixedCents: number;
+  promo?: PromoRule | null;
+  promoError?: string | null;
+}): PriceQuote {
+  const list = Math.max(0, input.listPriceCents);
+  const applied = Math.max(0, Math.min(input.appliedCents, list));
+  const remainder = list - applied;
+  const cash = quotePrice({
+    listPriceCents: remainder,
+    feePercent: input.feePercent,
+    feeFixedCents: input.feeFixedCents,
+    promo: remainder > 0 ? input.promo : null,
+    promoError: remainder > 0 ? input.promoError : null,
+  });
+  if (applied <= 0) return { ...cash, listPriceCents: list };
+  return {
+    ...cash,
+    listPriceCents: list,
+    discountCents: applied + cash.discountCents,
+    paymentPath: remainder === 0 ? "free" : cash.paymentPath,
+  };
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -171,7 +199,7 @@ export function validatePromo(input: {
     return { ok: false, reason: "This code doesn't apply to this type of purchase." };
   }
   if (product.kind === "class") {
-    if (promo.classIds.length && product.classId && !promo.classIds.includes(product.classId)) return { ok: false, reason: "This code doesn't apply to this class." };
+    if (promo.classIds.length && !promo.classIds.includes(product.classId ?? "")) return { ok: false, reason: "This code doesn't apply to this class." };
     if (promo.categoryIds.length && product.categoryId && !promo.categoryIds.includes(product.categoryId)) return { ok: false, reason: "This code doesn't apply to this category." };
     if (promo.cities.length && product.city && !promo.cities.map((city) => city.toLowerCase()).includes(product.city.toLowerCase())) {
       return { ok: false, reason: "This code doesn't apply in this city." };

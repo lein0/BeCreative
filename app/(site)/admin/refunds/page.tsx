@@ -23,6 +23,7 @@ async function Body({ searchParams }: { searchParams: Promise<{ error?: string; 
       {query.error ? <p className="mt-3 text-sm text-clay">{query.error}</p> : null}
       {query.ok ? <p className="mt-3 text-sm">Refund recorded.</p> : null}
       <form action={adminRefundAction} className="mt-4 grid max-w-lg gap-2">
+        <input type="hidden" name="idempotencyKey" value={crypto.randomUUID()} />
         <label className="text-sm">Order id<input name="orderId" required className={control} /></label>
         <label className="text-sm">Amount in dollars (leave blank with full refund)<input name="amount" className={control} /></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="full" value="1" defaultChecked /> Full remaining balance</label>
