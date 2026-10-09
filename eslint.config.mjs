@@ -19,6 +19,7 @@ const eslintConfig = defineConfig([
     "data/**",
     "public/**",
     "coverage/**",
+    "mobile/**",
   ]),
 ]);
 

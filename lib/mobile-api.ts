@@ -201,10 +201,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
     if (!detail) return json({ error: "Class not found." }, 404);
     await capture({ name: "class_viewed", platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
     return json({
-      class: publicClass(detail),
+      class: { ...publicClass(detail), seriesPriceCents: detail.class.pricePerSeriesCents, categoryId: detail.class.categoryId },
       description: detail.class.description,
       slots: detail.upcoming.map((session) => ({ id: session.id, startsAt: session.startsAt, spots: session.spots })),
-      teacher: { slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
+      teacher: { id: detail.teacher.id, slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
     });
   }
 
@@ -254,6 +254,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       policyAccepted: body.policyAccepted,
       paymentSheet: body.paymentSheet,
       platform,
+      returnToApp: true,
       ip: request.headers.get("x-forwarded-for"),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
@@ -276,20 +277,20 @@ export async function handleMobileApi(request: Request, path: string[]) {
       db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(eq(membershipSubscriptions.userId, actor.id)),
     ]);
     return json({
-      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal })),
+      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
       memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd })),
     });
   }
 
   if (method === "POST" && root === "packs" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
