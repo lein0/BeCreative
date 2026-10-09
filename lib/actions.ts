@@ -18,6 +18,7 @@ import { teacherByUser } from "@/lib/queries";
 import type { RecurrenceRule } from "@/lib/recurrence";
 import { attachMedia, emailRoster, featureClass, manualBook, moveSession, saveClass, saveMembership, savePack, savePromo, setCheckin, setPaused, setTeacherStatus, skipSession, updateRecurrence } from "@/lib/studio-service";
 import { geocoder } from "@/lib/geocode";
+import { prefSaveUserPatch } from "@/lib/notify-prefs";
 import { uniqueSlug } from "@/lib/utils";
 import { bookVisit, cancelVisit, saveCredential, saveService, saveWaiver, signWaiver, verifyCredential } from "@/lib/wellness-service";
 
@@ -747,7 +748,10 @@ export async function notificationPrefAction(formData: FormData) {
   const [existing] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, actor.id), eq(notificationPreferences.event, event))).limit(1);
   if (existing) await db.update(notificationPreferences).set(row).where(eq(notificationPreferences.id, existing.id));
   else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
-  await db.update(user).set({ creditOptIn: formData.get("creditOptIn") === "1" }).where(eq(user.id, actor.id));
+  await db.update(user).set(prefSaveUserPatch({
+    emailEnabled: formData.get("email") === "1",
+    creditOptIn: formData.get("creditOptIn") === "1",
+  })).where(eq(user.id, actor.id));
   revalidatePath("/settings/notifications");
 }
 

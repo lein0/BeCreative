@@ -5,6 +5,7 @@ import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
 import { membershipSubscriptions, orders, stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
+import { invoiceSubscriptionId } from "@/lib/stripe-invoice";
 
 export async function POST(request: Request) {
   const stripe = getStripe();
@@ -53,8 +54,7 @@ export async function POST(request: Request) {
   }
   if (event.type === "invoice.payment_failed") {
     const invoice = event.data.object;
-    const parent = invoice.parent?.subscription_details?.subscription;
-    const subscription = typeof parent === "string" ? parent : parent?.id;
+    const subscription = invoiceSubscriptionId(invoice);
     if (subscription) {
       const [order] = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, subscription)).limit(1);
       if (order) await db.update(membershipSubscriptions).set({ status: "past_due" }).where(eq(membershipSubscriptions.orderId, order.id));

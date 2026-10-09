@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { user } from "@/lib/db/schema";
+import { normalizeEmail } from "@/lib/email";
 import { hitRateLimit } from "@/lib/rate-limit";
 
 type BounceNotice = {
@@ -37,7 +38,7 @@ export async function POST(request: Request) {
     for (const recipient of notice.complaint?.complainedRecipients ?? []) if (recipient.emailAddress) emails.add(recipient.emailAddress.toLowerCase());
   }
   for (const email of emails) {
-    await db.update(user).set({ emailSuppressed: true }).where(eq(user.email, email));
+    await db.update(user).set({ emailSuppressed: true }).where(sql`lower(${user.email}) = ${normalizeEmail(email)}`);
   }
   return Response.json({ ok: true, suppressed: emails.size });
 }

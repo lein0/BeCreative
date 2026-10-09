@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelAfterAttempt, chooseTextChannel, guardSms, maySend, smsKeyword, smsOnByDefault, smsWanted, withinMonthlyCap } from "@/lib/messaging-rules";
+import { channelAfterAttempt, chooseTextChannel, guardSms, maySend, smsKeyword, smsOnByDefault, smsWanted, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
 import { templateFor } from "@/lib/triggers";
 
 describe("text defaults and consent", () => {
@@ -20,6 +20,9 @@ describe("text defaults and consent", () => {
     expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: false, emailSuppressed: true, marketingOptIn: true, smsOptIn: true, smsSuppressed: false })).toBe(false);
     expect(maySend({ channel: "sms", consent: "transactional", emailUnsubscribed: false, emailSuppressed: false, marketingOptIn: false, smsOptIn: false, smsSuppressed: false })).toBe(false);
     expect(maySend({ channel: "sms", consent: "transactional", emailUnsubscribed: false, emailSuppressed: false, marketingOptIn: false, smsOptIn: true, smsSuppressed: true })).toBe(false);
+    expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: false, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "booking.confirmed" })).toBe(false);
+    expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: false, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "receipt.sent" })).toBe(true);
+    expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: true, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "receipt.sent" })).toBe(false);
   });
 });
 
@@ -48,6 +51,13 @@ describe("SMS keywords and iMessage fallback", () => {
     expect(smsWanted({ event: "booking.confirmed", textEligible: false, savedSms: null })).toBe(false);
     expect(templateFor("booking.cancelled", "teacher")?.template).toBe("teacher.cancelled");
     expect(templateFor("booking.cancelled", "student")?.template).toBe("booking.cancelled");
+  });
+
+  it("returns keyword confirmation as TwiML for a form webhook", () => {
+    const xml = twimlMessage("You are opted out. Reply START to opt in.");
+    expect(xml).toContain("<Response><Message>");
+    expect(xml).toContain("opted out");
+    expect(twimlMessage(`Tom & "Jerry"`)).toContain("Tom &amp; &quot;Jerry&quot;");
   });
 
   it("keeps a text inside one segment and under the monthly cap", () => {

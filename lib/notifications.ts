@@ -94,6 +94,7 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     smsOptIn: Boolean(person?.smsOptIn),
     consent,
     marketingOptIn: Boolean(person?.marketingOptIn),
+    event: row.event,
   });
   if (channels.inApp) {
     await db.insert(notifications).values({
@@ -113,7 +114,7 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     smsOptIn: Boolean(person?.smsOptIn),
     smsSuppressed: false,
   };
-  if (channels.email && person?.email && maySend({ ...consentOk, channel: "email" })) {
+  if (channels.email && person?.email && maySend({ ...consentOk, channel: "email", event: row.event })) {
     const token = crypto.randomUUID();
     await db.insert(unsubscribeTokens).values({ token, userId: person.id });
     const link = unsubscribeUrl(appOrigin(), token);
