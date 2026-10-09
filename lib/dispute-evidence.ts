@@ -61,6 +61,69 @@ export function earlyFraudDecision(input: { amountCents: number; classStarted: b
   return "flag" as const;
 }
 
+export function classHasStarted(starts: Date[], now: Date) {
+  return starts.some((start) => start.getTime() <= now.getTime());
+}
+
+export const DISPUTE_SUBMIT_ATTEMPTS = 5;
+
+export function nextDisputeSubmitAt(input: { dueBy: Date | null; leadHours: number; now: Date; retry: boolean; attempts?: number }) {
+  if (!input.retry && input.dueBy) {
+    const lead = new Date(input.dueBy.getTime() - input.leadHours * 3_600_000);
+    if (lead.getTime() > input.now.getTime()) return lead;
+  }
+  const step = Math.max(0, (input.attempts ?? 1) - 1);
+  const delay = input.retry ? Math.min(6 * 3_600_000, 15 * 60 * 1000 * 2 ** step) : 60 * 60 * 1000;
+  return new Date(input.now.getTime() + delay);
+}
+
+export function disputeUpdateFromStripe<T extends { summary: string; evidence: Record<string, string>; amountBearer: string; feeBearer: string }>(
+  existing: { summary: string; evidence: Record<string, string>; amountBearer: string; feeBearer: string },
+  incoming: T,
+): T {
+  return {
+    ...incoming,
+    summary: existing.summary,
+    evidence: existing.evidence,
+    amountBearer: existing.amountBearer,
+    feeBearer: existing.feeBearer,
+  };
+}
+
+export function withTeacherNotes(summary: string, evidence: Record<string, string>, notes: string[]) {
+  const lines = notes.map((note) => note.trim()).filter(Boolean);
+  if (!lines.length) return { summary, evidence };
+  const block = `Teacher notes:\n${lines.join("\n")}`;
+  const nextSummary = summary.includes(block) ? summary : `${summary}\n\n${block}`;
+  const uncategorized = evidence.uncategorized_text?.includes(block)
+    ? evidence.uncategorized_text
+    : [evidence.uncategorized_text, block].filter(Boolean).join("\n");
+  return { summary: nextSummary, evidence: { ...evidence, uncategorized_text: uncategorized } };
+}
+
+export function scopedDisputeRecords<
+  E extends { teacherId: string | null; toAddresses: string[] },
+  W extends { userId: string; teacherId: string },
+  B extends { userId: string | null; classId: string; status: string },
+>(input: {
+  teacherId: string;
+  userId: string;
+  customerEmail: string;
+  emails: E[];
+  waivers: W[];
+  bookings: B[];
+  classTeacherIds: ReadonlyMap<string, string>;
+}) {
+  const email = input.customerEmail.toLowerCase();
+  return {
+    emails: input.emails
+      .filter((row) => row.teacherId === input.teacherId && row.toAddresses.some((address) => address.toLowerCase() === email))
+      .slice(0, 5),
+    waiver: input.waivers.find((row) => row.userId === input.userId && row.teacherId === input.teacherId),
+    priorBookings: input.bookings.filter((row) => row.userId === input.userId && input.classTeacherIds.get(row.classId) === input.teacherId && (row.status === "confirmed" || row.status === "cancelled")),
+  };
+}
+
 export function disputeLiability(input: { amountCents: number; feeCents: number; amountBearer: string; feeBearer: string }) {
   return {
     teacherAmountCents: input.amountBearer === "teacher" ? input.amountCents : 0,
