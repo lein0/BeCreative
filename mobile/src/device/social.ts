@@ -1,6 +1,7 @@
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as Crypto from "expo-crypto";
 import { Platform } from "react-native";
+import { googleBrowserClientId } from "./google-client";
 
 export type SocialCredential = {
   idToken: string;
@@ -15,14 +16,18 @@ async function randomNonce() {
 }
 
 function googleClientId() {
-  if (Platform.OS === "ios") return process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-  if (Platform.OS === "android") return process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-  return process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+  const platform = Platform.OS === "ios" || Platform.OS === "android" ? Platform.OS : "web";
+  return googleBrowserClientId({
+    platform,
+    web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+  });
 }
 
 export async function googleSignIn(): Promise<SocialCredential> {
   const clientId = googleClientId();
-  if (!clientId) throw new Error("Google sign-in needs a client id from Eric's Google Cloud project. You can sign in with email until then.");
+  if (!clientId) throw new Error("Google sign-in needs the web client id from Eric's Google Cloud project. You can sign in with email until then.");
   const nonce = await randomNonce();
   const WebBrowser = await import("expo-web-browser");
   const AuthSession = await import("expo-auth-session");

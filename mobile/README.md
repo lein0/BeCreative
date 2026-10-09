@@ -90,7 +90,7 @@ Sources are in `mobile/well-known/`. Replace `TEAMID` with the Apple Team ID and
 1. Apple Developer Program membership, Team ID, and an App Store Connect app for `com.becreative.students` (or the bundle id he prefers).
 2. Sign in with Apple turned on for that App ID. Set the server `APPLE_APP_BUNDLE_IDENTIFIER` to `com.becreative.students` and `APPLE_CLIENT_ID` to the Services ID. Android also needs `EXPO_PUBLIC_APPLE_SERVICE_ID` (that same Services ID) so the app can request an Apple identity token. Without those, `POST /auth/social` returns 503 and the app says Apple sign-in is not configured.
 3. Google Play Console account, the app record, and the same package name.
-4. Google Cloud OAuth client ids for the app: `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. The server must list the same audiences in `GOOGLE_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID`, and `GOOGLE_ANDROID_CLIENT_ID` or Google sign-in returns 503.
+4. A Google Cloud **web** OAuth client id in `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. Sign-in opens a browser redirect on iOS, Android, and web, and that redirect only works with the web client. Set the server `GOOGLE_CLIENT_ID` to the same value or Google sign-in returns 503. iOS and Android OAuth client ids are not used for this redirect.
 5. An Expo account (`EXPO_OWNER`) and a real `EAS_PROJECT_ID` from `eas init`.
 6. Push credentials through `eas credentials` (APNs key and FCM v1). No cert files belong in git.
 7. Stripe publishable key `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`, an Apple Pay merchant id, and the merchant id registered in the Apple Developer account and Stripe dashboard. The secret key stays on the server.

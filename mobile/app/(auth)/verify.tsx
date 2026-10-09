@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
+import { shouldConfirmVerification } from "@mobile/auth/verify-token";
 import { Body, Button, Display, Field, Notice } from "@mobile/components/ui";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
@@ -17,21 +18,29 @@ export default function VerifyEmail() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const started = useRef(false);
+  const confirmedToken = useRef<string | null>(null);
 
   useEffect(() => {
     if (user?.email) setEmail((current) => current || user.email);
   }, [user]);
 
   useEffect(() => {
-    if (!token || started.current) return;
-    started.current = true;
+    if (!shouldConfirmVerification(confirmedToken.current, token)) return;
+    confirmedToken.current = token;
+    const attempt = token;
+    setError(null);
+    setNote(null);
     setBusy(true);
     void api.confirmEmailVerification(token).then(() => {
+      if (confirmedToken.current !== attempt) return;
       setNote("Email verified. You can keep booking.");
     }).catch((err: unknown) => {
+      if (confirmedToken.current !== attempt) return;
       setError(err instanceof ApiError ? err.message : "That verification link is not valid.");
-    }).finally(() => setBusy(false));
+    }).finally(() => {
+      if (confirmedToken.current !== attempt) return;
+      setBusy(false);
+    });
   }, [api, token]);
 
   async function send() {
