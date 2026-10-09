@@ -1,8 +1,8 @@
 import { quotePrice } from "../../../lib/pricing";
 import { DEMO_EMAIL, DEMO_PASSWORD, DEMO_PROMO } from "./fixtures";
-import { ApiError, type AppNotification, type BookingListItem, type ClassDetail, type Preferences, type PublicClass, type StudentApi, type StudentUser, type TrackInput, type Wallet } from "./types";
+import { ApiError, type AppNotification, type BookingListItem, type ClassDetail, type Place, type Preferences, type PublicClass, type StudentApi, type StudentUser, type TrackInput, type Wallet } from "./types";
 
-type MockClass = PublicClass & { description: string; seriesCents: number | null };
+type MockClass = PublicClass & { description: string; seriesCents: number | null; signatureRequired: boolean };
 
 const NOW = Date.now();
 const day = 86_400_000;
@@ -12,6 +12,13 @@ function iso(offsetDays: number, hour: number) {
   date.setUTCHours(hour, 0, 0, 0);
   return date.toISOString();
 }
+
+function place(lat: number, lng: number, neighborhood: string, name: string): Place {
+  return { lat, lng, neighborhood, name, city: "Los Angeles" };
+}
+
+const SCENE_PLACE = place(34.09, -118.34, "Los Feliz", "Studio B");
+const FLOW_PLACE = place(34.05, -118.25, "Silver Lake", "The Loft");
 
 const CLASSES: MockClass[] = [
   {
@@ -26,8 +33,13 @@ const CLASSES: MockClass[] = [
     vertical: "creative",
     nextStartsAt: iso(3, 19),
     spots: 8,
+    lat: SCENE_PLACE.lat,
+    lng: SCENE_PLACE.lng,
+    neighborhood: SCENE_PLACE.neighborhood,
+    location: SCENE_PLACE,
     description: "Hold a scene without indicating. Bring the sides, water, and shoes you can move in.",
     seriesCents: 24000,
+    signatureRequired: true,
   },
   {
     id: "class-flow",
@@ -41,8 +53,13 @@ const CLASSES: MockClass[] = [
     vertical: "wellness",
     nextStartsAt: iso(1, 15),
     spots: 6,
+    lat: FLOW_PLACE.lat,
+    lng: FLOW_PLACE.lng,
+    neighborhood: FLOW_PLACE.neighborhood,
+    location: FLOW_PLACE,
     description: "A calm vinyasa hour. Not medical care.",
     seriesCents: null,
+    signatureRequired: false,
   },
   {
     id: "class-sauna",
@@ -56,16 +73,55 @@ const CLASSES: MockClass[] = [
     vertical: "wellness",
     nextStartsAt: iso(2, 18),
     spots: 4,
+    lat: 34.08,
+    lng: -118.36,
+    neighborhood: "Hollywood",
+    location: place(34.08, -118.36, "Hollywood", "Cedar room"),
     description: "A shared sauna hour. Stop if you feel unwell.",
     seriesCents: null,
+    signatureRequired: false,
+  },
+  {
+    id: "class-table",
+    slug: "table-read",
+    title: "Table Read",
+    priceCents: 0,
+    delivery: "virtual",
+    teacher: "Maya Alvarez",
+    teacherSlug: "maya-alvarez",
+    category: "acting",
+    vertical: "creative",
+    nextStartsAt: iso(4, 18),
+    spots: 12,
+    lat: null,
+    lng: null,
+    neighborhood: null,
+    location: null,
+    description: "Read the scene from home.",
+    seriesCents: null,
+    signatureRequired: true,
   },
 ];
 
 const DEMO_USER: StudentUser = { id: "user-student", name: "Jules Navarro", email: DEMO_EMAIL, roles: ["student"] };
 
 function publicOf(item: MockClass): PublicClass {
-  const { description: _description, seriesCents: _series, ...card } = item;
+  const { description: _description, seriesCents: _series, signatureRequired: _signature, ...card } = item;
   return card;
+}
+
+function bookingRow(id: string, item: MockClass, status: string): BookingListItem {
+  return {
+    id,
+    status,
+    title: item.title,
+    slug: item.slug,
+    createdAt: new Date(NOW - day).toISOString(),
+    startsAt: item.nextStartsAt,
+    endsAt: item.nextStartsAt ? new Date(new Date(item.nextStartsAt).getTime() + 90 * 60_000).toISOString() : null,
+    timezone: "America/Los_Angeles",
+    location: item.delivery === "virtual" ? null : item.location ?? null,
+  };
 }
 
 type State = {
@@ -82,9 +138,7 @@ type State = {
 function fresh(): State {
   return {
     token: null,
-    bookings: [
-      { id: "book-scene", status: "confirmed", title: "Scene Study", slug: "scene-study", createdAt: new Date(NOW - day).toISOString() },
-    ],
+    bookings: [bookingRow("book-scene", CLASSES[0]!, "confirmed")],
     wallet: {
       packs: [{ id: "pack-1", name: "Scene 5-pack", remaining: 4, total: 5, classIds: ["class-scene"], categoryIds: [], teacherId: "maya-alvarez" }],
       memberships: [{ id: "mem-1", name: "BeWell monthly", status: "active", periodEnd: iso(28, 12) }],
@@ -126,7 +180,46 @@ export function createMockApi(): MockApi {
       state.token = `bc_${DEMO_USER.id}`;
       return { token: state.token, user: { ...DEMO_USER, name: input.name || DEMO_USER.name, email: input.email } };
     },
+    async signInSocial(input) {
+      if (!input.provider || !input.idToken) throw new ApiError(400, "provider and idToken are required.");
+      if (input.idToken === "unconfigured") {
+        throw new ApiError(503, `${input.provider === "apple" ? "Apple" : "Google"} sign-in is not configured.`);
+      }
+      state.token = `bc_${DEMO_USER.id}`;
+      return { token: state.token, user: DEMO_USER };
+    },
+    async requestPasswordReset(email) {
+      if (!email.includes("@")) throw new ApiError(400, "Enter an email address.");
+      return { ok: true };
+    },
+    async confirmPasswordReset(input) {
+      if (!input.token) throw new ApiError(400, "That reset link is not valid.");
+      if (input.password.length < 8) throw new ApiError(400, "Use at least 8 characters.");
+      return { ok: true };
+    },
+    async requestEmailVerification(email) {
+      if (!email.includes("@")) throw new ApiError(400, "Enter an email address.");
+      return { ok: true };
+    },
+    async confirmEmailVerification(token) {
+      if (!token) throw new ApiError(400, "That verification link is not valid.");
+      return { ok: true };
+    },
     async signOut() {
+      state.token = null;
+      return { ok: true };
+    },
+    async deleteAccount(input) {
+      user();
+      if (input.password) {
+        if (input.password !== DEMO_PASSWORD) throw new ApiError(401, "That password doesn't match this account.");
+      } else if (input.idToken && (input.provider === "apple" || input.provider === "google")) {
+        if (input.idToken === "unconfigured") {
+          throw new ApiError(503, `${input.provider === "apple" ? "Apple" : "Google"} sign-in is not configured.`);
+        }
+      } else {
+        throw new ApiError(400, "Confirm your password or sign in with Apple or Google again.");
+      }
       state.token = null;
       return { ok: true };
     },
@@ -156,6 +249,8 @@ export function createMockApi(): MockApi {
         description: item.description,
         slots: [0, 1, 2].map((index) => ({ id: `${item.slug}-slot-${index}`, startsAt: iso(index + 1, 19), spots: 6 })),
         teacher: { id: item.teacherSlug, slug: item.teacherSlug, name: item.teacher },
+        signatureRequired: item.signatureRequired,
+        policyAcknowledgementRequired: true,
       };
       return detail;
     },
@@ -166,9 +261,14 @@ export function createMockApi(): MockApi {
     async teacher(slug) {
       const owned = CLASSES.filter((item) => item.teacherSlug === slug);
       if (!owned.length) throw new ApiError(404, "Teacher not found.");
+      const maya = slug === "maya-alvarez";
       return {
         teacher: { slug, name: owned[0]!.teacher, bio: "Independent teacher on BeCreative." },
         classes: owned.map((item) => ({ id: item.id, slug: item.slug, title: item.title })),
+        packs: maya
+          ? [{ id: "pack-scene", slug: "scene-5", name: "Scene 5-pack", priceCents: 15000, creditCount: 5 }]
+          : [{ id: "pack-flow", slug: "flow-5", name: "5-visit pack", priceCents: 12000, creditCount: 5 }],
+        memberships: maya ? [] : [{ id: "plan-bewell", slug: "bewell-monthly", name: "BeWell monthly", priceCents: 8900 }],
       };
     },
     async book(input) {
@@ -180,7 +280,7 @@ export function createMockApi(): MockApi {
       if (code && code !== DEMO_PROMO.code) throw new ApiError(400, "That code isn't recognized.");
       const quote = quotePrice({ listPriceCents: list, feePercent: 10, feeFixedCents: 0, promo: code ? DEMO_PROMO : null });
       const orderId = `order-${state.bookings.length + 1}`;
-      state.bookings.unshift({ id: `book-${state.bookings.length + 1}`, status: "confirmed", title: item.title, slug: item.slug, createdAt: new Date().toISOString() });
+      state.bookings.unshift({ ...bookingRow(`book-${state.bookings.length + 1}`, item, "confirmed"), createdAt: new Date().toISOString() });
       if (quote.studentPaysCents === 0) return { orderId, ...quoteFields(quote) };
       return {
         orderId,
@@ -223,7 +323,14 @@ export function createMockApi(): MockApi {
     },
     async waiver(teacherSlug) {
       user();
-      return { body: "I understand this class is taught by an independent teacher.", version: 1, signed: state.signed.has(teacherSlug) };
+      const required = teacherSlug === "maya-alvarez";
+      return {
+        body: required ? "I understand this class is taught by an independent teacher." : null,
+        version: required ? 1 : null,
+        signed: state.signed.has(teacherSlug),
+        required,
+        policyAcknowledgementRequired: true,
+      };
     },
     async signWaiver(teacherSlug, signedName) {
       user();

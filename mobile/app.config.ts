@@ -38,6 +38,7 @@ const config: ExpoConfig = {
           { scheme: "https", host: linkHost, pathPrefix: "/c" },
           { scheme: "https", host: linkHost, pathPrefix: "/t" },
           { scheme: "https", host: linkHost, pathPrefix: "/reset" },
+          { scheme: "https", host: linkHost, pathPrefix: "/verify" },
           { scheme: "https", host: linkHost, pathPrefix: "/verify-email" },
         ],
         category: ["BROWSABLE", "DEFAULT"],

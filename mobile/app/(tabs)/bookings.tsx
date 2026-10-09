@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { BookingListItem, Slot } from "@mobile/api/types";
 import { Body, Button, Card, ConfirmDialog, Display, Notice, Sheet, Title } from "@mobile/components/ui";
-import { whenLabel } from "@mobile/format";
+import { placeLabel, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -75,7 +75,8 @@ export default function Bookings() {
         {rows.map((row) => (
           <Card key={row.id}>
             <Title>{row.title}</Title>
-            <Body muted>{row.status}</Body>
+            <Body>{whenLabel(row.startsAt, row.timezone)}</Body>
+            <Body muted>{placeLabel(row.location)} · {row.status}</Body>
             <Button label="Get help with this booking" tone="ghost" onPress={() => router.push(`/help/${row.id}`)} />
             {row.status !== "cancelled" ? <Button label="Cancel" tone="ghost" onPress={() => setCancelId(row.id)} testID={`cancel-${row.id}`} /> : null}
             {row.status === "confirmed" ? <Button label="Reschedule" tone="ink" onPress={() => void openMove(row)} /> : null}

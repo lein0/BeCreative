@@ -7,7 +7,9 @@ import { paymentSheetForPlatform } from "../../../lib/mobile-client";
 import { createLiveApi } from "./live";
 import { createMockApi } from "./mock";
 import { documentedPaths, paths } from "./paths";
+import { friendlySocialError } from "../auth/messages";
 import { checkoutKind } from "../checkout/kind";
+import { mapPins, whenLabel } from "../format";
 
 describe("api mode", () => {
   it("uses the real API when a URL is set, and mock when the flag says so", () => {
@@ -60,6 +62,41 @@ describe("mock api", () => {
     expect(bought.clientSecret).toBeUndefined();
   });
 
+  it("lists packs, pins in-person classes, and times bookings in the class zone", async () => {
+    const api = createMockApi();
+    const teacher = await api.teacher("maya-alvarez");
+    expect(teacher.packs[0]).toMatchObject({ slug: "scene-5", creditCount: 5 });
+    const explore = await api.explore({ vertical: "creative" });
+    const pins = mapPins(explore.classes);
+    expect(pins.every((item) => item.delivery !== "virtual")).toBe(true);
+    expect(explore.classes.some((item) => item.delivery === "virtual" && item.lat == null)).toBe(true);
+    await api.signIn({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
+    const bookings = await api.bookings();
+    expect(bookings.bookings[0]?.timezone).toBe("America/Los_Angeles");
+    expect(bookings.bookings[0]?.startsAt).toBeTruthy();
+    expect(whenLabel("2026-10-08T19:00:00.000Z", "America/New_York")).toContain("3:00");
+    const detail = await api.classDetail("morning-flow");
+    expect(detail.signatureRequired).toBe(false);
+    expect(detail.policyAcknowledgementRequired).toBe(true);
+    const waiver = await api.waiver("lena-ortiz");
+    expect(waiver.required).toBe(false);
+  });
+
+  it("resets a password, verifies email, and deletes only after re-auth", async () => {
+    const api = createMockApi();
+    await expect(api.requestPasswordReset("student@becreative.demo")).resolves.toEqual({ ok: true });
+    await expect(api.confirmPasswordReset({ token: "", password: "long-enough" })).rejects.toMatchObject({ status: 400 });
+    await expect(api.confirmEmailVerification("token-1")).resolves.toEqual({ ok: true });
+    await api.signIn({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
+    await expect(api.deleteAccount({})).rejects.toMatchObject({ status: 400 });
+    await expect(api.deleteAccount({ password: "nope" })).rejects.toMatchObject({ status: 401 });
+    const social = await api.signInSocial({ provider: "apple", idToken: "unconfigured", nonce: "n" }).catch((err: unknown) => err);
+    expect(social).toMatchObject({ status: 503 });
+    expect(friendlySocialError("apple", 503, "Apple sign-in is not configured.")).toContain("sign in with email");
+    await expect(api.deleteAccount({ password: DEMO_PASSWORD })).resolves.toEqual({ ok: true });
+    await expect(api.me()).rejects.toMatchObject({ status: 401 });
+  });
+
   it("records catalog track events", async () => {
     const api = createMockApi();
     await api.track({ name: "class_viewed", platform: "ios", anonymousId: "anon-1", properties: { slug: "scene-study" } });
@@ -98,6 +135,23 @@ describe("live api", () => {
     token = session.token;
     await api.track({ name: "checkout_completed", platform: "ios", anonymousId: "a", properties: { orderId: "o1" } });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("posts the social id token and deletes with a password", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(paths.social)) {
+        expect(JSON.parse(String(init?.body))).toEqual({ provider: "google", idToken: "id-1", nonce: "nonce-1" });
+        return new Response(JSON.stringify({ error: "Google sign-in is not configured." }), { status: 503 });
+      }
+      expect(url.endsWith(paths.deleteMe)).toBe(true);
+      expect(init?.method).toBe("DELETE");
+      expect(JSON.parse(String(init?.body))).toEqual({ password: DEMO_PASSWORD });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const api = createLiveApi({ baseUrl: "https://classes.becreative.app", getToken: () => "bc_tok", fetchImpl: fetchImpl as typeof fetch });
+    await expect(api.signInSocial({ provider: "google", idToken: "id-1", nonce: "nonce-1" })).rejects.toMatchObject({ status: 503, message: "Google sign-in is not configured." });
+    await expect(api.deleteAccount({ password: DEMO_PASSWORD })).resolves.toEqual({ ok: true });
   });
 
   it("asks for a Checkout Session on web and a PaymentSheet on native", async () => {

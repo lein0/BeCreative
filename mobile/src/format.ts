@@ -32,14 +32,24 @@ export function matchesLocalDay(iso: string | null, day: string, timeZone = CLAS
   return localDayKey(iso, timeZone) === day;
 }
 
-export function whenLabel(iso: string | null): string {
+export function whenLabel(iso: string | null, timeZone = CLASS_TIME_ZONE): string {
   if (!iso) return "Dates soon";
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: CLASS_TIME_ZONE,
+    timeZone,
     weekday: "short",
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(iso));
+}
+
+export function placeLabel(location: { name?: string | null; neighborhood?: string | null; city?: string | null } | null | undefined): string {
+  if (!location) return "Online";
+  const parts = [location.name, location.neighborhood, location.city].filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join(" · ") : "In person";
+}
+
+export function mapPins<T extends { lat?: number | null; lng?: number | null; delivery?: string | null }>(classes: T[]): T[] {
+  return classes.filter((item) => item.delivery !== "virtual" && typeof item.lat === "number" && typeof item.lng === "number");
 }
