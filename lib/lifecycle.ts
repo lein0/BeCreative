@@ -1,7 +1,9 @@
 import { and, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bookings, classes, linkClicks, memberships, membershipSubscriptions, orders, sessions, teachers } from "@/lib/db/schema";
+import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
+import { dunningBody } from "@/lib/renewal-copy";
 import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
 
 function weekKey(now: Date) {
@@ -74,32 +76,18 @@ export async function scheduleLifecycle(now = new Date()) {
     queued += 1;
   }
 
-  const soon = new Date(now.getTime() + 3 * 86_400_000);
-  const renewing = await db.select().from(membershipSubscriptions).where(and(eq(membershipSubscriptions.status, "active"), gte(membershipSubscriptions.currentPeriodEnd, now), lte(membershipSubscriptions.currentPeriodEnd, soon)));
-  for (const sub of renewing) {
-    const [plan] = await db.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
-    await queue({
-      key: `renewal:${sub.id}:${sub.currentPeriodEnd.toISOString().slice(0, 10)}`,
-      userId: sub.userId,
-      event: "membership.renewal",
-      audience: "student",
-      title: plan?.name ?? "Your membership",
-      body: "Your membership renews in the next few days.",
-      href: "/bookings",
-    });
-    queued += 1;
-  }
-  const failed = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.status, "past_due"));
+  const failed = await db.select().from(membershipSubscriptions).where(and(eq(membershipSubscriptions.status, "past_due"), eq(membershipSubscriptions.cancelAtPeriodEnd, false)));
   for (const sub of failed) {
     const [plan] = await db.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
+    const cancelUrl = `${appOrigin()}/account/memberships/${sub.id}/cancel`;
     await queue({
       key: `renewal-failed:${sub.id}:${month}`,
       userId: sub.userId,
       event: "membership.payment_failed",
       audience: "student",
       title: plan?.name ?? "Your membership",
-      body: "The renewal charge did not go through.",
-      href: "/bookings",
+      body: dunningBody(plan?.name ?? "Your membership", cancelUrl),
+      href: `/account/memberships/${sub.id}/cancel`,
     });
     queued += 1;
   }

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ANON_COOKIE, bindAnonymousId } from "@/lib/anon";
 import { promoCookieFromLink } from "@/lib/pricing";
 
-const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
+const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings", "/account"];
 
 export function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;

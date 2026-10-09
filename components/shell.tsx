@@ -57,6 +57,7 @@ async function SiteHeader({ brand }: { brand: Brand }) {
           {manage ? <Nav href="/manage">Studios</Nav> : null}
           {crm ? <Nav href="/crm">Leads</Nav> : null}
           {admin ? <Nav href="/admin">Admin</Nav> : null}
+          {actor ? <Nav href="/account">Account</Nav> : null}
           {actor ? <Nav href="/bookings">Bookings</Nav> : null}
           {actor ? (
             <Link href="/notifications" aria-label={alerts ? `${alerts} unread notifications` : "Notifications"} className="relative rounded-full px-3 py-1.5 text-ink/80 hover:bg-sand hover:text-ink">
