@@ -1,87 +1,47 @@
-import { type ClassValue, clsx } from "clsx"
-import { twMerge } from "tailwind-merge"
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
+  return twMerge(clsx(inputs));
 }
 
-// Format currency
-export function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(amount / 100)
+export function money(cents: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 }
 
-// Format date
-export function formatDate(date: string | Date): string {
-  return new Intl.DateTimeFormat('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  }).format(new Date(date))
-}
-
-// Format date and time
-export function formatDateTime(date: string | Date): string {
-  return new Intl.DateTimeFormat('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(date))
-}
-
-// Get initials from name
-export function getInitials(name: string): string {
+export function initials(name: string): string {
   return name
-    .split(' ')
-    .map(word => word.charAt(0))
-    .join('')
-    .toUpperCase()
+    .split(" ")
+    .filter(Boolean)
     .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
-// Generate a random string
-export function generateId(length: number = 8): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
+export function slugify(value: string): string {
+  const base = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 60);
+  return base || "item";
 }
 
-// Debounce function
-export function debounce<T extends (...args: any[]) => any>(
-  func: T,
-  wait: number
-): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout
-  return (...args: Parameters<T>) => {
-    clearTimeout(timeout)
-    timeout = setTimeout(() => func(...args), wait)
-  }
+export function uniqueSlug(value: string): string {
+  return `${slugify(value)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-// Check if user is an instructor
-export function isInstructor(role: string): boolean {
-  return role === 'instructor'
+export function one(value: string | string[] | undefined | null): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
 }
 
-// Check if user is an admin
-export function isAdmin(role: string): boolean {
-  return role === 'admin'
+export function priceLabel(sessionCents: number | null | undefined, seriesCents: number | null | undefined): string {
+  const prices = [sessionCents, seriesCents].filter((value): value is number => value != null);
+  if (!prices.length) return "Free";
+  const low = Math.min(...prices);
+  if (low === 0) return "Free";
+  return prices.length > 1 ? `from ${money(low)}` : money(low);
 }
-
-// Calculate remaining credits
-export function calculateRemainingCredits(total: number, used: number): number {
-  return Math.max(0, total - used)
-}
-
-// Validate email
-export function isValidEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  return emailRegex.test(email)
-} 
