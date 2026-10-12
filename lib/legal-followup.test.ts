@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { forwardPostHog, posthogOptions } from "@/lib/analytics";
-import { privacyChoices } from "@/lib/privacy";
+import { cookieNoticeOpen, privacyChoices } from "@/lib/privacy";
 import { sentryOptions } from "@/lib/sentry";
 import { smsSendDecision } from "@/lib/sms-window";
 import { stripeJsSrc } from "@/lib/stripe-js";
@@ -38,6 +38,14 @@ describe("global privacy control", () => {
     expect(privacyChoices({ gpc: true, accepted: true })).toEqual({ analytics: false, marketing: false, gpc: true });
     expect(privacyChoices({ gpc: false, accepted: true })).toEqual({ analytics: true, marketing: true, gpc: false });
     expect(privacyChoices({ gpc: false, accepted: false })).toEqual({ analytics: false, marketing: false, gpc: false });
+    expect(cookieNoticeOpen({ gpc: true, accepted: true, gpcDismissed: false })).toBe(true);
+    expect(cookieNoticeOpen({ gpc: true, accepted: false, gpcDismissed: true })).toBe(false);
+    expect(cookieNoticeOpen({ gpc: false, accepted: false, gpcDismissed: true })).toBe(true);
+    expect(cookieNoticeOpen({ gpc: false, accepted: true, gpcDismissed: false })).toBe(false);
+    const notice = readFileSync("components/cookie-notice.tsx", "utf8");
+    const privacy = readFileSync("lib/privacy.ts", "utf8");
+    expect(notice).toContain("GPC_DISMISS_KEY");
+    expect(privacy).toContain('GPC_DISMISS_KEY = "bc_gpc_dismissed"');
   });
 
   it("drops analytics and marketing cookies when Sec-GPC is 1", () => {

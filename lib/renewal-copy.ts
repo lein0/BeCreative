@@ -500,6 +500,11 @@ function windowDecision(kind: NoticeKind, now: Date, eventAt: Date, targetDays: 
   return { kind, action: "wait", eventAt, daysBefore };
 }
 
+/** A plan-level change is owed only to someone who joined before it takes effect. */
+export function noticeOwedToMember(joinedAt: Date, effectiveAt: Date) {
+  return joinedAt.getTime() < effectiveAt.getTime();
+}
+
 /** The upcoming renewal is the one that carries the membership past a 12-month mark. */
 export function renewalCrossesYear(startedAt: Date, periodEnd: Date, termMonths: number) {
   const previous = addLocalMonths(periodEnd, -Math.max(1, termMonths));

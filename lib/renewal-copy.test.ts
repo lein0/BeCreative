@@ -13,6 +13,7 @@ import {
   membershipOffer,
   planNotices,
   missedNoticeSkipsCharge,
+  noticeOwedToMember,
   missedRequiredNotice,
   noticeAlert,
   noticeMail,
@@ -285,6 +286,8 @@ describe("notice scheduler windows", () => {
     expect(missedNoticeSkipsCharge("intro_ending")).toBe(true);
     expect(missedNoticeSkipsCharge("material_change")).toBe(true);
     expect(missedNoticeSkipsCharge("price_change")).toBe(false);
+    expect(noticeOwedToMember(noon("2026-07-01"), noon("2026-08-01"))).toBe(true);
+    expect(noticeOwedToMember(noon("2026-08-02"), noon("2026-08-01"))).toBe(false);
     expect(noticeAlert("pre_renewal", "subscription sub", true)).toContain("will not be charged");
     expect(noticeAlert("price_change", "subscription sub")).not.toContain("will not be charged");
   });

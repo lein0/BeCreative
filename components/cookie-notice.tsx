@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ANALYTICS_COOKIE, MARKETING_COOKIE, gpcEnabled, privacyChoices } from "@/lib/privacy";
+import { ANALYTICS_COOKIE, GPC_DISMISS_KEY, MARKETING_COOKIE, cookieNoticeOpen, gpcEnabled } from "@/lib/privacy";
 
 function browserGpc() {
   const nav = navigator as Navigator & { globalPrivacyControl?: boolean };
@@ -18,7 +18,7 @@ export function CookieNotice() {
   useEffect(() => {
     const signal = browserGpc();
     const accepted = window.localStorage.getItem(ANALYTICS_COOKIE) === "1";
-    const choices = privacyChoices({ gpc: signal, accepted });
+    const gpcDismissed = window.localStorage.getItem(GPC_DISMISS_KEY) === "1";
     const id = window.setTimeout(() => {
       setGpc(signal);
       if (signal) {
@@ -26,7 +26,7 @@ export function CookieNotice() {
         writeCookie(ANALYTICS_COOKIE, "", 0);
         writeCookie(MARKETING_COOKIE, "", 0);
       }
-      setOpen(signal || !choices.analytics);
+      setOpen(cookieNoticeOpen({ gpc: signal, accepted, gpcDismissed }));
     }, 0);
     return () => window.clearTimeout(id);
   }, []);
@@ -39,19 +39,21 @@ export function CookieNotice() {
             ? "Your browser sent Global Privacy Control, so analytics and marketing cookies stay off."
             : "We use a sign-in cookie and a short-lived cookie for promo codes and referral links. No advertising cookies."}
         </p>
-        {gpc ? null : (
-          <button
-            className="rounded-full bg-ink px-4 py-2 text-sm text-paper"
-            onClick={() => {
-              if (browserGpc()) return;
-              window.localStorage.setItem(ANALYTICS_COOKIE, "1");
-              writeCookie(ANALYTICS_COOKIE, "1", 60 * 60 * 24 * 365);
+        <button
+          className="rounded-full bg-ink px-4 py-2 text-sm text-paper"
+          onClick={() => {
+            if (browserGpc() || gpc) {
+              window.localStorage.setItem(GPC_DISMISS_KEY, "1");
               setOpen(false);
-            }}
-          >
-            OK
-          </button>
-        )}
+              return;
+            }
+            window.localStorage.setItem(ANALYTICS_COOKIE, "1");
+            writeCookie(ANALYTICS_COOKIE, "1", 60 * 60 * 24 * 365);
+            setOpen(false);
+          }}
+        >
+          OK
+        </button>
       </div>
     </div>
   );

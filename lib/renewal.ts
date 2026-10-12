@@ -36,6 +36,7 @@ import {
   missedNoticeSkipsCharge,
   noticeAlert,
   noticeMail,
+  noticeOwedToMember,
   planNotices,
   priceAfterNotice,
   priceChangeDateError,
@@ -400,19 +401,26 @@ async function pauseUnnoticedRenewal(subscriptionId: string, stripeSubscriptionI
     try {
       const stopped = await stopSubscriptionRenewal(stripeSubscriptionId);
       if (!stopped.ok && stopped.reason !== "unconfigured") {
-        await alertOps(`Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}. The renewal is paused locally so it is not extended.`);
+        logEvent("error", `Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}.`);
+        return false;
       }
     } catch {
-      await alertOps(`Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}. The renewal is paused locally so it is not extended.`);
+      logEvent("error", `Stripe did not confirm cancel_at_period_end for subscription ${subscriptionId}.`);
+      return false;
     }
   }
   await db.update(membershipSubscriptions).set({ cancelAtPeriodEnd: true, cancelledAt: new Date() }).where(eq(membershipSubscriptions.id, subscriptionId));
+  return true;
 }
 
-export async function scheduleRenewalNotices(now = new Date()) {
+export async function scheduleRenewalNotices(now = new Date(), subscriptionIds?: readonly string[]) {
   let sent = 0;
   let missed = 0;
-  const subs = await db.select().from(membershipSubscriptions).where(and(ne(membershipSubscriptions.status, "cancelled"), eq(membershipSubscriptions.cancelAtPeriodEnd, false)));
+  let subs = await db.select().from(membershipSubscriptions).where(and(ne(membershipSubscriptions.status, "cancelled"), eq(membershipSubscriptions.cancelAtPeriodEnd, false)));
+  if (subscriptionIds) {
+    const allow = new Set(subscriptionIds);
+    subs = subs.filter((sub) => allow.has(sub.id));
+  }
   if (!subs.length) return { sent, missed };
   const planIds = [...new Set(subs.map((sub) => sub.membershipId))];
   const plans = await db.select().from(memberships).where(inArray(memberships.id, planIds));
@@ -449,25 +457,28 @@ export async function scheduleRenewalNotices(now = new Date()) {
     const person = personById.get(sub.userId);
     if (!plan || !teacher || !person) continue;
     const mine = notices.filter((notice) => notice.subscriptionId === sub.id);
-    const price = priceChanges.find((change) => change.membershipId === plan.id && !handled(mine, "price_change", isoDate(change.effectiveAt))) ?? priceChanges.filter((change) => change.membershipId === plan.id).at(-1) ?? null;
-    const material = materialChanges.find((change) => change.membershipId === plan.id && !handled(mine, "material_change", isoDate(change.effectiveAt))) ?? null;
+    const owedPrices = priceChanges.filter((change) => change.membershipId === plan.id && noticeOwedToMember(sub.createdAt, change.effectiveAt));
+    const price = owedPrices.find((change) => !handled(mine, "price_change", isoDate(change.effectiveAt))) ?? owedPrices.at(-1) ?? null;
+    const owedMaterials = materialChanges.filter((change) => change.membershipId === plan.id && noticeOwedToMember(sub.createdAt, change.effectiveAt));
+    const material = owedMaterials.find((change) => !handled(mine, "material_change", isoDate(change.effectiveAt))) ?? null;
     const decisions = planNotices({
       now,
       termMonths: plan.termMonths,
-      startedAt: sub.currentPeriodStart,
+      startedAt: sub.createdAt,
       periodEnd: sub.currentPeriodEnd,
       introEndsAt: sub.introEndsAt,
       introDays: plan.introDays,
       introPriceCents: plan.introPriceCents,
       priceChange: price ? { effectiveAt: price.effectiveAt, sent: handled(mine, "price_change", isoDate(price.effectiveAt)) } : null,
       materialChange: material ? { effectiveAt: material.effectiveAt, sent: false } : null,
-      annualSentFor: mine.filter((notice) => notice.kind === "annual").map((notice) => notice.eventOn),
+      annualSentFor: mine.filter((notice) => notice.kind === "annual" && notice.status === "sent").map((notice) => notice.eventOn),
       preRenewalSent: handled(mine, "pre_renewal", isoDate(sub.currentPeriodEnd)),
       introSent: sub.introEndsAt ? handled(mine, "intro_ending", isoDate(sub.introEndsAt)) : false,
     });
     const cancelUrl = `${legal.siteUrl}/account/memberships/${sub.id}/cancel`;
     const pauseReasons: string[] = [];
     let priceFallback = false;
+    let pauseAlert = false;
     for (const decision of decisions) {
       if (decision.action === "wait") continue;
       const eventOn = isoDate(decision.eventAt);
@@ -488,12 +499,13 @@ export async function scheduleRenewalNotices(now = new Date()) {
         last4: sub.cardLast4 || "••••",
         eventAt: decision.eventAt,
         nextRenewal: sub.currentPeriodEnd,
-        startedAt: sub.currentPeriodStart,
+        startedAt: sub.createdAt,
         cancelUrl,
         changeSummary: material?.summary || "",
         priceStays: !(price && decision.kind === "material_change"),
       }, templates, legal);
       if (decision.action === "missed" || prior?.status === "missed") {
+        let newlyMissed = false;
         if (!prior) {
           const inserted = await db.insert(renewalNotices).values({
             id: crypto.randomUUID(),
@@ -508,17 +520,22 @@ export async function scheduleRenewalNotices(now = new Date()) {
             body: mail.text,
             detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
           }).onConflictDoNothing().returning();
-          if (inserted.length) missed += 1;
+          newlyMissed = inserted.length > 0;
+          if (newlyMissed) missed += 1;
         } else if (prior.status !== "missed") {
           await db.update(renewalNotices).set({
             status: "missed",
             detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`, missedNoticeSkipsCharge(decision.kind)),
           }).where(eq(renewalNotices.id, prior.id));
+          prior.status = "missed";
+          newlyMissed = true;
           missed += 1;
         }
-        if (missedNoticeSkipsCharge(decision.kind)) pauseReasons.push(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`, true));
-        else if (decision.kind === "price_change") priceFallback = true;
-        else await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
+        if (missedNoticeSkipsCharge(decision.kind)) {
+          pauseReasons.push(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`, true));
+          if (newlyMissed) pauseAlert = true;
+        } else if (decision.kind === "price_change" && newlyMissed) priceFallback = true;
+        else if (newlyMissed) await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
         continue;
       }
       let emailId: string | null = null;
@@ -565,11 +582,11 @@ export async function scheduleRenewalNotices(now = new Date()) {
       if (status === "sent" && decision.kind === "material_change" && material) {
         await db.update(membershipMaterialChanges).set({ noticeSentAt: now }).where(eq(membershipMaterialChanges.id, material.id));
       }
-      await rememberInApp(person.id, mail.subject, mail.text.slice(0, 240), `/account/memberships/${sub.id}/cancel`);
+      if (!prior) await rememberInApp(person.id, mail.subject, mail.text.slice(0, 240), `/account/memberships/${sub.id}/cancel`);
       if (status === "failed" && !prior) await alertOps(noticeAlert(decision.kind, `email failed for subscription ${sub.id}`));
     }
 
-    const applicable = [...priceChanges].reverse().find((change) => change.membershipId === plan.id && change.effectiveAt <= sub.currentPeriodEnd);
+    const applicable = [...owedPrices].reverse().find((change) => change.effectiveAt <= sub.currentPeriodEnd);
     const priced = priceAfterNotice({
       lockedPriceCents: sub.renewalPriceCents,
       catalogPriceCents: plan.priceCents,
@@ -579,8 +596,9 @@ export async function scheduleRenewalNotices(now = new Date()) {
     });
     if (pauseReasons.length) {
       const stripeId = sub.orderId ? ordersById.get(sub.orderId)?.stripeSubscriptionId ?? null : null;
-      await pauseUnnoticedRenewal(sub.id, stripeId);
-      await alertOps(`${pauseReasons.join(" ")} Subscription ${sub.id} is set to cancel at period end.`);
+      const paused = await pauseUnnoticedRenewal(sub.id, stripeId);
+      if (paused) await alertOps(`${pauseReasons.join(" ")} Subscription ${sub.id} is set to cancel at period end.`);
+      else if (pauseAlert) await alertOps(`Stripe did not confirm cancel_at_period_end for subscription ${sub.id}. It was left active and will be retried.`);
       continue;
     }
     if (priceFallback) {
