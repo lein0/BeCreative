@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { bookings, classes, linkClicks, memberships, membershipSubscriptions, orders, sessions, teachers } from "@/lib/db/schema";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { dunningBody } from "@/lib/renewal-copy";
+import { failedRenewalNotice } from "@/lib/renewal-copy";
 import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
 
 function weekKey(now: Date) {
@@ -79,15 +79,15 @@ export async function scheduleLifecycle(now = new Date()) {
   const failed = await db.select().from(membershipSubscriptions).where(and(eq(membershipSubscriptions.status, "past_due"), eq(membershipSubscriptions.cancelAtPeriodEnd, false)));
   for (const sub of failed) {
     const [plan] = await db.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1);
-    const cancelUrl = `${appOrigin()}/account/memberships/${sub.id}/cancel`;
+    const notice = failedRenewalNotice({ subscriptionId: sub.id, membershipName: plan?.name ?? "Your membership", origin: appOrigin() });
     await queue({
       key: `renewal-failed:${sub.id}:${month}`,
       userId: sub.userId,
       event: "membership.payment_failed",
       audience: "student",
-      title: plan?.name ?? "Your membership",
-      body: dunningBody(plan?.name ?? "Your membership", cancelUrl),
-      href: `/account/memberships/${sub.id}/cancel`,
+      title: notice.membershipName,
+      body: notice.body,
+      href: notice.href,
     });
     queued += 1;
   }

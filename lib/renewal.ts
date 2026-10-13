@@ -5,6 +5,7 @@ import {
   membershipMaterialChanges,
   membershipPriceChanges,
   membershipSubscriptions,
+  emailOutbox,
   memberships,
   notifications,
   orders,
@@ -22,6 +23,7 @@ import {
   MATERIAL_CHANGE_MIN_DAYS,
   PRICE_CHANGE_MIN_DAYS_BACKEND,
   acknowledgmentMail,
+  acknowledgmentStillDue,
   benefitsSummary,
   buildDisclosure,
   cancellationMail,
@@ -36,14 +38,16 @@ import {
   noticeAlert,
   noticeMail,
   planNotices,
-  priceAfterNotice,
+  preservedAcknowledgment,
+  priceAfterMemberNotice,
   priceChangeDateError,
+  priceNoticeSentAt,
   type DisclosureView,
   type LegalIdentity,
   type NoticeKind,
   type RenewalTemplates,
 } from "@/lib/renewal-copy";
-import { setSubscriptionRenewalAmount, stopSubscriptionRenewal } from "@/lib/stripe";
+import { paymentMethodPortalUrl, setSubscriptionRenewalAmount, stopSubscriptionRenewal } from "@/lib/stripe";
 
 export async function renewalSaveOfferEnabled() {
   const [row] = await db.select({ on: platformSettings.renewalSaveOffer }).from(platformSettings).where(eq(platformSettings.id, 1)).limit(1);
@@ -176,13 +180,14 @@ async function rememberInApp(userId: string, title: string, body: string, href: 
 export async function sendAcknowledgmentForOrder(orderId: string) {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order || order.kind !== "membership" || !order.userId) return;
-  const [consent] = await db.select().from(renewalConsents).where(eq(renewalConsents.orderId, orderId)).limit(1);
-  if (consent?.ackEmailId) return;
   const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, orderId)).limit(1);
   const [plan] = sub ? await db.select().from(memberships).where(eq(memberships.id, sub.membershipId)).limit(1) : [];
-  const [teacher] = plan ? await db.select().from(teachers).where(eq(teachers.id, plan.teacherId)).limit(1) : [];
+  if (!plan?.recurring) return;
+  const [consent] = await db.select().from(renewalConsents).where(eq(renewalConsents.orderId, orderId)).limit(1);
+  if (!acknowledgmentStillDue({ recurring: plan.recurring, deliveryStatus: consent?.ackDeliveryStatus })) return;
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, plan.teacherId)).limit(1);
   const [person] = await db.select().from(user).where(eq(user.id, order.userId)).limit(1);
-  if (!sub || !plan || !teacher || !person?.email) return;
+  if (!sub || !teacher || !person?.email) return;
   const templates = await activeTemplates();
   const legal = await contextLegal();
   const cancelUrl = `${legal.siteUrl}/account/memberships/${sub.id}/cancel`;
@@ -246,7 +251,26 @@ export async function membershipTerms(subscriptionId: string, userId: string) {
     policyUrl: `${legal.siteUrl}/t/${teacher.slug}/m/${plan.slug}`,
     cancelUrl: `${legal.siteUrl}/account/memberships/${sub.id}/cancel`,
   }, templates, legal);
-  return { sub, plan, teacher, person, consent, mail, legal };
+  let storedEmail: { subject: string; text: string } | null = null;
+  if (consent?.ackEmailId) {
+    const [sent] = await db.select().from(emailOutbox).where(eq(emailOutbox.id, consent.ackEmailId)).limit(1);
+    if (sent?.textBody) storedEmail = { subject: sent.subject, text: sent.textBody };
+  }
+  const preserved = preservedAcknowledgment({
+    storedEmail,
+    disclosureText: consent?.disclosureText ?? null,
+    regenerated: { subject: mail.subject, text: mail.text },
+  });
+  return { sub, plan, teacher, person, consent, mail: { ...mail, subject: preserved.subject, text: preserved.text }, legal, verbatim: preserved.verbatim };
+}
+
+export async function paymentUpdateUrl(subscriptionId: string, userId: string) {
+  const [sub] = await db.select().from(membershipSubscriptions).where(and(eq(membershipSubscriptions.id, subscriptionId), eq(membershipSubscriptions.userId, userId))).limit(1);
+  if (!sub) return { error: "Membership not found." };
+  if (sub.cancelAtPeriodEnd || sub.status === "cancelled") return { error: "This membership is already cancelled." };
+  const [order] = sub.orderId ? await db.select().from(orders).where(eq(orders.id, sub.orderId)).limit(1) : [];
+  if (!order?.stripeSubscriptionId) return { error: "This membership has no card on file to update." };
+  return paymentMethodPortalUrl(order.stripeSubscriptionId, `/account/memberships/${subscriptionId}/payment`);
 }
 
 async function loadCancelTarget(subscriptionId: string) {
@@ -427,6 +451,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
   }
 
   for (const sub of subs) {
+    let sentPriceNotice: { eventOn: string; sentAt: Date } | null = null;
     const plan = planById.get(sub.membershipId);
     const teacher = plan ? teacherById.get(plan.teacherId) : undefined;
     const person = personById.get(sub.userId);
@@ -518,9 +543,9 @@ export async function scheduleRenewalNotices(now = new Date()) {
       }).onConflictDoNothing().returning();
       if (!inserted.length) continue;
       sent += 1;
-      if (status === "sent" && decision.kind === "price_change" && price) {
+      if (status === "sent" && decision.kind === "price_change" && price && isoDate(price.effectiveAt) === eventOn) {
         await db.update(membershipPriceChanges).set({ noticeSentAt: now }).where(eq(membershipPriceChanges.id, price.id));
-        price.noticeSentAt = now;
+        sentPriceNotice = { eventOn, sentAt: now };
       }
       if (status === "sent" && decision.kind === "material_change" && material) {
         await db.update(membershipMaterialChanges).set({ noticeSentAt: now }).where(eq(membershipMaterialChanges.id, material.id));
@@ -530,10 +555,14 @@ export async function scheduleRenewalNotices(now = new Date()) {
     }
 
     const applicable = [...priceChanges].reverse().find((change) => change.membershipId === plan.id && change.effectiveAt <= sub.currentPeriodEnd);
-    const priced = priceAfterNotice({
+    const memberSentAt = applicable
+      ? priceNoticeSentAt(mine, applicable.effectiveAt) ?? (sentPriceNotice?.eventOn === isoDate(applicable.effectiveAt) ? sentPriceNotice.sentAt : null)
+      : null;
+    const priced = priceAfterMemberNotice({
       lockedPriceCents: sub.renewalPriceCents,
       catalogPriceCents: plan.priceCents,
-      change: applicable ? { newPriceCents: applicable.newPriceCents, effectiveAt: applicable.effectiveAt, noticeSentAt: applicable.noticeSentAt } : null,
+      change: applicable ? { newPriceCents: applicable.newPriceCents, effectiveAt: applicable.effectiveAt } : null,
+      memberNoticeSentAt: memberSentAt,
       renewsAt: sub.currentPeriodEnd,
     });
     const locked = sub.renewalPriceCents > 0 ? sub.renewalPriceCents : plan.priceCents;

@@ -23,7 +23,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
       <h1 className="display mt-2 text-5xl">Membership terms</h1>
       <p className="mt-2 text-sm"><a className="underline" href={`/account/memberships/${id}/terms/pdf`}>Download PDF</a></p>
       <article className="mt-6 rounded-2xl bg-white p-5 ring-1 ring-line">
-        <p className="text-sm text-ink/70">From: {terms.legal.platformName} &lt;{terms.legal.notificationsEmail}&gt; on behalf of {terms.teacher.studioName || "Teacher"}</p>
+        {terms.verbatim ? null : <p className="text-sm text-ink/70">From: {terms.legal.platformName} &lt;{terms.legal.notificationsEmail}&gt; on behalf of {terms.teacher.studioName || "Teacher"}</p>}
         <h2 className="mt-3 text-xl font-semibold">{terms.mail.subject}</h2>
         <pre className="mt-4 whitespace-pre-wrap font-sans text-base leading-6 text-ink">{terms.mail.text}</pre>
       </article>

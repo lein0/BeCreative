@@ -8,7 +8,7 @@ import { db } from "@/lib/db";
 import { memberships, teachers } from "@/lib/db/schema";
 import { canViewPlatformStats } from "@/lib/permissions";
 import { PRICE_CHANGE_MIN_DAYS_TEACHER, type RenewalTemplates } from "@/lib/renewal-copy";
-import { cancelMembership, saveRenewalTemplate, scheduleMaterialChange, scheduleMembershipPriceChange, setRenewalSaveOffer } from "@/lib/renewal";
+import { cancelMembership, paymentUpdateUrl, saveRenewalTemplate, scheduleMaterialChange, scheduleMembershipPriceChange, setRenewalSaveOffer } from "@/lib/renewal";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -20,6 +20,15 @@ async function auditHeaders() {
     ip: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
     userAgent: requestHeaders.get("user-agent"),
   };
+}
+
+export async function updatePaymentAction(formData: FormData) {
+  const actor = await requireActor();
+  const subscriptionId = text(formData, "subscriptionId");
+  const result = await paymentUpdateUrl(subscriptionId, actor.id);
+  if ("error" in result && result.error) redirect(`/account/memberships/${subscriptionId}/payment?error=${encodeURIComponent(result.error)}`);
+  if (!("url" in result) || !result.url) redirect(`/account/memberships/${subscriptionId}/payment?error=${encodeURIComponent("Card update is not available right now.")}`);
+  redirect(result.url);
 }
 
 export async function confirmCancelAction(formData: FormData) {

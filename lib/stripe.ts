@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import { statementDescriptorSuffix } from "@/lib/connect-rules";
 import { appOrigin } from "@/lib/env";
+import { savedCardDetails } from "@/lib/renewal-copy";
 
 export function stripeConfigured() {
   return Boolean(process.env.STRIPE_SECRET_KEY && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
@@ -103,6 +104,58 @@ export async function stopSubscriptionRenewal(subscriptionId: string) {
   if (!stripe) return { ok: false as const, reason: "unconfigured" as const };
   await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
   return { ok: true as const };
+}
+
+function cardFromMethod(method: Stripe.PaymentMethod | string | null | undefined) {
+  if (!method || typeof method === "string") return null;
+  return savedCardDetails(method.card);
+}
+
+export async function subscriptionCard(input: { paymentIntentId?: string | null; subscriptionId?: string | null }) {
+  const stripe = getStripe();
+  if (!stripe) return null;
+  try {
+    if (input.subscriptionId) {
+      const subscription = await stripe.subscriptions.retrieve(input.subscriptionId, { expand: ["default_payment_method"] });
+      const onSubscription = cardFromMethod(subscription.default_payment_method);
+      if (onSubscription) return onSubscription;
+      if (typeof subscription.default_payment_method === "string") {
+        const method = await stripe.paymentMethods.retrieve(subscription.default_payment_method);
+        const card = savedCardDetails(method.card);
+        if (card) return card;
+      }
+    }
+    if (input.paymentIntentId) {
+      const intent = await stripe.paymentIntents.retrieve(input.paymentIntentId, { expand: ["payment_method"] });
+      const onIntent = cardFromMethod(intent.payment_method);
+      if (onIntent) return onIntent;
+      if (typeof intent.payment_method === "string") {
+        const method = await stripe.paymentMethods.retrieve(intent.payment_method);
+        return savedCardDetails(method.card);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function paymentMethodPortalUrl(stripeSubscriptionId: string, returnPath: string) {
+  const stripe = getStripe();
+  if (!stripe) return { error: "Card update is not available right now." };
+  try {
+    const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+    const customer = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
+    if (!customer) return { error: "This membership has no card on file to update." };
+    const session = await stripe.billingPortal.sessions.create({
+      customer,
+      return_url: `${appOrigin()}${returnPath}`,
+    });
+    if (!session.url) return { error: "Card update is not available right now." };
+    return { url: session.url };
+  } catch {
+    return { error: "Card update is not available right now." };
+  }
 }
 
 export async function setSubscriptionRenewalAmount(subscriptionId: string, amountCents: number) {

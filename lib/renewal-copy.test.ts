@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { emailCopy } from "@/lib/email-templates";
 import { maySend } from "@/lib/messaging-rules";
 import {
   BUILTIN_TEMPLATES,
@@ -6,15 +7,22 @@ import {
   PRICE_CHANGE_MIN_DAYS_BACKEND,
   PRICE_CHANGE_MIN_DAYS_TEACHER,
   acknowledgmentMail,
+  acknowledgmentStillDue,
   buildDisclosure,
   consentAccepted,
   dunningBody,
+  failedRenewalNotice,
   legalIdentity,
+  membershipCheckoutPlan,
   membershipOffer,
   planNotices,
+  preservedAcknowledgment,
+  priceAfterMemberNotice,
   priceAfterNotice,
   priceChangeDateError,
+  priceNoticeSentAt,
   purchaseButtonLabel,
+  savedCardDetails,
   shouldRetryRenewal,
 } from "@/lib/renewal-copy";
 import { textPdf } from "@/lib/renewal-pdf";
@@ -227,6 +235,37 @@ describe("notice scheduler windows", () => {
     }).priceCents).toBe(12000);
   });
 
+  it("keeps the old price for a member whose own notice failed even if another member was notified", () => {
+    const effectiveAt = noon("2026-08-01");
+    const renewsAt = noon("2026-08-01");
+    const noticed = noon("2026-07-11");
+    expect(priceNoticeSentAt([
+      { kind: "price_change", eventOn: "2026-08-01", status: "failed", sentAt: noticed },
+    ], effectiveAt)).toBeNull();
+    expect(priceNoticeSentAt([
+      { kind: "price_change", eventOn: "2026-08-01", status: "missed", sentAt: null },
+    ], effectiveAt)).toBeNull();
+    expect(priceNoticeSentAt([
+      { kind: "price_change", eventOn: "2026-08-01", status: "sent", sentAt: noticed },
+    ], effectiveAt)).toEqual(noticed);
+    const unlocked = priceAfterMemberNotice({
+      lockedPriceCents: 12000,
+      catalogPriceCents: 14000,
+      change: { newPriceCents: 14000, effectiveAt },
+      memberNoticeSentAt: noticed,
+      renewsAt,
+    });
+    const blocked = priceAfterMemberNotice({
+      lockedPriceCents: 12000,
+      catalogPriceCents: 14000,
+      change: { newPriceCents: 14000, effectiveAt },
+      memberNoticeSentAt: null,
+      renewsAt,
+    });
+    expect(unlocked).toEqual({ priceCents: 14000, blockedNewPrice: false });
+    expect(blocked).toEqual({ priceCents: 12000, blockedNewPrice: true });
+  });
+
   it("blocks teacher price dates under 14 days and any date under 8 days", () => {
     const now = noon("2026-10-09");
     expect(priceChangeDateError(now, noon("2026-10-19"), PRICE_CHANGE_MIN_DAYS_TEACHER)).toMatch(/14 days/);
@@ -244,6 +283,15 @@ describe("cancellation and dunning", () => {
     const body = dunningBody("Monthly studio", "https://northwind.test/account/memberships/sub/cancel");
     expect(body).toContain("https://northwind.test/account/memberships/sub/cancel");
     expect(body.toLowerCase()).not.toContain("cannot cancel");
+    const notice = failedRenewalNotice({ subscriptionId: "sub", membershipName: "Monthly studio", origin: "https://northwind.test/" });
+    expect(notice.href).toBe("/account/memberships/sub/payment");
+    expect(notice.href).not.toContain("cancel");
+    expect(notice.body).toContain(notice.cancelUrl);
+    const copy = emailCopy("membership.payment_failed", { name: "Ada", title: notice.membershipName, body: notice.body, href: notice.href });
+    expect(copy.cta).toBe("Update payment");
+    expect(copy.text).toContain(notice.body);
+    expect(copy.text).toContain("Update payment: /account/memberships/sub/payment");
+    expect(copy.text).not.toContain("Update payment: /account/memberships/sub/cancel");
   });
 
   it("sends membership mail even when marketing is unsubscribed", () => {
@@ -263,5 +311,86 @@ describe("cancellation and dunning", () => {
     const regular = membershipOffer({ priceCents: 12000, termMonths: 1, recurring: true, introDays: null, introPriceCents: null, now: noon("2026-10-09") });
     expect(regular.todayCents).toBe(12000);
     expect(regular.chargeLater).toBe(false);
+  });
+
+  it("collects a card when a recurring plan is $0 today and renews later", () => {
+    const now = noon("2026-10-09");
+    const promo = membershipCheckoutPlan({
+      recurring: true,
+      renewalCents: 12000,
+      dueTodayCents: 0,
+      intro: false,
+      introTrialDays: 0,
+      now,
+      periodEnd: noon("2026-11-09"),
+      stripeReady: true,
+    });
+    expect(promo.collectCard).toBe(true);
+    expect(promo.status).toBe("pending");
+    expect(promo.checkoutCents).toBe(12000);
+    expect(promo.trialDays).toBeGreaterThan(27);
+    const discountedIntro = membershipCheckoutPlan({
+      recurring: true,
+      renewalCents: 12000,
+      dueTodayCents: 0,
+      intro: true,
+      introTrialDays: 14,
+      now,
+      periodEnd: noon("2026-10-23"),
+      stripeReady: true,
+    });
+    expect(discountedIntro).toMatchObject({ collectCard: true, status: "pending", checkoutCents: 12000, trialDays: 14 });
+    const oneTime = membershipCheckoutPlan({
+      recurring: false,
+      renewalCents: 12000,
+      dueTodayCents: 0,
+      intro: false,
+      introTrialDays: 0,
+      now,
+      periodEnd: noon("2026-11-09"),
+      stripeReady: true,
+    });
+    expect(oneTime).toMatchObject({ collectCard: false, status: "paid" });
+    const paid = membershipCheckoutPlan({
+      recurring: true,
+      renewalCents: 12000,
+      dueTodayCents: 12000,
+      intro: false,
+      introTrialDays: 0,
+      now,
+      periodEnd: noon("2026-11-09"),
+      stripeReady: true,
+    });
+    expect(paid).toMatchObject({ collectCard: false, status: "pending", checkoutCents: 12000, trialDays: 0 });
+  });
+
+  it("retries a failed acknowledgment and skips one-time plans", () => {
+    expect(acknowledgmentStillDue({ recurring: false, deliveryStatus: null })).toBe(false);
+    expect(acknowledgmentStillDue({ recurring: true, deliveryStatus: "failed" })).toBe(true);
+    expect(acknowledgmentStillDue({ recurring: true, deliveryStatus: "pending" })).toBe(true);
+    expect(acknowledgmentStillDue({ recurring: true, deliveryStatus: "sent" })).toBe(false);
+  });
+
+  it("downloads the stored acknowledgment instead of the current template", () => {
+    const stored = preservedAcknowledgment({
+      storedEmail: { subject: "Original terms", text: "Keep this email. Renewal is $12.00." },
+      disclosureText: "Accepted disclosure at $12.00.",
+      regenerated: { subject: "Updated terms", text: "Renewal is $14.00." },
+    });
+    expect(stored).toEqual({ subject: "Original terms", text: "Keep this email. Renewal is $12.00.", verbatim: true });
+    const disclosure = preservedAcknowledgment({
+      storedEmail: null,
+      disclosureText: "Accepted disclosure at $12.00.",
+      regenerated: { subject: "Updated terms", text: "Renewal is $14.00." },
+    });
+    expect(disclosure.text).toBe("Accepted disclosure at $12.00.");
+    expect(disclosure.text).not.toContain("$14.00");
+  });
+
+  it("saves a real card and ignores the checkout placeholder", () => {
+    expect(savedCardDetails({ brand: "visa", last4: "4242" })).toEqual({ cardBrand: "visa", cardLast4: "4242" });
+    expect(savedCardDetails({ brand: "card", last4: "••••" })).toBeNull();
+    expect(savedCardDetails({ brand: "visa", last4: "••••" })).toBeNull();
+    expect(savedCardDetails(null)).toBeNull();
   });
 });

@@ -35,6 +35,7 @@ async function List() {
             <p className="mt-1 text-base">{row.teacher.studioName} · {money(row.sub.renewalPriceCents || row.plan.priceCents)} · {row.sub.cancelAtPeriodEnd ? `Ends ${formatRenewalDate(row.sub.currentPeriodEnd)}` : `Renews ${formatRenewalDate(row.sub.currentPeriodEnd)}`}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link href={`/account/memberships/${row.sub.id}/terms`} className="underline">Membership terms</Link>
+              {row.sub.status === "past_due" ? <Link href={`/account/memberships/${row.sub.id}/payment`} className="underline">Update payment</Link> : null}
               {row.sub.cancelAtPeriodEnd ? null : <Link href={`/account/memberships/${row.sub.id}/cancel`} className="rounded-full bg-ink px-4 py-2 font-semibold text-paper">Cancel membership</Link>}
             </div>
           </Panel>

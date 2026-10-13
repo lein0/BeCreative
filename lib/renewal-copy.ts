@@ -232,6 +232,34 @@ export function membershipOffer(input: MembershipOfferInput) {
   return { intro, todayCents, renewalCents, periodEnd, trialDays, chargeLater };
 }
 
+/** A recurring plan that is $0 today still has to collect a card before later charges can run. */
+export function recurringCardRequired(input: { recurring: boolean; renewalCents: number; dueTodayCents: number }) {
+  return input.recurring && input.renewalCents > 0 && input.dueTodayCents <= 0;
+}
+
+export function membershipCheckoutPlan(input: {
+  recurring: boolean;
+  renewalCents: number;
+  dueTodayCents: number;
+  intro: boolean;
+  introTrialDays: number;
+  now: Date;
+  periodEnd: Date;
+  stripeReady: boolean;
+}) {
+  const collectCard = recurringCardRequired(input);
+  const cardNow = input.dueTodayCents > 0 && input.stripeReady;
+  const status = collectCard || cardNow ? "pending" as const : input.dueTodayCents === 0 ? "paid" as const : "pay_at_studio" as const;
+  const checkoutCents = input.intro || collectCard ? input.renewalCents : input.dueTodayCents;
+  let trialDays = 0;
+  if (input.recurring && (collectCard || input.intro)) {
+    trialDays = input.introTrialDays > 0
+      ? input.introTrialDays
+      : Math.max(1, Math.ceil((input.periodEnd.getTime() - input.now.getTime()) / 86_400_000));
+  }
+  return { collectCard, online: status === "pending", status, checkoutCents, trialDays };
+}
+
 export function moneyLabel(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 }
@@ -550,6 +578,64 @@ export function priceAfterNotice(input: {
   const leadDays = daysBetween(input.change.noticeSentAt, input.change.effectiveAt);
   if (leadDays < NOTICE_WINDOWS.priceChange.minDays || leadDays > NOTICE_WINDOWS.priceChange.maxDays) return { priceCents: locked, blockedNewPrice: true };
   return { priceCents: input.change.newPriceCents, blockedNewPrice: false };
+}
+
+export function priceNoticeSentAt(
+  notices: { kind: string; eventOn: string; status: string; sentAt: Date | null }[],
+  effectiveAt: Date,
+) {
+  const eventOn = isoDate(effectiveAt);
+  const sent = notices.find((notice) => notice.kind === "price_change" && notice.eventOn === eventOn && notice.status === "sent" && notice.sentAt);
+  return sent?.sentAt ?? null;
+}
+
+export function priceAfterMemberNotice(input: {
+  lockedPriceCents: number;
+  catalogPriceCents: number;
+  change: { newPriceCents: number; effectiveAt: Date } | null;
+  memberNoticeSentAt: Date | null;
+  renewsAt: Date;
+}) {
+  return priceAfterNotice({
+    lockedPriceCents: input.lockedPriceCents,
+    catalogPriceCents: input.catalogPriceCents,
+    renewsAt: input.renewsAt,
+    change: input.change ? { ...input.change, noticeSentAt: input.memberNoticeSentAt } : null,
+  });
+}
+
+export function acknowledgmentStillDue(input: { recurring: boolean; deliveryStatus?: string | null }) {
+  if (!input.recurring) return false;
+  return input.deliveryStatus !== "sent";
+}
+
+export function preservedAcknowledgment(input: {
+  storedEmail: { subject: string; text: string } | null;
+  disclosureText: string | null;
+  regenerated: { subject: string; text: string };
+}) {
+  if (input.storedEmail?.text.trim()) return { subject: input.storedEmail.subject, text: input.storedEmail.text, verbatim: true };
+  if (input.disclosureText?.trim()) return { subject: "Membership terms you accepted", text: input.disclosureText, verbatim: false };
+  return { subject: input.regenerated.subject, text: input.regenerated.text, verbatim: false };
+}
+
+export function savedCardDetails(card: { brand?: string | null; last4?: string | null } | null | undefined) {
+  const brand = card?.brand?.trim() ?? "";
+  const last4 = card?.last4?.trim() ?? "";
+  if (!/^\d{4}$/.test(last4)) return null;
+  if (!brand || brand.toLowerCase() === "card") return null;
+  return { cardBrand: brand.toLowerCase(), cardLast4: last4 };
+}
+
+export function failedRenewalNotice(input: { subscriptionId: string; membershipName: string; origin: string }) {
+  const origin = input.origin.replace(/\/$/, "");
+  const cancelUrl = `${origin}/account/memberships/${input.subscriptionId}/cancel`;
+  return {
+    membershipName: input.membershipName,
+    href: `/account/memberships/${input.subscriptionId}/payment`,
+    body: dunningBody(input.membershipName, cancelUrl),
+    cancelUrl,
+  };
 }
 
 export function shouldRetryRenewal(input: { cancelAtPeriodEnd: boolean; status: string }) {

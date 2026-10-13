@@ -27,7 +27,7 @@ import {
   waitlistEntries,
 } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
-import { consentAccepted, membershipOffer } from "@/lib/renewal-copy";
+import { consentAccepted, membershipCheckoutPlan, membershipOffer } from "@/lib/renewal-copy";
 import { disclosureForMembership, disclosurePayload, recordRenewalConsent, sendAcknowledgmentForOrder } from "@/lib/renewal";
 import {
   canSpendMembership,
@@ -68,7 +68,7 @@ import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studio
 import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
-import { createCheckout, createPaymentIntent, getStripe, stripeConfigured } from "@/lib/stripe";
+import { createCheckout, createPaymentIntent, getStripe, stripeConfigured, subscriptionCard } from "@/lib/stripe";
 import { notifyOfferPurchased, notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 
 export type ActionState = { error?: string; ok?: string } | null;
@@ -945,6 +945,10 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .update(membershipSubscriptions)
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
+    const card = await subscriptionCard({ paymentIntentId: paymentIntent, subscriptionId });
+    if (card) {
+      await db.update(membershipSubscriptions).set({ cardBrand: card.cardBrand, cardLast4: card.cardLast4 }).where(eq(membershipSubscriptions.orderId, order.id));
+    }
     await sendAcknowledgmentForOrder(order.id);
   }
     if ((order.kind === "pack" || order.kind === "membership") && order.teacherId) {
@@ -1287,12 +1291,22 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   }
   const quote = quotePrice({ listPriceCents: offer.todayCents, feePercent: fee.feePercent, feeFixedCents: fee.feeFixedCents, promo: promo ? toRule(promo) : null });
   const planReady = cardPaymentsReady({ stripeOn: stripeConfigured(), chargesEnabled: Boolean(teacher.stripeChargesEnabled) });
-  if ((quote.studentPaysCents > 0 || offer.chargeLater) && !planReady.ok) return { error: planReady.reason };
+  const checkoutPlan = membershipCheckoutPlan({
+    recurring: plan.recurring,
+    renewalCents: offer.renewalCents,
+    dueTodayCents: quote.studentPaysCents,
+    intro: Boolean(offer.intro),
+    introTrialDays: offer.trialDays,
+    now,
+    periodEnd: offer.periodEnd,
+    stripeReady: stripeConfigured(),
+  });
+  if ((quote.studentPaysCents > 0 || checkoutPlan.collectCard) && !planReady.ok) return { error: planReady.reason };
   const orderId = crypto.randomUUID();
   const subId = crypto.randomUUID();
-  const online = collectsOnline(quote.studentPaysCents, stripeConfigured()) || offer.chargeLater;
+  const online = checkoutPlan.online;
   const money = orderMoney(quote, online);
-  const status = offer.chargeLater ? "pending" : quote.studentPaysCents === 0 ? "paid" : online ? "pending" : "pay_at_studio";
+  const status = checkoutPlan.status;
   const periodEnd = offer.periodEnd;
   try {
     await db.transaction(async (tx) => {
@@ -1366,13 +1380,12 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   if (status === "pending" && teacher) {
     const paths = checkoutPaths(input.returnToApp, "membership", "/bookings?membership=1", `/t/${teacher.slug}`);
     const renewalQuote = quotePrice({ listPriceCents: offer.renewalCents, feePercent: fee.feePercent, feeFixedCents: fee.feeFixedCents, promo: null });
-    const checkoutAmount = offer.intro ? offer.renewalCents : quote.studentPaysCents;
-    const checkoutFee = offer.intro ? orderMoney(renewalQuote, true).platformFeeCents : money.platformFeeCents;
+    const checkoutFee = checkoutPlan.collectCard || offer.intro ? orderMoney(renewalQuote, true).platformFeeCents : money.platformFeeCents;
     let session: { id: string; url: string | null } | null = null;
     try {
       session = await createCheckout({
         name: plan.name,
-        amountCents: checkoutAmount,
+        amountCents: checkoutPlan.checkoutCents,
         applicationFeeCents: checkoutFee,
         destinationAccountId: teacher.stripeAccountId,
         customerEmail: input.email,
@@ -1380,7 +1393,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
         cancelPath: paths.cancelPath,
         metadata: { type: "order", orderId, userId: input.userId },
         statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-        recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths, trialPeriodDays: offer.trialDays || undefined } : null,
+        recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths, trialPeriodDays: checkoutPlan.trialDays || undefined } : null,
         oneTimeAmountCents: offer.intro && quote.studentPaysCents > 0 ? quote.studentPaysCents : undefined,
       });
     } catch (error) {
@@ -1391,9 +1404,9 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       await db.update(orders).set({ stripeCheckoutSessionId: session.id, status: "pending" }).where(eq(orders.id, orderId));
       return { orderId, checkoutUrl: session.url, ...priceFields(quote) };
     }
-    if (offer.chargeLater) {
+    if (checkoutPlan.collectCard) {
       await abandonFailedCheckout(orderId);
-      return { error: "Add a card so the membership can renew after the intro." };
+      return { error: "Add a card so this membership can renew." };
     }
     const offline = orderMoney(quote, false);
     await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, orderId));
@@ -1402,7 +1415,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
   if (status !== "pending") {
     await recordOfferMoney(input.userId, orderId, "membership");
     await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
-    await sendAcknowledgmentForOrder(orderId);
+    if (plan.recurring) await sendAcknowledgmentForOrder(orderId);
   }
   return { ok: true, orderId, ...priceFields(quote) };
 }
