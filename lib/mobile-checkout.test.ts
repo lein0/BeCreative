@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -58,6 +58,25 @@ describe("live mobile checkout", () => {
   it("does not open checkout for a series the student already has", () => {
     expect(checkoutFollowsBooking({ alreadyBooked: true })).toBe("bookings");
     expect(checkoutFollowsBooking({})).toBe("checkout");
+  });
+
+  it("pays a covered class with the membership instead of cash", () => {
+    const plans = [
+      { id: "sub-active", name: "Monthly studio", status: "active", periodEnd: "2026-12-01T00:00:00.000Z", classIds: ["class-scene"], categoryIds: [] as string[], teacherId: "maya" },
+      { id: "sub-other", name: "Yoga", status: "active", periodEnd: "2026-12-01T00:00:00.000Z", classIds: ["class-flow"], categoryIds: [] as string[], teacherId: "lena" },
+      { id: "sub-ended", name: "Old", status: "canceled", periodEnd: "2026-01-01T00:00:00.000Z", classIds: ["class-scene"], categoryIds: [] as string[], teacherId: "maya" },
+    ];
+    const now = new Date("2026-10-13T12:00:00.000Z");
+    expect(membershipsForClass(plans, "class-scene", "acting", "maya", now).map((plan) => plan.id)).toEqual(["sub-active"]);
+    expect(bookingPayWith({ membershipId: "sub-active", packId: "pack-1" })).toBe("membership:sub-active");
+    expect(bookingPayWith({ packId: "pack-1" })).toBe("pack:pack-1");
+    expect(bookingPayWith({})).toBe("cash");
+  });
+
+  it("explains a cancelled checkout when bookings opens with cancelled=1", () => {
+    expect(checkoutCancelMessage("1")).toMatch(/cancelled/i);
+    expect(checkoutCancelMessage(undefined)).toBeNull();
+    expect(checkoutCancelMessage("0")).toBeNull();
   });
 
   it("lets only one continue tap create a booking", () => {

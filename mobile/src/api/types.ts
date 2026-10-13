@@ -91,7 +91,7 @@ export type BookingListItem = {
 };
 
 export type WalletPack = { id: string; name: string; remaining: number; total: number; classIds?: string[]; categoryIds?: string[]; teacherId?: string };
-export type WalletMembership = { id: string; name: string; status: string; periodEnd: string };
+export type WalletMembership = { id: string; name: string; status: string; periodEnd: string; classIds?: string[]; categoryIds?: string[]; teacherId?: string };
 export type Wallet = { packs: WalletPack[]; memberships: WalletMembership[] };
 
 export type WaiverState = { body: string | null; version: number | null; signed: boolean };

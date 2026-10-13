@@ -278,7 +278,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     ]);
     return json({
       packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
-      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd })),
+      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd, classIds: row.plan.classIds, categoryIds: row.plan.categoryIds, teacherId: row.plan.teacherId })),
     });
   }
 

@@ -1,15 +1,17 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { BookingListItem, Slot } from "@mobile/api/types";
 import { Body, Button, Card, ConfirmDialog, Display, Notice, Sheet, Title } from "@mobile/components/ui";
+import { checkoutCancelMessage } from "../../../lib/mobile-client";
 import { whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Bookings() {
+  const { cancelled } = useLocalSearchParams<{ cancelled?: string }>();
   const { api, track, ready, user } = useSession();
   const router = useRouter();
   const { colors } = useAppTheme();
@@ -23,6 +25,11 @@ export default function Bookings() {
   const load = useCallback(() => {
     void api.bookings().then((result) => setRows(result.bookings)).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load bookings."));
   }, [api]);
+
+  useEffect(() => {
+    const note = checkoutCancelMessage(cancelled);
+    if (note) setMessage(note);
+  }, [cancelled]);
 
   useEffect(() => {
     if (!ready || !user) return;

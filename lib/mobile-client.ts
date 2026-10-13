@@ -45,6 +45,34 @@ export function packsForClass<T extends { remaining: number; classIds?: string[]
   });
 }
 
+export function membershipsForClass<T extends { status: string; periodEnd?: string | null; classIds?: string[]; categoryIds?: string[]; teacherId?: string }>(
+  memberships: T[],
+  classId: string,
+  categoryId: string,
+  teacherId?: string,
+  now = new Date(),
+) {
+  return memberships.filter((plan) => {
+    if (plan.status !== "active") return false;
+    if (plan.periodEnd && new Date(plan.periodEnd).getTime() < now.getTime()) return false;
+    if (teacherId && plan.teacherId && plan.teacherId !== teacherId) return false;
+    return offerCoversClass({ classIds: plan.classIds ?? [], categoryIds: plan.categoryIds ?? [] }, classId, categoryId);
+  });
+}
+
+/** Prefer a covering membership, then a pack. Otherwise the student pays cash. */
+export function bookingPayWith(input: { membershipId?: string | null; packId?: string | null }) {
+  if (input.membershipId) return `membership:${input.membershipId}`;
+  if (input.packId) return `pack:${input.packId}`;
+  return "cash";
+}
+
+export function checkoutCancelMessage(cancelled: string | string[] | undefined | null) {
+  const value = Array.isArray(cancelled) ? cancelled[0] : cancelled;
+  if (value !== "1") return null;
+  return "Checkout was cancelled. This seat is not confirmed until payment finishes.";
+}
+
 export function acceptLatest(requestId: number, latestId: number) {
   return requestId === latestId;
 }

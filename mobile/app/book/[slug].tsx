@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
-import type { ClassDetail, WalletPack } from "@mobile/api/types";
+import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath } from "../../../lib/mobile-client";
+import { bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, resumeBookingPath } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -23,7 +23,9 @@ export default function BookScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promo, setPromo] = useState(typeof code === "string" ? code : attribution && "code" in attribution && attribution.code ? attribution.code : "");
   const [usePack, setUsePack] = useState(false);
+  const [useMembership, setUseMembership] = useState(false);
   const [packs, setPacks] = useState<WalletPack[]>([]);
+  const [memberships, setMemberships] = useState<WalletMembership[]>([]);
   const [agreed, setAgreed] = useState(false);
   const [signedName, setSignedName] = useState(user?.name ?? "");
   const [waiverBody, setWaiverBody] = useState<string | null>(null);
@@ -50,10 +52,14 @@ export default function BookScreen() {
         }).catch(() => undefined);
       }
     }).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load this class."));
-    if (user) void api.wallet().then((wallet) => setPacks(wallet.packs.filter((item) => item.remaining > 0))).catch(() => undefined);
+    if (user) void api.wallet().then((wallet) => {
+      setPacks(wallet.packs);
+      setMemberships(wallet.memberships);
+    }).catch(() => undefined);
   }, [api, ready, sessionParam, slug, track, user]);
 
   const eligiblePacks = detail ? packsForClass(packs, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
+  const eligibleMemberships = detail ? membershipsForClass(memberships, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
   const seriesPrice = detail?.class.seriesPriceCents ?? null;
   const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
 
@@ -84,7 +90,10 @@ export default function BookScreen() {
         classId: detail.class.id,
         series,
         code: promo.trim() || undefined,
-        payWith: usePack && eligiblePacks[0] ? `pack:${eligiblePacks[0].id}` : "cash",
+        payWith: bookingPayWith({
+          membershipId: !series && useMembership ? eligibleMemberships[0]?.id : null,
+          packId: !series && usePack ? eligiblePacks[0]?.id : null,
+        }),
         policyAccepted: true,
         paymentSheet: Platform.OS !== "web",
       });
@@ -124,7 +133,8 @@ export default function BookScreen() {
         {!series ? detail.slots.map((slot) => (
           <Button key={slot.id} label={`${whenLabel(slot.startsAt)}${slot.spots != null ? ` · ${slot.spots} spots` : ""}`} tone={sessionId === slot.id ? "accent" : "ghost"} onPress={() => setSessionId(slot.id)} />
         )) : <Body>All upcoming dates, one price.</Body>}
-        {eligiblePacks.length && !series ? <ToggleRow label={`Use ${eligiblePacks[0]!.name} (${eligiblePacks[0]!.remaining} left)`} value={usePack} onChange={setUsePack} /> : null}
+        {eligibleMemberships.length && !series ? <ToggleRow label={`Use ${eligibleMemberships[0]!.name}`} value={useMembership} onChange={(value) => { setUseMembership(value); if (value) setUsePack(false); }} /> : null}
+        {eligiblePacks.length && !series ? <ToggleRow label={`Use ${eligiblePacks[0]!.name} (${eligiblePacks[0]!.remaining} left)`} value={usePack} onChange={(value) => { setUsePack(value); if (value) setUseMembership(false); }} /> : null}
         <Field label="Promo code" value={promo} onChangeText={setPromo} testID="promo" />
         <Card>
           <Body>Cancellation policy</Body>
