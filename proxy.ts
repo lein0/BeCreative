@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ANON_COOKIE, bindAnonymousId } from "@/lib/anon";
+import { gpcEnabled } from "@/lib/privacy";
 import { promoCookieFromLink } from "@/lib/pricing";
+import { isStripeCheckoutPath } from "@/lib/stripe-js";
 
 const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings", "/account"];
 
@@ -24,23 +26,32 @@ export function proxy(request: NextRequest) {
     url.search = `?next=${encodeURIComponent(pathname + request.nextUrl.search)}`;
     return NextResponse.redirect(url);
   }
+  const gpc = gpcEnabled(request.headers.get("sec-gpc"));
   const requestHeaders = new Headers(request.headers);
-  const anon = bindAnonymousId(requestHeaders, request.cookies.get(ANON_COOKIE)?.value);
+  const anon = gpc ? { id: "", minted: false as const } : bindAnonymousId(requestHeaders, request.cookies.get(ANON_COOKIE)?.value);
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("X-Frame-Options", "SAMEORIGIN");
   response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  const scriptSrc = isStripeCheckoutPath(pathname)
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com"
+    : "script-src 'self' 'unsafe-inline' 'unsafe-eval'";
   response.headers.set(
     "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https:; font-src 'self' data:; frame-ancestors 'self'",
+    `default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; ${scriptSrc}; connect-src 'self' https:; font-src 'self' data:; frame-ancestors 'self'`,
   );
   const secure = request.nextUrl.protocol === "https:" || request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https";
+  if (gpc) {
+    response.cookies.set("bc_attr", "", { path: "/", maxAge: 0 });
+    response.cookies.set("bc_cookie", "", { path: "/", maxAge: 0 });
+    response.cookies.set(ANON_COOKIE, "", { path: "/", maxAge: 0 });
+  }
   const ref = searchParams.get("ref");
   const utmSource = searchParams.get("utm_source");
   const utmMedium = searchParams.get("utm_medium");
   const utmCampaign = searchParams.get("utm_campaign");
-  if (ref || utmSource || utmMedium || utmCampaign) {
+  if (!gpc && (ref || utmSource || utmMedium || utmCampaign)) {
     response.cookies.set(
       "bc_attr",
       JSON.stringify({ ref, utm_source: utmSource, utm_medium: utmMedium, utm_campaign: utmCampaign }),
@@ -49,7 +60,7 @@ export function proxy(request: NextRequest) {
   }
   const code = promoCookieFromLink(searchParams.get("code"));
   if (code) response.cookies.set("bc_code", code, { path: "/", maxAge: 60 * 60 * 24 * 30, sameSite: "lax", secure });
-  if (anon.minted) {
+  if (!gpc && anon.minted) {
     response.cookies.set(ANON_COOKIE, anon.id, { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax", secure, httpOnly: true });
   }
   return response;

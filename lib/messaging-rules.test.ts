@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelAfterAttempt, chooseTextChannel, guardSms, maySend, smsKeyword, smsOnByDefault, smsWanted, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
+import { channelAfterAttempt, chooseTextChannel, guardSms, maySend, smsKeyword, smsOnByDefault, smsWanted, teacherMarketingTextAllowed, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
 import { templateFor } from "@/lib/triggers";
 
 describe("text defaults and consent", () => {
@@ -23,6 +23,10 @@ describe("text defaults and consent", () => {
     expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: false, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "booking.confirmed" })).toBe(false);
     expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: false, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "receipt.sent" })).toBe(true);
     expect(maySend({ channel: "email", consent: "transactional", emailUnsubscribed: true, emailSuppressed: true, marketingOptIn: false, smsOptIn: false, smsSuppressed: false, event: "receipt.sent" })).toBe(false);
+    expect(maySend({ channel: "sms", consent: "marketing", emailUnsubscribed: false, emailSuppressed: false, marketingOptIn: true, smsOptIn: true, smsSuppressed: false })).toBe(false);
+    expect(maySend({ channel: "sms", consent: "transactional", emailUnsubscribed: false, emailSuppressed: false, marketingOptIn: false, smsOptIn: true, smsSuppressed: false })).toBe(true);
+    expect(teacherMarketingTextAllowed("marketing")).toBe(false);
+    expect(teacherMarketingTextAllowed("transactional")).toBe(true);
   });
 });
 

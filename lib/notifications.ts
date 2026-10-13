@@ -1,13 +1,14 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { deviceTokens, notificationOutbox, notificationPreferences, notifications, platformSettings, triggerOverrides, unsubscribeTokens, user } from "@/lib/db/schema";
+import { bookings, classes, deviceTokens, notificationOutbox, notificationPreferences, notifications, platformSettings, recurrences, teachers, triggerOverrides, unsubscribeTokens, user } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
 import { dispatchText, smsProviderConfigured } from "@/lib/messaging";
 import { maySend, smsWanted } from "@/lib/messaging-rules";
-import { channelsFor, defaultPrefs, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { smsSendDecision } from "@/lib/sms-window";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { shortenLink } from "@/lib/short-links";
@@ -89,8 +90,9 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   const enabled = !trigger || triggerEnabled(trigger.id, await triggerMap());
   const [settings] = await db.select().from(platformSettings).limit(1);
   const destination = phone || person?.phone || null;
+  const zone = await smsZone(row.userId, row.href);
   if (options?.smsOnly) {
-    if (enabled) await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId });
+    if (enabled) await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, outboxId, timeZone: zone });
     return;
   }
   if (!enabled) {
@@ -150,7 +152,7 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     });
   }
   if (channels.sms && destination && maySend({ ...consentOk, channel: "sms" })) {
-    await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId, audience, textEligible });
+    await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, outboxId, audience, textEligible, timeZone: zone });
   }
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
@@ -164,13 +166,38 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
 }
 
-async function sendText(input: { userId: string; phone: string | null; title: string; body: string; href?: string | null; imessageEnabled: boolean; quietStart?: string | null; quietEnd?: string | null; outboxId: string; audience?: "teacher" | "student"; textEligible?: boolean }) {
+async function classTimeZone(classId: string) {
+  const [rule] = await db.select({ timezone: recurrences.timezone }).from(recurrences).where(eq(recurrences.classId, classId)).limit(1);
+  return rule?.timezone ?? null;
+}
+
+async function smsZone(userId: string, href: string | null) {
+  const [person] = await db.select({ timezone: user.timezone }).from(user).where(eq(user.id, userId)).limit(1);
+  let classTimeZoneValue: string | null = null;
+  const classSlug = href?.match(/^\/c\/([^/?#]+)/)?.[1];
+  if (classSlug) {
+    const [klass] = await db.select({ id: classes.id }).from(classes).where(eq(classes.slug, classSlug)).limit(1);
+    if (klass) classTimeZoneValue = await classTimeZone(klass.id);
+  }
+  if (!classTimeZoneValue) {
+    const [booking] = await db.select({ classId: bookings.classId }).from(bookings).where(and(eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
+    if (booking) classTimeZoneValue = await classTimeZone(booking.classId);
+  }
+  if (!classTimeZoneValue) {
+    const [teacher] = await db.select({ id: teachers.id }).from(teachers).where(eq(teachers.userId, userId)).limit(1);
+    if (teacher) {
+      const [klass] = await db.select({ id: classes.id }).from(classes).where(eq(classes.teacherId, teacher.id)).limit(1);
+      if (klass) classTimeZoneValue = await classTimeZone(klass.id);
+    }
+  }
+  return smsSendDecision(new Date(), { recipientTimeZone: person?.timezone, classTimeZone: classTimeZoneValue }).timeZone;
+}
+
+async function sendText(input: { userId: string; phone: string | null; title: string; body: string; href?: string | null; imessageEnabled: boolean; outboxId: string; audience?: "teacher" | "student"; textEligible?: boolean; timeZone: string }) {
   if (!input.phone) return;
-  const localMinutes = minutesOfClock(new Intl.DateTimeFormat("en-GB", { timeZone: SHIP_DEFAULTS.quietHoursZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()));
-  const start = input.quietStart ?? SHIP_DEFAULTS.quietHoursStart;
-  const end = input.quietEnd ?? SHIP_DEFAULTS.quietHoursEnd;
-  if (!smsAllowedNow(localMinutes, start, end)) {
-    await enqueueJob("notification.sms", { outboxId: input.outboxId, phone: input.phone, audience: input.audience, textEligible: input.textEligible }, nextQuietEnd(end), `sms:${input.outboxId}`);
+  const decision = smsSendDecision(new Date(), { recipientTimeZone: input.timeZone });
+  if (!decision.send) {
+    await enqueueJob("notification.sms", { outboxId: input.outboxId, phone: input.phone, audience: input.audience, textEligible: input.textEligible }, decision.runAt, `sms:${input.outboxId}`);
     return;
   }
   const target = input.href ? await shortenLink(clickUrl(input.href, "sms", input.userId)) : "";

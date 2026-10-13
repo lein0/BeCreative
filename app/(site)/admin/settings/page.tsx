@@ -28,6 +28,7 @@ async function Body() {
         <label>No-show fee (dollars)<input name="noShowFee" defaultValue={((fee?.noShowFeeCents ?? 0) / 100).toString()} className={control} /></label>
         <label className="flex items-center gap-2"><input type="checkbox" name="creditRequiresOptIn" value="1" defaultChecked={fee?.creditRequiresOptIn ?? true} /> Class credit only if the student opts in</label>
         <label>Waitlist claim window (hours)<input name="waitlistClaimHours" defaultValue={fee?.waitlistClaimHours ?? SHIP_DEFAULTS.waitlistClaimHours} className={control} /></label>
+        <p className="text-ink/70">Texts, including reminders, send only from 8:00 a.m. to 8:00 p.m. in the recipient&apos;s time zone, or the class time zone when we do not have one.</p>
         <label>SMS quiet hours start<input name="quietHoursStart" defaultValue={fee?.quietHoursStart ?? SHIP_DEFAULTS.quietHoursStart} className={control} /></label>
         <label>SMS quiet hours end<input name="quietHoursEnd" defaultValue={fee?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd} className={control} /></label>
         <label className="flex items-center gap-2"><input type="checkbox" name="disputeAutoSubmit" value="1" defaultChecked={fee?.disputeAutoSubmit ?? true} /> Auto-submit dispute evidence</label>

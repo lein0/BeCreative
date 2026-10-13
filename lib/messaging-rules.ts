@@ -71,7 +71,13 @@ export function maySend(input: {
     if (input.emailUnsubscribed && unsubscribeBlocksEmail(input.event)) return false;
     return true;
   }
+  if (input.consent === "marketing") return false;
   return input.smsOptIn && !input.smsSuppressed;
+}
+
+/** Studio outbound texts are transactional. Marketing texts are not sent. */
+export function teacherMarketingTextAllowed(consent: "transactional" | "marketing") {
+  return consent === "transactional";
 }
 
 export function smsWebhookIsForm(contentType: string) {

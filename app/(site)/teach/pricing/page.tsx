@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { pricingAction } from "@/lib/actions";
-import { scheduleMaterialChangeAction, schedulePriceChangeAction } from "@/lib/renewal-actions";
+import { scheduleMaterialChangeAction, schedulePriceChangeAction, teacherCancelMembershipAction } from "@/lib/renewal-actions";
 import { control, Panel } from "@/components/bits";
 import { ShareButton } from "@/components/share-button";
 import { requireActor } from "@/lib/actor";
@@ -9,20 +9,24 @@ import { db } from "@/lib/db";
 import { memberships, packs } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { studioHome, teacherByUser } from "@/lib/queries";
+import { formatRenewalDate } from "@/lib/renewal-copy";
+import { teacherMembershipRoster } from "@/lib/renewal";
 import { money } from "@/lib/utils";
 
-export default function PricingPage() {
-  return <Suspense fallback={null}><Body /></Suspense>;
+export default function PricingPage({ searchParams }: { searchParams: Promise<{ cancelled?: string; error?: string; scheduled?: string }> }) {
+  return <Suspense fallback={null}><Body searchParams={searchParams} /></Suspense>;
 }
 
-async function Body() {
+async function Body({ searchParams }: { searchParams: Promise<{ cancelled?: string; error?: string; scheduled?: string }> }) {
+  const query = await searchParams;
   const actor = await requireActor();
   const teacher = await teacherByUser(actor.id);
   if (!teacher) redirect("/teach/onboarding");
   const home = await studioHome(teacher.id);
-  const [packRows, plans] = await Promise.all([
+  const [packRows, plans, roster] = await Promise.all([
     db.select().from(packs).where(eq(packs.teacherId, teacher.id)),
     db.select().from(memberships).where(eq(memberships.teacherId, teacher.id)),
+    teacherMembershipRoster(teacher.id),
   ]);
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -52,6 +56,8 @@ async function Body() {
       </section>
       <section>
         <h2 className="display text-5xl">Memberships</h2>
+        {query.cancelled ? <p className="mt-2 text-sm">Cancellation confirmed. The member keeps access until the paid term ends and will not be charged again.</p> : null}
+        {query.error ? <p className="mt-2 text-sm">{query.error}</p> : null}
         <form action={pricingAction} className="mt-4 space-y-2">
           <input type="hidden" name="kind" value="membership" />
           <input type="hidden" name="teacherId" value={teacher.id} />
@@ -88,6 +94,23 @@ async function Body() {
                 <input name="effective" type="date" required className={control} />
                 <button className="rounded-full ring-1 ring-line px-3 py-1.5 text-sm">Schedule term change</button>
               </form>
+              <div className="mt-3 space-y-2">
+                {roster.filter((member) => member.membershipId === plan.id).map((member) => (
+                  <div key={member.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                    <span>{member.name || "Member"} · through {formatRenewalDate(member.currentPeriodEnd)}</span>
+                    {member.cancelAtPeriodEnd ? <span className="text-ink/60">Cancels at period end</span> : (
+                      <form action={teacherCancelMembershipAction}>
+                        <input type="hidden" name="teacherId" value={teacher.id} />
+                        <input type="hidden" name="subscriptionId" value={member.id} />
+                        <button className="rounded-full ring-1 ring-line px-3 py-1.5 text-sm">Member asked me to cancel</button>
+                      </form>
+                    )}
+                  </div>
+                ))}
+                {roster.some((member) => member.membershipId === plan.id && !member.cancelAtPeriodEnd) ? (
+                  <p className="text-xs text-ink/70">Press this within 1 business day when a member asks you to cancel.</p>
+                ) : null}
+              </div>
             </Panel>
           ))}
         </div>

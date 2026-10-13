@@ -146,6 +146,7 @@ export async function dispatchText(input: { to: string; body: string; userId?: s
   return { ok: result.ok, skipped: false as const, channel, error: result.error };
 }
 
+/** Replies to an inbound STOP, START, or HELP. The person just texted, so this does not wait for 8 a.m. */
 export async function sendKeywordReply(to: string, body: string) {
   const destination = canonicalPhone(to) || to.trim();
   if (!destination || !body.trim()) return { ok: false as const, skipped: true as const, reason: "empty" as const };

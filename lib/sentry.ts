@@ -1,5 +1,12 @@
 import { logEvent } from "@/lib/log";
 
+/** Session replay stays off. There is no Replay integration. */
+export const sentryOptions = {
+  replaysSessionSampleRate: 0,
+  replaysOnErrorSampleRate: 0,
+  integrations: [] as const,
+};
+
 export function sentryConfigured() {
   return Boolean(process.env.SENTRY_DSN);
 }
@@ -16,7 +23,17 @@ export async function captureException(error: unknown, context: Record<string, s
     const envelope = [
       JSON.stringify({ event_id: eventId, sent_at: new Date().toISOString(), dsn }),
       JSON.stringify({ type: "event" }),
-      JSON.stringify({ event_id: eventId, message, level: "error", platform: "node", extra: context, timestamp: Date.now() / 1000 }),
+      JSON.stringify({
+        event_id: eventId,
+        message,
+        level: "error",
+        platform: "node",
+        extra: context,
+        timestamp: Date.now() / 1000,
+        sdk: { name: "becreative", integrations: sentryOptions.integrations },
+        replaysSessionSampleRate: sentryOptions.replaysSessionSampleRate,
+        replaysOnErrorSampleRate: sentryOptions.replaysOnErrorSampleRate,
+      }),
     ].join("\n");
     await fetch(`${url.protocol}//${url.host}/api/${project}/envelope/`, {
       method: "POST",

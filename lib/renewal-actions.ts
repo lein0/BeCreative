@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
 import { memberships, teachers } from "@/lib/db/schema";
-import { canViewPlatformStats } from "@/lib/permissions";
+import { canEditTeacherContent, canViewPlatformStats } from "@/lib/permissions";
 import { PRICE_CHANGE_MIN_DAYS_TEACHER, type RenewalTemplates } from "@/lib/renewal-copy";
 import { cancelMembership, saveRenewalTemplate, scheduleMaterialChange, scheduleMembershipPriceChange, setRenewalSaveOffer } from "@/lib/renewal";
 
@@ -53,6 +53,25 @@ export async function adminCancelMembershipAction(formData: FormData) {
   });
   if ("error" in result && result.error) redirect(`/admin/renewals?error=${encodeURIComponent(result.error)}`);
   redirect("/admin/renewals?cancelled=1");
+}
+
+export async function teacherCancelMembershipAction(formData: FormData) {
+  const actor = await requireActor();
+  const teacherId = text(formData, "teacherId");
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.id, teacherId)).limit(1);
+  if (!teacher || !canEditTeacherContent(actor.roles, teacher.userId === actor.id)) redirect("/teach/pricing?error=You+can%27t+edit+this+studio.");
+  const subscriptionId = text(formData, "subscriptionId");
+  const audit = await auditHeaders();
+  const result = await cancelMembership({
+    subscriptionId,
+    actorUserId: actor.id,
+    source: "teacher",
+    platform: "web",
+    ip: audit.ip,
+    userAgent: audit.userAgent,
+  });
+  if ("error" in result && result.error) redirect(`/teach/pricing?error=${encodeURIComponent(result.error)}`);
+  redirect("/teach/pricing?cancelled=1");
 }
 
 export async function schedulePriceChangeAction(formData: FormData) {
