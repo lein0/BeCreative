@@ -385,8 +385,8 @@ describe("PR 7 bugbot regressions", () => {
     ]);
     const free = await purchaseOffer({ userId: student, email: `${tag}-offer-buyer@example.com`, kind: "pack", id: freeId });
     const studio = await purchaseOffer({ userId: student, email: `${tag}-offer-buyer@example.com`, kind: "pack", id: studioId });
-    expect(free).toEqual({ ok: true });
-    expect(studio).toEqual({ ok: true });
+    expect(free).toMatchObject({ ok: true, studentPaysCents: 0 });
+    expect(studio).toMatchObject({ ok: true, studentPaysCents: 4000 });
     const events = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.userId, student));
     const names = events.map((event) => `${event.name}:${event.properties.kind}`);
     expect(names.filter((name) => name === "checkout_completed:pack")).toHaveLength(2);

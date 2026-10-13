@@ -258,7 +258,7 @@ paths:
           description: Booking list
     post:
       summary: Book a session
-      description: Same bookSession service as the web. paymentSheet true returns a Stripe PaymentIntent client secret for PaymentSheet. Otherwise a Checkout Session URL when Stripe is on. Pay-at-studio when Stripe is off.
+      description: Same bookSession service as the web. paymentSheet true returns a Stripe PaymentIntent client secret for PaymentSheet. Otherwise a Checkout Session URL when Stripe is on. Pay-at-studio when Stripe is off. Order responses include listPriceCents, discountCents, studentPaysCents, and codeApplied for the price breakdown. When X-Platform is ios or android, Checkout success and cancel URLs use /mobile/return, which opens becreative://bookings.
       security: [{ bearer: [] }]
       requestBody:
         required: true
@@ -342,7 +342,7 @@ paths:
   /memberships/purchase:
     post:
       summary: Buy a membership
-      description: Recurring memberships return a Stripe Checkout Session URL.
+      description: Recurring memberships return a Stripe Checkout Session URL (checkoutUrl), plus listPriceCents, discountCents, studentPaysCents, and codeApplied. Open checkoutUrl in an in-app browser. On ios and android the session returns through /mobile/return into becreative://bookings. PaymentSheet is not used, because the plan renews.
       security: [{ bearer: [] }]
       requestBody:
         required: true
