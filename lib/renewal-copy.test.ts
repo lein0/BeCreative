@@ -193,6 +193,20 @@ describe("notice scheduler windows", () => {
       introEndsAt: new Date(base.now.getTime() + 2 * 86_400_000),
     });
     expect(tooLate.find((item) => item.kind === "intro_ending")?.action).toBe("missed");
+    const shortMidTargetDay = planNotices({
+      ...base,
+      termMonths: 1,
+      introDays: 14,
+      introEndsAt: new Date(base.now.getTime() + 3.5 * 86_400_000),
+    });
+    expect(shortMidTargetDay.find((item) => item.kind === "intro_ending")?.action).toBe("send");
+    const shortJustUnderMin = planNotices({
+      ...base,
+      termMonths: 1,
+      introDays: 14,
+      introEndsAt: new Date(base.now.getTime() + 2.5 * 86_400_000),
+    });
+    expect(shortJustUnderMin.find((item) => item.kind === "intro_ending")?.action).toBe("missed");
     const discountedWait = planNotices({
       ...base,
       termMonths: 1,
@@ -209,6 +223,27 @@ describe("notice scheduler windows", () => {
       introEndsAt: new Date(base.now.getTime() + 7 * 86_400_000),
     });
     expect(discountedSend.find((item) => item.kind === "intro_ending")?.action).toBe("send");
+  });
+
+  it("sends material-change notices for the whole target day, not only the exact instant", () => {
+    const midTargetDay = planNotices({
+      ...base,
+      termMonths: 1,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 30.5 * 86_400_000), sent: false },
+    });
+    expect(midTargetDay.find((item) => item.kind === "material_change")?.action).toBe("send");
+    const beforeTargetDay = planNotices({
+      ...base,
+      termMonths: 1,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 31.5 * 86_400_000), sent: false },
+    });
+    expect(beforeTargetDay.find((item) => item.kind === "material_change")?.action).toBe("wait");
+    const underMin = planNotices({
+      ...base,
+      termMonths: 1,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 29.5 * 86_400_000), sent: false },
+    });
+    expect(underMin.find((item) => item.kind === "material_change")?.action).toBe("missed");
   });
 
   it("sends the annual reminder 35 days before the renewal that crosses a year", () => {

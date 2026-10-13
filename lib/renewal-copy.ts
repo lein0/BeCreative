@@ -494,9 +494,13 @@ export type NoticePlanInput = {
 function windowDecision(kind: NoticeKind, now: Date, eventAt: Date, targetDays: number, minDays: number, maxDays: number, sent: boolean): NoticeDecision | null {
   if (sent) return null;
   const daysBefore = daysBetween(now, eventAt);
-  if (daysBefore > maxDays) return { kind, action: "wait", eventAt, daysBefore };
-  if (daysBefore < minDays) return { kind, action: "missed", eventAt, daysBefore };
-  if (daysBefore <= targetDays) return { kind, action: "send", eventAt, daysBefore };
+  // Lead time is a continuous fraction of a day. Comparing it directly to equal
+  // min and target bounds (material changes, short intros) is true only at one
+  // instant, so a cron tick skips the send and the next tick marks it missed.
+  const wholeDays = Math.floor(daysBefore);
+  if (wholeDays > maxDays) return { kind, action: "wait", eventAt, daysBefore };
+  if (wholeDays < minDays) return { kind, action: "missed", eventAt, daysBefore };
+  if (wholeDays <= targetDays) return { kind, action: "send", eventAt, daysBefore };
   return { kind, action: "wait", eventAt, daysBefore };
 }
 
