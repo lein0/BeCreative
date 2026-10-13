@@ -101,13 +101,13 @@ export async function notifyOfferPurchased(input: { teacherUserId: string; title
   });
 }
 
-export async function notifyStudentConfirmed(input: { userId: string; title: string; href: string }) {
+export async function notifyStudentConfirmed(input: { userId: string; title: string; href: string; note?: string }) {
   await emitNotification({
     userId: input.userId,
     event: "booking.confirmed",
     audience: "student",
     title: `You're booked: ${input.title}`,
-    body: "Your seat is reserved. A receipt is in this note.",
+    body: input.note ?? "Your seat is reserved. A receipt is in this note.",
     href: input.href,
   });
   await emitNotification({

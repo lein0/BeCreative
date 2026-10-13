@@ -53,6 +53,11 @@ export const STUDENT_EVENTS = [
 export const NOTIFICATION_EVENTS = [...new Set([...TEACHER_EVENTS, ...STUDENT_EVENTS])] as const;
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];
 
+/** Teachers hear that someone joined. Students use the waitlist event their settings page actually stores. */
+export function waitlistEventForAudience(audience: "teacher" | "student"): NotificationEvent {
+  return audience === "teacher" ? "waitlist.joined" : "waitlist.spot_open";
+}
+
 export function policySummary(input: {
   fullRefundHours: number;
   creditOnlyHours: number;

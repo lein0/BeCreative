@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { checkoutMustReleaseSeat, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
-import { creditOptInFromForm, deferredSmsStillPending, outboxStatusAfterDelivery, unsubscribeUrl } from "@/lib/notify-prefs";
+import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, outboxStatusAfterDelivery, phoneFromForm, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
-import { adminRefundScope, applyStudioCredit, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundReplayIsSuccess, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
-import { paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
+import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerStatus, refundReplayIsSuccess, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
 import { statementDescriptor, statementDescriptorSuffix } from "@/lib/connect-rules";
 import { nextQuietEnd } from "@/lib/notify-prefs";
+import { crashedJobShouldStop, jobIsClaimable, jobOutcomeAfterError, jobRetryDelayMs } from "@/lib/job-rules";
+import { waitlistEventForAudience } from "@/lib/ship-defaults";
 import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
 describe("partial refunds keep remaining seats", () => {
@@ -142,5 +144,115 @@ describe("series re-cancel", () => {
   it("does not restore entitlements for a date that is already cancelled", () => {
     expect(sessionCancelAlreadyApplied("cancelled")).toBe(true);
     expect(sessionCancelAlreadyApplied("scheduled")).toBe(false);
+  });
+});
+
+describe("series cancel restores each date once", () => {
+  it("skips sessions a teacher cancel already restored", () => {
+    const key = entitlementRestoreKey("booking-1", "session-a");
+    expect(sessionIdFromEntitlementRestore(key, "booking-1")).toBe("session-a");
+    expect(sessionIdFromEntitlementRestore("restore:order-1:500:student", "booking-1")).toBeNull();
+    expect(sessionsStillNeedingRestore({
+      refundableSessionIds: ["session-a", "session-b", "session-c"],
+      restoredSessionIds: ["session-a"],
+    })).toEqual(["session-b", "session-c"]);
+  });
+});
+
+describe("refund failures keep the seat", () => {
+  it("drops the seat only after a card refund is refused for an empty balance", () => {
+    expect(refundFailureKeepsSeat("Card refund was not sent to Stripe.")).toBe(true);
+    expect(refundFailureKeepsSeat("Stripe refund failed.")).toBe(true);
+    expect(refundFailureKeepsSeat("Nothing left to refund.")).toBe(false);
+    expect(refundFailureKeepsSeat(undefined)).toBe(false);
+  });
+});
+
+describe("refund counter", () => {
+  it("adds to the current total instead of writing a stale snapshot", () => {
+    expect(refundedTotalAfterReserve(4000, 3000, 10000)).toBe(7000);
+    expect(refundedTotalAfterReserve(0, 3000, 10000)).toBe(3000);
+    expect(refundedTotalAfterReserve(4000, 10000, 10000)).toBeNull();
+  });
+
+  it("does not post a card refund that never reached Stripe", () => {
+    expect(refundLedgerStatus({ amountCents: 3000, hasPaymentIntent: true, stripeRefundId: null })).toBe("failed");
+    expect(refundLedgerStatus({ amountCents: 3000, hasPaymentIntent: true, stripeRefundId: "re_1" })).toBe("posted");
+    expect(refundLedgerStatus({ amountCents: 3000, hasPaymentIntent: false, stripeRefundId: null })).toBe("offline");
+    expect(refundLedgerStatus({ amountCents: 0, hasPaymentIntent: true, stripeRefundId: null })).toBe("posted");
+    expect(refundCashAlreadyReserved("reserved:refund:1")).toBe(true);
+    expect(refundCashAlreadyReserved("pending:refund:1")).toBe(false);
+    expect(nextStripeRefundKey({ ledgerKey: "refund:1", status: "pending", pendingMarker: "reserved:refund:1", retryNonce: "n" })).toBe("refund:1");
+  });
+});
+
+describe("teacher cancel intro", () => {
+  it("restores the intro offer when the booking closes and every date is still ahead", () => {
+    expect(introRestoresWhenBookingCloses({ closesBooking: true, everySessionStillAhead: true })).toBe(true);
+    expect(introRestoresWhenBookingCloses({ closesBooking: false, everySessionStillAhead: true })).toBe(false);
+    expect(introRestoresWhenBookingCloses({ closesBooking: true, everySessionStillAhead: false })).toBe(false);
+  });
+});
+
+describe("booking mail respects unsubscribe", () => {
+  it("sends class confirmation through the outbox", () => {
+    expect(classBookingSendsDirectEmail()).toBe(false);
+  });
+});
+
+describe("cancel reason in email", () => {
+  it("escapes HTML in the message body", () => {
+    expect(escapeHtml(`<img src=x onerror=alert(1)>`)).toBe("&lt;img src=x onerror=alert(1)&gt;");
+    expect(escapeHtml(`Tom & "Ann"`)).toBe("Tom &amp; &quot;Ann&quot;");
+  });
+});
+
+describe("job retries", () => {
+  it("reclaims a crashed running job and retries a failed one with a cap", () => {
+    const now = new Date("2026-10-13T15:00:00.000Z");
+    const stale = new Date("2026-10-13T14:00:00.000Z");
+    expect(jobIsClaimable({ status: "running", runAt: stale, lockedAt: stale, now, attempts: 1 })).toBe(true);
+    expect(jobIsClaimable({ status: "running", runAt: stale, lockedAt: now, now, attempts: 1 })).toBe(false);
+    expect(jobIsClaimable({ status: "queued", runAt: now, lockedAt: null, now, attempts: 2 })).toBe(true);
+    expect(jobIsClaimable({ status: "failed", runAt: stale, lockedAt: null, now, attempts: 1 })).toBe(false);
+    expect(jobIsClaimable({ status: "running", runAt: stale, lockedAt: stale, now, attempts: 5 })).toBe(false);
+    expect(crashedJobShouldStop(5)).toBe(true);
+    expect(crashedJobShouldStop(4)).toBe(false);
+    expect(jobOutcomeAfterError(1)).toBe("queued");
+    expect(jobOutcomeAfterError(5)).toBe("failed");
+    expect(jobRetryDelayMs(1)).toBe(30_000);
+    expect(jobRetryDelayMs(3)).toBe(120_000);
+  });
+});
+
+describe("one-click unsubscribe", () => {
+  it("posts to the API route and keeps the human link on the page", () => {
+    expect(listUnsubscribeUrl("https://classes.example", "tok")).toBe("https://classes.example/api/unsubscribe/tok");
+    expect(unsubscribeUrl("https://classes.example", "tok")).toBe("https://classes.example/unsubscribe/tok");
+  });
+});
+
+describe("sms phone", () => {
+  it("uses the number stored on the user when the job has none", () => {
+    expect(notificationPhone(null, " 213-555-0100 ")).toBe("213-555-0100");
+    expect(notificationPhone(" 310-555-0199 ", "213-555-0100")).toBe("310-555-0199");
+    expect(notificationPhone(null, "  ")).toBeNull();
+    expect(phoneFromForm({ savePhone: false, phone: "213" })).toBeNull();
+    expect(phoneFromForm({ savePhone: true, phone: " 213-555-0100 " })).toBe("213-555-0100");
+  });
+});
+
+describe("daily digest", () => {
+  it("sends later today when 15:00 UTC has not passed", () => {
+    expect(nextDigestTime(new Date("2026-10-13T10:00:00.000Z")).toISOString()).toBe("2026-10-13T15:00:00.000Z");
+    expect(nextDigestTime(new Date("2026-10-13T16:00:00.000Z")).toISOString()).toBe("2026-10-14T15:00:00.000Z");
+    expect(nextDigestTime(new Date("2026-10-13T15:00:00.000Z")).toISOString()).toBe("2026-10-14T15:00:00.000Z");
+  });
+});
+
+describe("student waitlist event", () => {
+  it("uses the student catalog event", () => {
+    expect(waitlistEventForAudience("student")).toBe("waitlist.spot_open");
+    expect(waitlistEventForAudience("teacher")).toBe("waitlist.joined");
   });
 });

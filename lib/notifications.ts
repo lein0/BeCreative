@@ -4,7 +4,7 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { channelsFor, defaultPrefs, deferredSmsStillPending, minutesOfClock, nextQuietEnd, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, minutesOfClock, nextDigestTime, nextQuietEnd, notificationPhone, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { twilioConfigured, sendSms } from "@/lib/sms";
@@ -34,22 +34,21 @@ export async function emitNotification(input: {
     ? { email: pref.email, inApp: pref.inApp, sms: pref.sms, push: pref.push, cadence: pref.cadence === "daily" ? "daily" : "instant" }
     : defaultPrefs(input.event, input.audience);
   const runAt = prefs.cadence === "daily" ? nextDigestTime() : new Date();
-  await enqueueJob("notification.deliver", { outboxId: id, phone: input.phone ?? null, audience: input.audience }, runAt, `notify:${id}`);
+  let phone = notificationPhone(input.phone, null);
+  if (!phone) {
+    const [person] = await db.select({ phone: user.phone }).from(user).where(eq(user.id, input.userId)).limit(1);
+    phone = notificationPhone(null, person?.phone);
+  }
+  await enqueueJob("notification.deliver", { outboxId: id, phone, audience: input.audience }, runAt, `notify:${id}`);
   return id;
-}
-
-function nextDigestTime() {
-  const tomorrow = new Date();
-  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-  tomorrow.setUTCHours(15, 0, 0, 0);
-  return tomorrow;
 }
 
 export async function deliverOutbox(outboxId: string, phone?: string | null, audienceHint?: "teacher" | "student", mode: "all" | "sms" = "all") {
   const [row] = await db.select().from(notificationOutbox).where(eq(notificationOutbox.id, outboxId)).limit(1);
   if (!row || !row.userId || row.status === "sent") return;
   if (mode === "sms" || deferredSmsStillPending(row.status)) {
-    if (phone) await sendSms(phone, `${row.title}. ${row.body}`.slice(0, 320));
+    const destination = await phoneOnFile(phone, row.userId);
+    if (destination) await sendSms(destination, `${row.title}. ${row.body}`.slice(0, 320));
     await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
     return;
   }
@@ -79,32 +78,42 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     const token = crypto.randomUUID();
     await db.insert(unsubscribeTokens).values({ token, userId: person.id });
     const link = unsubscribeUrl(appOrigin(), token);
+    const oneClick = listUnsubscribeUrl(appOrigin(), token);
     const address = settings?.mailingAddress ?? SHIP_DEFAULTS.mailingAddress;
     await sendEmail({
       to: [person.email],
       subject: row.title,
       text: `${row.body}\n\n${address}\nUnsubscribe: ${link}`,
-      html: `<p>${row.body}</p><p style="color:#666;font-size:12px">${address}<br><a href="${link}">Unsubscribe</a></p>`,
+      html: `<p>${escapeHtml(row.body)}</p><p style="color:#666;font-size:12px">${escapeHtml(address)}<br><a href="${escapeHtml(link)}">Unsubscribe</a></p>`,
       headers: {
-        "List-Unsubscribe": `<${link}>`,
+        "List-Unsubscribe": `<${oneClick}>`,
         "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
       },
     });
   }
+  const smsPhone = notificationPhone(phone, person?.phone);
   let smsDeferred = false;
-  if (channels.sms && phone) {
+  if (channels.sms && smsPhone) {
     const localMinutes = minutesOfClock(new Intl.DateTimeFormat("en-GB", { timeZone: SHIP_DEFAULTS.quietHoursZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()));
     if (smsAllowedNow(localMinutes, settings?.quietHoursStart ?? SHIP_DEFAULTS.quietHoursStart, settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd)) {
-      await sendSms(phone, `${row.title}. ${row.body}`.slice(0, 320));
+      await sendSms(smsPhone, `${row.title}. ${row.body}`.slice(0, 320));
     } else {
       smsDeferred = true;
-      await enqueueJob("notification.sms", { outboxId, phone }, nextQuietEnd(settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd), `sms:${outboxId}`);
+      await enqueueJob("notification.sms", { outboxId, phone: smsPhone }, nextQuietEnd(settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd), `sms:${outboxId}`);
     }
   }
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
   await db.update(notificationOutbox).set({ status: outboxStatusAfterDelivery(smsDeferred) }).where(eq(notificationOutbox.id, outboxId));
+}
+
+async function phoneOnFile(passed: string | null | undefined, userId: string | null) {
+  const given = notificationPhone(passed, null);
+  if (given) return given;
+  if (!userId) return null;
+  const [person] = await db.select({ phone: user.phone }).from(user).where(eq(user.id, userId)).limit(1);
+  return notificationPhone(null, person?.phone);
 }
 
 export async function unreadCount(userId: string) {

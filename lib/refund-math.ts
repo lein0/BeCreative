@@ -58,11 +58,74 @@ export function refundReplayIsSuccess(status: string) {
 export function nextStripeRefundKey(input: { ledgerKey: string; status: string; pendingMarker: string | null; retryNonce: string }) {
   if (input.status === "failed") return `${input.ledgerKey}:r:${input.retryNonce}`;
   if (input.pendingMarker?.startsWith("pending:")) return input.pendingMarker.slice("pending:".length);
+  if (input.pendingMarker?.startsWith("reserved:")) return input.pendingMarker.slice("reserved:".length);
   return input.ledgerKey;
 }
 
 export function pendingStripeMarker(stripeKey: string) {
   return `pending:${stripeKey}`;
+}
+
+export function reservedStripeMarker(stripeKey: string) {
+  return `reserved:${stripeKey}`;
+}
+
+/** Cash was added to refundedCents before the Stripe call, so a retry must not add it again. */
+export function refundCashAlreadyReserved(marker: string | null | undefined) {
+  return Boolean(marker?.startsWith("reserved:"));
+}
+
+/**
+ * Add onto the current counter. A stale snapshot must not replace a newer total,
+ * and the add is refused when it would pass the amount the student paid.
+ */
+export function refundedTotalAfterReserve(currentCents: number, amountCents: number, studentPaysCents: number) {
+  const current = Math.max(0, Math.trunc(currentCents));
+  const amount = Math.trunc(amountCents);
+  const paid = Math.max(0, Math.trunc(studentPaysCents));
+  if (amount <= 0) return current;
+  if (current + amount > paid) return null;
+  return current + amount;
+}
+
+/** A card charge is posted only after Stripe returns a refund id. Offline is only for orders with no payment intent. */
+export function refundLedgerStatus(input: { amountCents: number; hasPaymentIntent: boolean; stripeRefundId: string | null }) {
+  if (input.amountCents <= 0) return "posted" as const;
+  if (!input.hasPaymentIntent) return "offline" as const;
+  if (input.stripeRefundId) return "posted" as const;
+  return "failed" as const;
+}
+
+/** Stripe failures keep the seat so the student can retry. An empty balance does not. */
+export function refundFailureKeepsSeat(error: string | undefined) {
+  if (!error) return false;
+  if (error === "Nothing left to refund.") return false;
+  if (error === "Order not found.") return false;
+  if (error === "Refund is already in progress.") return false;
+  return true;
+}
+
+export function entitlementRestoreKey(bookingId: string, sessionId: string) {
+  return `restore:${bookingId}:${sessionId}`;
+}
+
+export function sessionIdFromEntitlementRestore(sourceId: string, bookingId: string) {
+  const prefix = `restore:${bookingId}:`;
+  if (!sourceId.startsWith(prefix)) return null;
+  const sessionId = sourceId.slice(prefix.length);
+  if (!sessionId || sessionId.includes(":")) return null;
+  return sessionId;
+}
+
+/** Sessions a later cancel still needs to restore. Dates restored by an earlier teacher cancel are excluded. */
+export function sessionsStillNeedingRestore(input: { refundableSessionIds: string[]; restoredSessionIds: string[] }) {
+  const restored = new Set(input.restoredSessionIds);
+  return input.refundableSessionIds.filter((id) => !restored.has(id));
+}
+
+/** Intro comes back when the booking closes and every date is still in the future. */
+export function introRestoresWhenBookingCloses(input: { closesBooking: boolean; everySessionStillAhead: boolean }) {
+  return input.closesBooking && input.everySessionStillAhead;
 }
 
 /** Credit already spent comes back when a cancellation would have refunded cash. A finished booking returns whatever is left. */

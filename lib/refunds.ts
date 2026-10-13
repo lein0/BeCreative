@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { auditLog, orders, packPurchases, promoRedemptions, refundLedger, studioCredits } from "@/lib/db/schema";
-import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundIdempotencyKey, refundReplayIsSuccess, seriesProrate, nextStripeRefundKey } from "@/lib/refund-math";
+import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundCashAlreadyReserved, refundIdempotencyKey, refundLedgerStatus, refundReplayIsSuccess, reservedStripeMarker, seriesProrate, nextStripeRefundKey } from "@/lib/refund-math";
 import { getStripe } from "@/lib/stripe";
 
 export async function issueRefund(input: {
@@ -68,29 +68,52 @@ export async function issueRefund(input: {
       .returning();
     if (!claimed.length) return { error: "Refund is already in progress." };
   }
+  const reservationMarker = existing?.status === "failed" ? pendingStripeMarker(stripeKey) : existing?.stripeRefundId ?? null;
+  const alreadyReserved = amountCents > 0 && refundCashAlreadyReserved(reservationMarker);
+  if (amountCents > 0 && !alreadyReserved) {
+    const reserved = await reserveRefundableCash(order.id, amountCents);
+    if (reserved !== amountCents) {
+      await db.update(refundLedger).set({ status: "failed", stripeRefundId: null }).where(and(eq(refundLedger.id, id), eq(refundLedger.status, "pending")));
+      return { error: "Nothing left to refund.", amountCents: 0 };
+    }
+    await db.update(refundLedger).set({ stripeRefundId: reservedStripeMarker(stripeKey) }).where(eq(refundLedger.id, id));
+  }
   let stripeRefundId: string | null = null;
   if (order.stripePaymentIntentId && amountCents > 0) {
     const stripe = getStripe();
-    if (stripe) {
-      try {
-        const refund = await stripe.refunds.create(
-          {
-            payment_intent: order.stripePaymentIntentId,
-            amount: amountCents,
-            refund_application_fee: feeReversed > 0,
-            reverse_transfer: transferReversed > 0,
-            metadata: { orderId: order.id, reason: input.reasonCode },
-          },
-          { idempotencyKey: stripeKey },
-        );
-        stripeRefundId = refund.id;
-      } catch (error) {
-        await db.update(refundLedger).set({ status: "failed" }).where(eq(refundLedger.id, id));
-        return { error: error instanceof Error ? error.message : "Stripe refund failed." };
-      }
+    if (!stripe) {
+      await releaseRefundableCash(order.id, amountCents);
+      await db.update(refundLedger).set({ status: "failed" }).where(eq(refundLedger.id, id));
+      return { error: "Card refund was not sent to Stripe." };
+    }
+    try {
+      const refund = await stripe.refunds.create(
+        {
+          payment_intent: order.stripePaymentIntentId,
+          amount: amountCents,
+          refund_application_fee: feeReversed > 0,
+          reverse_transfer: transferReversed > 0,
+          metadata: { orderId: order.id, reason: input.reasonCode },
+        },
+        { idempotencyKey: stripeKey },
+      );
+      stripeRefundId = refund.id;
+    } catch (error) {
+      await releaseRefundableCash(order.id, amountCents);
+      await db.update(refundLedger).set({ status: "failed" }).where(eq(refundLedger.id, id));
+      return { error: error instanceof Error ? error.message : "Stripe refund failed." };
     }
   }
-  const postedStatus = stripeRefundId || amountCents === 0 ? "posted" : order.stripePaymentIntentId ? "posted" : "offline";
+  const postedStatus = refundLedgerStatus({
+    amountCents,
+    hasPaymentIntent: Boolean(order.stripePaymentIntentId),
+    stripeRefundId,
+  });
+  if (postedStatus === "failed") {
+    await releaseRefundableCash(order.id, amountCents);
+    await db.update(refundLedger).set({ status: "failed" }).where(eq(refundLedger.id, id));
+    return { error: "Card refund was not sent to Stripe." };
+  }
   const posted = await db.transaction(async (tx) => {
     const marked = await tx
       .update(refundLedger)
@@ -98,15 +121,21 @@ export async function issueRefund(input: {
       .where(and(eq(refundLedger.id, id), eq(refundLedger.status, "pending")))
       .returning();
     if (!marked.length) return false;
-    const refundedCents = order.refundedCents + amountCents;
-    const full = promoReversesOnRefund({ refundCents: amountCents, studentPaysCents: order.studentPaysCents, alreadyRefundedCents: order.refundedCents });
-    await tx.update(orders).set({
-      refundedCents,
-      status: full ? "refunded" : order.status,
-      updatedAt: new Date(),
-    }).where(eq(orders.id, order.id));
-    if (full && order.promoCodeId) {
-      await tx.update(promoRedemptions).set({ reversed: true }).where(and(eq(promoRedemptions.orderId, order.id), eq(promoRedemptions.reversed, false)));
+    const [fresh] = await tx.select({
+      refundedCents: orders.refundedCents,
+      studentPaysCents: orders.studentPaysCents,
+      promoCodeId: orders.promoCodeId,
+    }).from(orders).where(eq(orders.id, order.id)).limit(1);
+    const full = promoReversesOnRefund({
+      refundCents: amountCents,
+      studentPaysCents: fresh?.studentPaysCents ?? order.studentPaysCents,
+      alreadyRefundedCents: Math.max(0, (fresh?.refundedCents ?? amountCents) - amountCents),
+    });
+    if (full) {
+      await tx.update(orders).set({ status: "refunded", updatedAt: new Date() }).where(eq(orders.id, order.id));
+      if (fresh?.promoCodeId) {
+        await tx.update(promoRedemptions).set({ reversed: true }).where(and(eq(promoRedemptions.orderId, order.id), eq(promoRedemptions.reversed, false)));
+      }
     }
     return { full };
   });
@@ -149,12 +178,44 @@ export async function consumeRefundableCash(orderId: string, amountCents: number
 }
 
 export async function grantStudioCredit(userId: string, teacherId: string, amountCents: number) {
-  const [existing] = await db.select().from(studioCredits).where(and(eq(studioCredits.userId, userId), eq(studioCredits.teacherId, teacherId))).limit(1);
-  if (!existing) {
-    await db.insert(studioCredits).values({ id: crypto.randomUUID(), userId, teacherId, balanceCents: amountCents });
-    return;
-  }
-  await db.update(studioCredits).set({ balanceCents: existing.balanceCents + amountCents }).where(eq(studioCredits.id, existing.id));
+  const amount = Math.trunc(amountCents);
+  if (amount === 0) return;
+  await db
+    .insert(studioCredits)
+    .values({ id: crypto.randomUUID(), userId, teacherId, balanceCents: amount })
+    .onConflictDoUpdate({
+      target: [studioCredits.userId, studioCredits.teacherId],
+      set: { balanceCents: sql`${studioCredits.balanceCents} + ${amount}` },
+    });
+}
+
+/** Exact cash reservation. Adds to the current refunded total, or returns 0 when that cash is already gone. */
+export async function reserveRefundableCash(orderId: string, amountCents: number): Promise<number> {
+  const amount = Math.max(0, Math.trunc(amountCents));
+  if (amount <= 0) return 0;
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return 0;
+  if (order.refundedCents + amount > order.studentPaysCents) return 0;
+  const updated = await db
+    .update(orders)
+    .set({ refundedCents: sql`${orders.refundedCents} + ${amount}`, updatedAt: new Date() })
+    .where(and(
+      eq(orders.id, order.id),
+      eq(orders.refundedCents, order.refundedCents),
+      sql`${orders.refundedCents} + ${amount} <= ${orders.studentPaysCents}`,
+    ))
+    .returning({ refundedCents: orders.refundedCents });
+  if (!updated.length) return reserveRefundableCash(orderId, amount);
+  return amount;
+}
+
+export async function releaseRefundableCash(orderId: string, amountCents: number) {
+  const amount = Math.max(0, Math.trunc(amountCents));
+  if (amount <= 0) return;
+  await db
+    .update(orders)
+    .set({ refundedCents: sql`greatest(0, ${orders.refundedCents} - ${amount})`, updatedAt: new Date() })
+    .where(eq(orders.id, orderId));
 }
 
 export async function restorePackCredits(purchaseId: string, count: number) {

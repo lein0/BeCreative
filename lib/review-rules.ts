@@ -57,6 +57,11 @@ export function paidCheckoutSendsBookingEmail(kind: string) {
   return kind === "booking" || kind === "visit";
 }
 
+/** Confirmation mail goes through the notification outbox so unsubscribe and channel prefs apply. */
+export function classBookingSendsDirectEmail() {
+  return false;
+}
+
 /** Card checkout returns before the in-app booking events. Fulfillment emits them for classes and visits. */
 export function paidCheckoutEmitsBookingNotifications(kind: string) {
   return kind === "booking" || kind === "visit";

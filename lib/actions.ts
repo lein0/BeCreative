@@ -10,7 +10,7 @@ import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
 import { adminRefundScope, nextAdminRefundKey } from "@/lib/refund-math";
 import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
-import { creditOptInFromForm } from "@/lib/notify-prefs";
+import { creditOptInFromForm, phoneFromForm } from "@/lib/notify-prefs";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
@@ -732,7 +732,11 @@ export async function notificationPrefAction(formData: FormData) {
     else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
   }
   const creditOptIn = creditOptInFromForm({ saveCredit: formData.get("saveCredit") === "1", checked: formData.get("creditOptIn") === "1" });
-  if (creditOptIn !== null) await db.update(user).set({ creditOptIn }).where(eq(user.id, actor.id));
+  const phone = phoneFromForm({ savePhone: formData.get("savePhone") === "1", phone: text(formData, "phone") });
+  const profile: { creditOptIn?: boolean; phone?: string } = {};
+  if (creditOptIn !== null) profile.creditOptIn = creditOptIn;
+  if (phone !== null) profile.phone = phone;
+  if (profile.creditOptIn !== undefined || profile.phone !== undefined) await db.update(user).set(profile).where(eq(user.id, actor.id));
   revalidatePath("/settings/notifications");
 }
 

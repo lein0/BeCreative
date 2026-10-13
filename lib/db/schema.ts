@@ -15,6 +15,7 @@ export const user = pgTable("user", {
   isDemo: boolean("is_demo").notNull().default(false),
   creditOptIn: boolean("credit_opt_in").notNull().default(false),
   emailUnsubscribed: boolean("email_unsubscribed").notNull().default(false),
+  phone: text("phone").notNull().default(""),
 });
 
 export const session = pgTable("session", {

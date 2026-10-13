@@ -2,9 +2,10 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import { resolvedPolicy, studentCancelOutcome, teacherRefundChoice, lateCancelFee } from "@/lib/cancel-policy";
 import { sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
 import { db } from "@/lib/db";
-import { bookingSessions, bookings, classes, membershipSubscriptions, orders, packPurchases, platformSettings, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
+import { bookingSessions, bookings, classes, creditLedger, introRedemptions, membershipSubscriptions, orders, packPurchases, platformSettings, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
-import { packCreditsToRestore } from "@/lib/refund-math";
+import { shouldRestoreEntitlement } from "@/lib/pricing";
+import { entitlementRestoreKey, introRestoresWhenBookingCloses, packCreditsToRestore, refundFailureKeepsSeat } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
 import { releaseVisitSeat, restoreStudioCreditForOrder } from "@/lib/booking-service";
 
@@ -44,6 +45,7 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
   const bookingRows = bookingIds.length ? await db.select().from(bookings).where(inArray(bookings.id, bookingIds)) : [];
   const policy = await policyForTeacher(klass.teacherId);
   let refunded = 0;
+  const refundErrors: string[] = [];
   for (const booking of bookingRows.filter((row) => row.status === "confirmed")) {
     const mates = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
     const [order] = booking.orderId ? await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1) : [];
@@ -54,9 +56,12 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
       creditRequiresStudentOptIn: policy.creditRequiresStudentOptIn,
     });
     const sessionCount = Math.max(1, mates.length);
+    let refundError: string | null = null;
     if (order && choice === "full_refund") {
       const result = await issueRefund({ orderId: order.id, sessionCount, cancelledCount: 1, reasonCode: "teacher_cancel", actorUserId: input.actorUserId, scope: session.id });
-      if ("amountCents" in result) refunded += result.amountCents ?? 0;
+      if ("error" in result && result.error) {
+        if (refundFailureKeepsSeat(result.error)) refundError = result.error;
+      } else if ("amountCents" in result) refunded += result.amountCents ?? 0;
     } else if (order && person && choice === "credit") {
       const share = Math.min(Math.max(0, order.studentPaysCents - order.refundedCents), Math.round(order.studentPaysCents / sessionCount));
       const applied = await consumeRefundableCash(order.id, share);
@@ -72,26 +77,58 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
         closeRemainder: closesBooking,
       });
     }
+    let restoredEntitlement = false;
     if (booking.packPurchaseId) {
       const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, booking.packPurchaseId)).limit(1);
       const consumed = purchase ? Math.max(0, purchase.creditsTotal - purchase.creditsRemaining) : 0;
       const restore = packCreditsToRestore({ creditsConsumed: consumed, cancelledSessions: 1, sessionCount });
-      if (restore > 0) await restorePackCredits(booking.packPurchaseId, restore);
+      if (restore > 0) {
+        await restorePackCredits(booking.packPurchaseId, restore);
+        restoredEntitlement = true;
+      }
     }
     if (booking.membershipSubscriptionId) {
       const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, booking.membershipSubscriptionId)).limit(1);
-      if (sub) await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - 1) }).where(eq(membershipSubscriptions.id, sub.id));
+      if (sub) {
+        await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - 1) }).where(eq(membershipSubscriptions.id, sub.id));
+        restoredEntitlement = true;
+      }
+    }
+    if (restoredEntitlement && booking.userId) {
+      await db.insert(creditLedger).values({
+        id: crypto.randomUUID(),
+        userId: booking.userId,
+        teacherId: klass.teacherId,
+        bookingId: booking.id,
+        sourceType: booking.packPurchaseId ? "pack" : "membership",
+        sourceId: entitlementRestoreKey(booking.id, session.id),
+        direction: "restore",
+      });
     }
     if (closesBooking) {
-      await db.update(bookings).set({ status: "cancelled", cancelledAt: new Date() }).where(and(eq(bookings.id, booking.id), eq(bookings.status, "confirmed")));
+      const closed = await db.update(bookings).set({ status: "cancelled", cancelledAt: new Date() }).where(and(eq(bookings.id, booking.id), eq(bookings.status, "confirmed"))).returning({ id: bookings.id });
+      if (closed.length) {
+        const ids = mates.map((mate) => mate.sessionId);
+        const dated = ids.length ? await db.select({ startsAt: sessions.startsAt }).from(sessions).where(inArray(sessions.id, ids)) : [];
+        const now = new Date();
+        if (introRestoresWhenBookingCloses({
+          closesBooking: true,
+          everySessionStillAhead: dated.length > 0 && dated.every((row) => shouldRestoreEntitlement(row.startsAt, now)),
+        })) {
+          await db.update(introRedemptions).set({ restored: true }).where(and(eq(introRedemptions.bookingId, booking.id), eq(introRedemptions.restored, false)));
+        }
+      }
     }
+    if (refundError) refundErrors.push(refundError);
     if (person) {
       await emitNotification({
         userId: person.id,
         event: "booking.cancelled",
         audience: "student",
         title: `${klass.title} was cancelled`,
-        body: input.reason || "Your teacher cancelled this date. A refund or studio credit follows the cancellation policy.",
+        body: refundError
+          ? "Your teacher cancelled this date. The card refund did not go through and can be retried."
+          : input.reason || "Your teacher cancelled this date. A refund or studio credit follows the cancellation policy.",
         href: `/c/${klass.slug}`,
       });
     }
@@ -107,6 +144,7 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
       href: `/teach/sessions/${session.id}`,
     });
   }
+  if (refundErrors.length) return { error: refundErrors[0], refundedCents: refunded };
   return { ok: true, refundedCents: refunded };
 }
 
@@ -134,12 +172,15 @@ export async function studentCancelVisit(userId: string, visitId: string) {
     creditOnlyHours: policy.creditOnlyHours,
   });
   const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
+  if (visit.orderId && outcome === "full_refund") {
+    const result = await issueRefund({ orderId: visit.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: visit.id });
+    if ("error" in result && refundFailureKeepsSeat(result.error)) return { error: result.error };
+  }
   await releaseVisitSeat(visit, now);
   if (visit.orderId && (outcome === "full_refund" || outcome === "credit")) {
     await restoreStudioCreditForOrder(visit.orderId, { scope: `visit-${visit.id}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true });
   }
-  if (visit.orderId && outcome === "full_refund") await issueRefund({ orderId: visit.orderId, reasonCode: "student_cancel", actorUserId: userId, scope: visit.id });
-  else if (visit.orderId && outcome === "credit") {
+  if (visit.orderId && outcome === "credit") {
     const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
     if (order) {
       const applied = await consumeRefundableCash(order.id, Math.max(0, order.studentPaysCents - order.refundedCents));
@@ -169,10 +210,13 @@ export async function teacherCancelVisit(input: { visitId: string; actorUserId: 
     teacherWantsCredit: Boolean(input.wantCredit),
     creditRequiresStudentOptIn: policy.creditRequiresStudentOptIn,
   });
+  if (visit.orderId && choice === "full_refund") {
+    const result = await issueRefund({ orderId: visit.orderId, reasonCode: "teacher_cancel", actorUserId: input.actorUserId, scope: visit.id });
+    if ("error" in result && refundFailureKeepsSeat(result.error)) return { error: result.error };
+  }
   await releaseVisitSeat(visit, new Date());
   if (visit.orderId) await restoreStudioCreditForOrder(visit.orderId, { scope: `visit-${visit.id}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true });
-  if (visit.orderId && choice === "full_refund") await issueRefund({ orderId: visit.orderId, reasonCode: "teacher_cancel", actorUserId: input.actorUserId, scope: visit.id });
-  else if (visit.orderId && person && choice === "credit") {
+  if (visit.orderId && person && choice === "credit") {
     const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
     if (order) {
       const applied = await consumeRefundableCash(order.id, Math.max(0, order.studentPaysCents - order.refundedCents));

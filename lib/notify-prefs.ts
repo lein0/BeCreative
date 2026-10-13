@@ -55,6 +55,36 @@ export function unsubscribeUrl(origin: string, token: string) {
   return `${origin.replace(/\/$/, "")}/unsubscribe/${encodeURIComponent(token)}`;
 }
 
+/** One-click POST target. The visible unsubscribe link stays on the HTML page. */
+export function listUnsubscribeUrl(origin: string, token: string) {
+  return `${origin.replace(/\/$/, "")}/api/unsubscribe/${encodeURIComponent(token)}`;
+}
+
+export function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/** Passed-in phone wins. Otherwise the number stored on the user. */
+export function notificationPhone(passed: string | null | undefined, stored: string | null | undefined) {
+  const given = passed?.trim();
+  if (given) return given;
+  const saved = stored?.trim();
+  return saved || null;
+}
+
+/** Daily digests go out at 15:00 UTC. If that hour is still ahead today, do not wait until tomorrow. */
+export function nextDigestTime(now = new Date(), hourUtc = 15) {
+  const candidate = new Date(now);
+  candidate.setUTCHours(hourUtc, 0, 0, 0);
+  if (candidate.getTime() <= now.getTime()) candidate.setUTCDate(candidate.getUTCDate() + 1);
+  return candidate;
+}
+
 /** Other channels can be marked sent while a quiet-hours text is still waiting. */
 export function outboxStatusAfterDelivery(smsDeferred: boolean) {
   return smsDeferred ? "sms_pending" : "sent";
@@ -62,6 +92,12 @@ export function outboxStatusAfterDelivery(smsDeferred: boolean) {
 
 export function deferredSmsStillPending(status: string) {
   return status === "sms_pending";
+}
+
+/** Event saves must not clear the phone. Only the contact form writes it. */
+export function phoneFromForm(input: { savePhone: boolean; phone: string }) {
+  if (!input.savePhone) return null;
+  return input.phone.trim();
 }
 
 /** Event saves must not write the credit preference. Only the credit form does. */

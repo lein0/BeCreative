@@ -56,15 +56,15 @@ import {
   refundCancelsBooking,
   sessionLockOrder,
 } from "@/lib/checkout-rules";
-import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
+import { classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
-import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { applyStudioCredit, entitlementRestoreKey, parseStudioCreditLedgerSource, refundFailureKeepsSeat, seriesProrate, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
-import { policySummary, SHIP_DEFAULTS } from "@/lib/ship-defaults";
+import { policySummary, SHIP_DEFAULTS, waitlistEventForAudience } from "@/lib/ship-defaults";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
 import { notifyOfferPurchased, notifyStudentConfirmed, notifyTeacherOfBooking } from "@/lib/worker";
 
@@ -531,7 +531,7 @@ export async function bookSession(input: {
     if ("waitlisted" in created && created.waitlisted) {
       if ("teacherUserId" in created && created.teacherUserId) {
         await emitNotification({ userId: created.teacherUserId, event: "waitlist.joined", audience: "teacher", title: `Waitlist: ${created.title}`, body: `${input.name} joined the waitlist.`, href: `/c/${created.classSlug}` });
-        await emitNotification({ userId: input.userId, event: "waitlist.joined", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
+        await emitNotification({ userId: input.userId, event: waitlistEventForAudience("student"), audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
       }
       return { waitlisted: true };
     }
@@ -583,14 +583,21 @@ export async function bookSession(input: {
       const offline = orderMoney(created.quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));
     }
-    await sendEmail({
-      to: [input.email],
-      subject: `You're booked: ${created.klass.title}`,
-      text: `Your spot is reserved${created.status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
-      teacherId: created.teacher.id,
-    });
     await notifyTeacherOfBooking({ teacherUserId: created.teacher.userId, studentName: input.name, title: created.klass.title, href: `/teach` });
-    await notifyStudentConfirmed({ userId: input.userId, title: created.klass.title, href: `/c/${created.klass.slug}` });
+    await notifyStudentConfirmed({
+      userId: input.userId,
+      title: created.klass.title,
+      href: `/c/${created.klass.slug}`,
+      note: created.status === "pay_at_studio" ? "Your spot is reserved. Pay the teacher at the studio." : undefined,
+    });
+    if (classBookingSendsDirectEmail()) {
+      await sendEmail({
+        to: [input.email],
+        subject: `You're booked: ${created.klass.title}`,
+        text: `Your spot is reserved${created.status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
+        teacherId: created.teacher.id,
+      });
+    }
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
@@ -624,18 +631,42 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
   const refundable = rows.filter((session) => shouldRestoreEntitlement(session.startsAt, now));
-  if (refundable.length && booking.packPurchaseId) {
+  const restoredRows = await db
+    .select({ sourceId: creditLedger.sourceId })
+    .from(creditLedger)
+    .where(and(eq(creditLedger.bookingId, booking.id), eq(creditLedger.direction, "restore")));
+  const restoredSessionIds = restoredRows
+    .map((row) => sessionIdFromEntitlementRestore(row.sourceId, booking.id))
+    .filter((id): id is string => Boolean(id));
+  const pendingIds = sessionsStillNeedingRestore({
+    refundableSessionIds: refundable.map((session) => session.id),
+    restoredSessionIds,
+  });
+  let restoredEntitlement = false;
+  if (pendingIds.length && booking.packPurchaseId) {
     const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, booking.packPurchaseId)).limit(1);
     if (purchase) {
-      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + refundable.length }).where(eq(packPurchases.id, purchase.id));
-      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
+      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + pendingIds.length }).where(eq(packPurchases.id, purchase.id));
+      restoredEntitlement = true;
     }
   }
-  if (refundable.length && booking.membershipSubscriptionId) {
+  if (pendingIds.length && booking.membershipSubscriptionId) {
     const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, booking.membershipSubscriptionId)).limit(1);
     if (sub) {
-      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - refundable.length) }).where(eq(membershipSubscriptions.id, sub.id));
-      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: booking.userId, bookingId: booking.id, sourceType: "membership", sourceId: sub.id, direction: "restore" });
+      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - pendingIds.length) }).where(eq(membershipSubscriptions.id, sub.id));
+      restoredEntitlement = true;
+    }
+  }
+  if (restoredEntitlement) {
+    for (const sessionId of pendingIds) {
+      await db.insert(creditLedger).values({
+        id: crypto.randomUUID(),
+        userId: booking.userId,
+        bookingId: booking.id,
+        sourceType: booking.packPurchaseId ? "pack" : "membership",
+        sourceId: entitlementRestoreKey(booking.id, sessionId),
+        direction: "restore",
+      });
     }
   }
   if (rows.every((session) => shouldRestoreEntitlement(session.startsAt, now))) {
@@ -742,9 +773,20 @@ export async function cancelBooking(userId: string, bookingId: string) {
   );
   const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
   const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
-  await releaseBookingSeat(booking, now);
   const sessionCount = Math.max(1, rows.length);
   const cancelledCount = upcoming.length;
+  if (booking.orderId && outcome === "full_refund") {
+    const result = await issueRefund({
+      orderId: booking.orderId,
+      reasonCode: "student_cancel",
+      actorUserId: userId,
+      scope: booking.id,
+      sessionCount,
+      cancelledCount,
+    });
+    if ("error" in result && refundFailureKeepsSeat(result.error)) return { error: result.error };
+  }
+  await releaseBookingSeat(booking, now);
   if (booking.orderId && (outcome === "full_refund" || outcome === "credit")) {
     await restoreStudioCreditForOrder(booking.orderId, {
       scope: `student-${booking.id}`,
@@ -753,16 +795,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       closeRemainder: cancelledCount >= rows.length,
     });
   }
-  if (booking.orderId && outcome === "full_refund") {
-    await issueRefund({
-      orderId: booking.orderId,
-      reasonCode: "student_cancel",
-      actorUserId: userId,
-      scope: booking.id,
-      sessionCount,
-      cancelledCount,
-    });
-  } else if (booking.orderId && outcome === "credit" && klass) {
+  if (booking.orderId && outcome === "credit" && klass) {
     const [order] = await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1);
     if (order) {
       const share = seriesProrate({
@@ -835,12 +868,14 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
       const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
       if (service) {
-        await sendEmail({
-          to: [person.email],
-          subject: `You're booked: ${service.title}`,
-          text: "Your spot is reserved.",
-          teacherId: order.teacherId ?? undefined,
-        });
+        if (classBookingSendsDirectEmail()) {
+          await sendEmail({
+            to: [person.email],
+            subject: `You're booked: ${service.title}`,
+            text: "Your spot is reserved.",
+            teacherId: order.teacherId ?? undefined,
+          });
+        }
         if (paidCheckoutEmitsBookingNotifications(order.kind)) {
           const [teacher] = order.teacherId ? await db.select().from(teachers).where(eq(teachers.id, order.teacherId)).limit(1) : [];
           if (teacher) await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: person.name || "A student", title: service.title, href: "/teach" });
@@ -851,7 +886,7 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
       const [found] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
       klass = found;
-      if (person?.email && klass) {
+      if (classBookingSendsDirectEmail() && person?.email && klass) {
         await sendEmail({
           to: [person.email],
           subject: `You're booked: ${klass.title}`,

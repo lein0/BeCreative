@@ -25,13 +25,18 @@ async function Body() {
     <div className="mx-auto max-w-3xl px-5 py-8">
       <h1 className="display text-5xl">Notification settings</h1>
       <p className="mt-2 max-w-xl text-sm text-ink/70">Email and the in-app bell are on. Text messages stay off until you turn them on, and they wait until after quiet hours (9pm–8am Pacific).</p>
-      <form action={notificationPrefAction} className="mt-4">
+      <form action={notificationPrefAction} className="mt-4 space-y-3">
         <input type="hidden" name="saveCredit" value="1" />
+        <input type="hidden" name="savePhone" value="1" />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" name="creditOptIn" value="1" defaultChecked={person?.creditOptIn} />
           If a teacher cancels, I will take studio credit instead of a refund
         </label>
-        <button className="mt-3 rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Save</button>
+        <label className="block text-sm">
+          Mobile number for texts
+          <input name="phone" defaultValue={person?.phone ?? ""} autoComplete="tel" className={`${control} mt-1`} />
+        </label>
+        <button className="rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Save</button>
       </form>
       <div className="mt-6 space-y-4">
         {events.map((event) => {
