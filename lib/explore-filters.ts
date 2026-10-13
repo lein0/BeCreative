@@ -1,4 +1,5 @@
 import { generateOpenSlots, type AvailabilityWindow } from "@/lib/slots";
+import { daysBetween, ymdInZone } from "@/lib/time";
 
 export type VisitListing = {
   title: string;
@@ -44,6 +45,10 @@ export function visitDurationMinutes(kind: string, slotMinutes: number | null, o
   return slotMinutes && slotMinutes > 0 ? slotMinutes : 60;
 }
 
+export function exploreShowsVisits(vertical?: string) {
+  return vertical !== "creative";
+}
+
 export function visitMatchesExploreFilters(visit: VisitListing, filters: ExploreVisitFilters) {
   const query = (filters.q ?? "").trim().toLowerCase();
   if (query && !`${visit.title} ${visit.studioName} ${visit.categoryName}`.toLowerCase().includes(query)) return false;
@@ -54,19 +59,22 @@ export function visitMatchesExploreFilters(visit: VisitListing, filters: Explore
     if (milesBetween(filters.lat, filters.lng, visit.lat, visit.lng) > filters.miles) return false;
   }
   if (filters.date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(filters.date)) return false;
     const now = filters.now ?? new Date();
-    const next = generateOpenSlots({
+    const span = daysBetween(ymdInZone(now, filters.timeZone), filters.date);
+    if (span < 0) return false;
+    const openOnDate = generateOpenSlots({
       windows: visit.windows,
       durationMinutes: visit.durationMinutes > 0 ? visit.durationMinutes : 60,
       bufferMinutes: 0,
       from: now,
-      days: 56,
+      days: span + 1,
       now,
       leadTimeHours: visit.leadTimeHours,
       busy: [],
       timeZone: filters.timeZone,
-    })[0]?.localDate;
-    if (!next || next < filters.date) return false;
+    }).some((slot) => slot.localDate === filters.date);
+    if (!openOnDate) return false;
   }
   return true;
 }

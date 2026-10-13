@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { milesBetween, visitDurationMinutes, visitListPriceCents, visitMatchesExploreFilters, type VisitListing } from "@/lib/explore-filters";
-
-const now = new Date("2026-10-12T15:00:00Z");
+import { exploreShowsVisits, milesBetween, visitDurationMinutes, visitListPriceCents, visitMatchesExploreFilters, type VisitListing } from "@/lib/explore-filters";
 
 function visit(overrides: Partial<VisitListing> = {}): VisitListing {
   return {
@@ -28,11 +26,19 @@ describe("wellness explore filters", () => {
     expect(visitMatchesExploreFilters(visit({ lat: null, lng: null }), { ...santaMonica, miles: 8 })).toBe(false);
     expect(visitMatchesExploreFilters(visit({ priceCents: 14000 }), { maxPrice: 100 })).toBe(false);
     expect(visitMatchesExploreFilters(visit({ priceCents: 4000 }), { maxPrice: 50 })).toBe(true);
-    expect(visitMatchesExploreFilters(visit(), { date: "2026-10-12", now, timeZone: "UTC" })).toBe(true);
-    expect(visitMatchesExploreFilters(visit(), { date: "2026-10-20", now, timeZone: "UTC" })).toBe(false);
-    expect(visitMatchesExploreFilters(visit({ windows: [] }), { date: "2026-10-12", now, timeZone: "UTC" })).toBe(false);
+    const morning = new Date("2026-10-12T08:00:00Z");
+    expect(visitMatchesExploreFilters(visit(), { date: "2026-10-12", now: morning, timeZone: "UTC" })).toBe(true);
+    expect(visitMatchesExploreFilters(visit(), { date: "2026-10-19", now: morning, timeZone: "UTC" })).toBe(true);
+    expect(visitMatchesExploreFilters(visit(), { date: "2026-10-20", now: morning, timeZone: "UTC" })).toBe(false);
+    expect(visitMatchesExploreFilters(visit({ windows: [] }), { date: "2026-10-12", now: morning, timeZone: "UTC" })).toBe(false);
     expect(visitMatchesExploreFilters(visit(), { q: "still", category: "yoga" })).toBe(true);
     expect(visitMatchesExploreFilters(visit(), { category: "massage" })).toBe(false);
+  });
+
+  it("includes visits on the combined explore view and hides them for creative only", () => {
+    expect(exploreShowsVisits("")).toBe(true);
+    expect(exploreShowsVisits("wellness")).toBe(true);
+    expect(exploreShowsVisits("creative")).toBe(false);
   });
 
   it("prices a private hour from its shortest option", () => {

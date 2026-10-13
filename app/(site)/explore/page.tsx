@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { ClassCard, control, fromPrice } from "@/components/bits";
 import { StudioMap } from "@/components/map-loader";
 import { CLASS_FORMATS, DELIVERY_MODES, FORMAT_LABELS, LEVEL_LABELS, NEIGHBORHOODS, SKILL_LEVELS, type ClassFormat, type SkillLevel } from "@/lib/constants";
-import { visitMatchesExploreFilters } from "@/lib/explore-filters";
+import { exploreShowsVisits, visitMatchesExploreFilters } from "@/lib/explore-filters";
 import { catalog, categoryTree, publishedServiceExplore } from "@/lib/queries";
 import { money, one } from "@/lib/utils";
 
@@ -36,7 +36,7 @@ async function ExploreBody({ searchParams }: { searchParams: Search }) {
     miles: place ? Number(one(sp.miles) || 8) : undefined,
     vertical: vertical || undefined,
   });
-  const services = vertical === "wellness" ? await publishedServiceExplore() : [];
+  const services = exploreShowsVisits(vertical) ? await publishedServiceExplore() : [];
   const visitFilters = {
     q: one(sp.q),
     category: one(sp.category),

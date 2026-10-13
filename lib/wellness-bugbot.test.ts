@@ -6,6 +6,14 @@ config({ path: ".env.local" });
 const stripe = vi.hoisted(() => ({
   configured: false,
   fail: false,
+  client: false,
+  retrieve: vi.fn(async (): Promise<{ status: string; payment_status: string; payment_intent: string | null }> => ({
+    status: "expired",
+    payment_status: "unpaid",
+    payment_intent: null,
+  })),
+  expire: vi.fn(async () => ({})),
+  refund: vi.fn(async () => ({ id: "re_test" })),
 }));
 
 vi.mock("@/lib/stripe", async () => {
@@ -13,6 +21,13 @@ vi.mock("@/lib/stripe", async () => {
   return {
     ...actual,
     stripeConfigured: () => stripe.configured,
+    getStripe: () =>
+      stripe.client
+        ? {
+            refunds: { create: stripe.refund },
+            checkout: { sessions: { retrieve: stripe.retrieve, expire: stripe.expire } },
+          }
+        : null,
     createCheckout: vi.fn(async () => {
       if (stripe.fail) throw new Error("stripe down");
       return { id: "cs_test", url: "https://checkout.example/session" };
@@ -33,7 +48,7 @@ const { db } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { sendEmail } = await import("@/lib/email");
 const { fulfillPaidCheckout } = await import("@/lib/booking-service");
-const { bookVisit, openSlotsForService } = await import("@/lib/wellness-service");
+const { bookVisit, cancelVisit, openSlotsForService } = await import("@/lib/wellness-service");
 
 const tag = `bug-${crypto.randomUUID().slice(0, 8)}`;
 const ids: { teacher?: string; users: string[]; category?: string } = { users: [] };
@@ -85,6 +100,11 @@ describe("wellness bugbot regressions", () => {
   beforeEach(async () => {
     stripe.configured = false;
     stripe.fail = false;
+    stripe.client = false;
+    stripe.retrieve.mockReset();
+    stripe.retrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid", payment_intent: null });
+    stripe.expire.mockReset();
+    stripe.refund.mockReset();
     vi.mocked(sendEmail).mockClear();
     if (!ids.teacher) return;
     const owned = await db.select({ id: schema.services.id }).from(schema.services).where(eq(schema.services.teacherId, ids.teacher));
@@ -383,5 +403,83 @@ describe("wellness bugbot regressions", () => {
     expect(results.some((result) => "error" in result && /credit/i.test(result.error ?? ""))).toBe(true);
     const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.id, purchaseId));
     expect(purchase?.creditsRemaining).toBe(0);
+  });
+
+  it("expires an open checkout session when a pending visit is cancelled", async () => {
+    stripe.client = true;
+    stripe.retrieve.mockResolvedValue({ status: "open", payment_status: "unpaid", payment_intent: null });
+    const { serviceId, optionId } = await appointment("Cancel open", ids.teacher!, ids.category!);
+    const student = await person("cancel-open");
+    const orderId = crypto.randomUUID();
+    const visitId = crypto.randomUUID();
+    const startsAt = new Date(Date.now() + 7 * 86_400_000);
+    await db.insert(schema.orders).values({
+      id: orderId,
+      userId: student,
+      teacherId: ids.teacher,
+      kind: "visit",
+      status: "pending",
+      listPriceCents: 9000,
+      studentPaysCents: 9000,
+      paymentPath: "card",
+      stripeCheckoutSessionId: "cs_open",
+    });
+    await db.insert(schema.visitBookings).values({
+      id: visitId,
+      orderId,
+      userId: student,
+      serviceId,
+      optionId,
+      offeringKind: "appointment",
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 60 * 60_000),
+    });
+    const result = await cancelVisit(student, visitId);
+    expect(result).toEqual({ ok: true });
+    expect(stripe.expire).toHaveBeenCalledWith("cs_open");
+    expect(stripe.refund).not.toHaveBeenCalled();
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    const [visit] = await db.select().from(schema.visitBookings).where(eq(schema.visitBookings.id, visitId));
+    expect(order?.status).toBe("cancelled");
+    expect(visit?.status).toBe("cancelled");
+  });
+
+  it("refunds a checkout that already completed when the visit is cancelled", async () => {
+    stripe.client = true;
+    stripe.retrieve.mockResolvedValue({ status: "complete", payment_status: "paid", payment_intent: "pi_123" });
+    const { serviceId, optionId } = await appointment("Cancel paid", ids.teacher!, ids.category!);
+    const student = await person("cancel-paid");
+    const orderId = crypto.randomUUID();
+    const visitId = crypto.randomUUID();
+    const startsAt = new Date(Date.now() + 7 * 86_400_000);
+    await db.insert(schema.orders).values({
+      id: orderId,
+      userId: student,
+      teacherId: ids.teacher,
+      kind: "visit",
+      status: "pending",
+      listPriceCents: 9000,
+      studentPaysCents: 9000,
+      paymentPath: "card",
+      stripeCheckoutSessionId: "cs_paid",
+    });
+    await db.insert(schema.visitBookings).values({
+      id: visitId,
+      orderId,
+      userId: student,
+      serviceId,
+      optionId,
+      offeringKind: "appointment",
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 60 * 60_000),
+    });
+    const result = await cancelVisit(student, visitId);
+    expect(result).toEqual({ ok: true });
+    expect(stripe.expire).not.toHaveBeenCalled();
+    expect(stripe.refund).toHaveBeenCalledWith({ payment_intent: "pi_123" });
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    const [visit] = await db.select().from(schema.visitBookings).where(eq(schema.visitBookings.id, visitId));
+    expect(order?.status).toBe("refunded");
+    expect(visit?.status).toBe("cancelled");
   });
 });

@@ -37,7 +37,7 @@ import {
 } from "@/lib/pricing";
 import { collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
 import { studioCanSell } from "@/lib/review-rules";
-import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds, releaseVisitSeat } from "@/lib/booking-service";
+import { abandonFailedCheckout, fulfillPaidCheckout, priorWithTeacher, releaseExpiredCheckoutHolds, releaseVisitSeat } from "@/lib/booking-service";
 import { sendEmail } from "@/lib/email";
 import { coordinatesForVisit } from "@/lib/geocode";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
@@ -577,17 +577,46 @@ export async function visitRoster(serviceId: string) {
   return { service, visits: visits.sort((a, b) => a.visit.startsAt.getTime() - b.visit.startsAt.getTime()), signatures };
 }
 
+async function settlePendingCheckout(order: typeof orders.$inferSelect) {
+  if (order.status !== "pending" || !order.stripeCheckoutSessionId) return order;
+  const stripe = getStripe();
+  if (!stripe) return order;
+  const paymentIntentOf = (session: { payment_intent?: string | { id: string } | null }) => {
+    const intent = session.payment_intent;
+    return typeof intent === "string" ? intent : intent?.id ?? null;
+  };
+  try {
+    let session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+    const paid = () => session.status === "complete" || session.payment_status === "paid";
+    if (!paid() && session.status === "open") {
+      try {
+        await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+      } catch {
+        session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      }
+    }
+    if (paid()) {
+      await fulfillPaidCheckout(order.id, paymentIntentOf(session), null);
+      const [fresh] = await db.select().from(orders).where(eq(orders.id, order.id)).limit(1);
+      return fresh ?? order;
+    }
+  } catch {
+    // The Checkout session is already closed.
+  }
+  return order;
+}
+
 export async function cancelVisit(userId: string, visitId: string) {
   const now = new Date();
   const [visit] = await db.select().from(visitBookings).where(and(eq(visitBookings.id, visitId), eq(visitBookings.userId, userId))).limit(1);
   if (!visit || visit.status !== "confirmed") return { error: "Booking not found." };
   const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
   if (!service || !withinCancellationWindow(visit.startsAt, now, service.cancellationHours)) return { error: "The cancellation window has closed." };
+  const [existing] = visit.orderId ? await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1) : [];
+  const order = existing ? await settlePendingCheckout(existing) : undefined;
   await releaseVisitSeat(visit, now);
-  if (!visit.orderId) return { ok: true };
+  if (!visit.orderId || !order || order.status === "refunded") return { ok: true };
   await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));
-  const [order] = await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1);
-  if (!order || order.status === "refunded") return { ok: true };
   if (order.status === "paid" && order.studentPaysCents > 0 && order.stripePaymentIntentId) {
     const stripe = getStripe();
     if (stripe) {
