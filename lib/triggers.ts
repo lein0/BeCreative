@@ -30,6 +30,7 @@ export const TRIGGERS: Trigger[] = [
   { id: "booking.created", event: "booking.created", template: "teacher.booking", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: new booking" },
   { id: "signup.followed", event: "signup.followed", template: "teacher.follow", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: new follow" },
   { id: "waitlist.joined", event: "waitlist.joined", template: "teacher.waitlist", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: waitlist join" },
+  { id: "student.waitlist", event: "waitlist.joined", template: "student.waitlist", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Student: you joined the waitlist" },
   { id: "waitlist.promoted", event: "waitlist.promoted", template: "teacher.promoted", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: waitlist auto-promote" },
   { id: "offer.purchased", event: "offer.purchased", template: "teacher.offer", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: pack or membership purchase" },
   { id: "payout.sent", event: "payout.sent", template: "teacher.payout", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: payout sent" },
@@ -47,10 +48,14 @@ export function triggerForEvent(event: string) {
   return TRIGGERS.find((trigger) => trigger.event === event) ?? null;
 }
 
+function teacherFacing(trigger: Trigger) {
+  return trigger.id.startsWith("teacher.") || trigger.template.startsWith("teacher.");
+}
+
 /** Teacher and student share a few event names. Pick the template for the audience. */
 export function templateFor(event: string, audience: "teacher" | "student") {
   const matches = TRIGGERS.filter((trigger) => trigger.event === event);
-  const preferred = matches.find((trigger) => (audience === "teacher" ? trigger.id.startsWith("teacher.") : !trigger.id.startsWith("teacher.")));
+  const preferred = matches.find((trigger) => (audience === "teacher" ? teacherFacing(trigger) : !teacherFacing(trigger)));
   return preferred ?? matches[0] ?? null;
 }
 

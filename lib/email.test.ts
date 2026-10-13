@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildRawEmail } from "@/lib/email-mime";
-import { individualDeliveries, sameInbox } from "@/lib/email";
+import { allowedRecipients, individualDeliveries, sameInbox } from "@/lib/email";
 
 describe("private recipient delivery", () => {
   it("gives each student their own message and drops duplicates", () => {
@@ -9,6 +9,11 @@ describe("private recipient delivery", () => {
     const messages = deliveries.map((recipient) => ({ to: [recipient] }));
     expect(messages.every((message) => message.to.length === 1)).toBe(true);
     expect(new Set(messages.flatMap((message) => message.to)).size).toBe(messages.length);
+  });
+
+  it("does not mail a suppressed address", () => {
+    expect(allowedRecipients(["Jules@Example.com", "ada@example.com"], ["jules@example.com"])).toEqual(["ada@example.com"]);
+    expect(allowedRecipients(["jules@example.com"], ["Jules@Example.com"])).toEqual([]);
   });
 
   it("matches a bounce when the stored address differs only by case", () => {

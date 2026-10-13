@@ -39,7 +39,7 @@ async function dispatchStripeEvent(event: Stripe.Event) {
     const subscription = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
     if (orderId) await fulfillPaidCheckout(orderId, paymentIntent ?? null, subscription ?? null);
   }
-  if (event.type === "invoice.paid") {
+  if (event.type === "invoice.paid" || event.type === "invoice.payment_succeeded") {
     const renewal = paidInvoiceRenewal(event.data.object);
     if (renewal) await renewMembershipFromInvoice(renewal);
   }

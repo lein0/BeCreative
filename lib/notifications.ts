@@ -5,8 +5,8 @@ import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { dispatchText, smsProviderConfigured } from "@/lib/messaging";
-import { maySend, smsWanted } from "@/lib/messaging-rules";
+import { dispatchText, imessageConfigured, smsProviderConfigured } from "@/lib/messaging";
+import { composeSms, deferredSmsAllowed, maySend, smsWanted, textTransportReady } from "@/lib/messaging-rules";
 import { channelsFor, defaultPrefs, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
@@ -71,8 +71,18 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   const enabled = !trigger || triggerEnabled(trigger.id, await triggerMap());
   const [settings] = await db.select().from(platformSettings).limit(1);
   const destination = phone || person?.phone || null;
+  const imessageOn = (settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled) && imessageConfigured();
   if (options?.smsOnly) {
-    if (enabled) await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId });
+    const [pref] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, row.userId), eq(notificationPreferences.event, row.event))).limit(1);
+    if (deferredSmsAllowed({
+      triggerOn: enabled,
+      event: row.event,
+      textEligible: Boolean(options.textEligible),
+      savedSms: pref ? pref.sms : null,
+      smsOptIn: Boolean(person?.smsOptIn),
+    })) {
+      await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId });
+    }
     return;
   }
   if (!enabled) {
@@ -90,7 +100,7 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     unsubscribed: Boolean(person?.emailUnsubscribed),
     emailSuppressed: Boolean(person?.emailSuppressed),
     webPushEnabled: settings?.webPushEnabled ?? SHIP_DEFAULTS.webPushEnabled,
-    smsConfigured: smsProviderConfigured(),
+    smsConfigured: textTransportReady({ smsProvider: smsProviderConfigured(), imessageOn }),
     smsOptIn: Boolean(person?.smsOptIn),
     consent,
     marketingOptIn: Boolean(person?.marketingOptIn),
@@ -149,7 +159,7 @@ async function sendText(input: { userId: string; phone: string | null; title: st
     return;
   }
   const target = input.href ? await shortenLink(new URL(input.href, appOrigin()).toString()) : "";
-  await dispatchText({ to: input.phone, body: `${input.title}. ${input.body} ${target}`.trim(), userId: input.userId, imessageEnabled: input.imessageEnabled });
+  await dispatchText({ to: input.phone, body: composeSms({ title: input.title, body: input.body, link: target }), userId: input.userId, imessageEnabled: input.imessageEnabled });
 }
 
 export async function unreadCount(userId: string) {

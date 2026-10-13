@@ -1,4 +1,5 @@
 import type { PriceQuote } from "@/lib/pricing";
+import { invoiceSubscriptionId } from "@/lib/stripe-invoice";
 
 /** Same-origin relative path. Rejects protocol-relative URLs and backslashes. */
 export function safeNextPath(next: string | null | undefined, fallback = "/explore") {
@@ -137,6 +138,18 @@ export function membershipRenewalExtendsAccess(input: {
   return input.invoicePeriodEnd.getTime() > input.currentPeriodEnd.getTime();
 }
 
+/** A later paid invoice clears past_due even when this period was already stored. The first invoice stays with checkout. */
+export function membershipPaymentRestoresAccess(input: {
+  billingReason: string | null | undefined;
+  currentStatus: string;
+  currentPeriodEnd: Date;
+  invoicePeriodEnd: Date;
+}) {
+  if (!input.billingReason || input.billingReason === "subscription_create") return false;
+  if (membershipRenewalExtendsAccess(input)) return true;
+  return input.currentStatus === "past_due";
+}
+
 /** Keep the original order's fee split when a renewal charges the same amount. A different amount keeps that same ratio. */
 export function renewalChargeSplit(
   original: { studentPaysCents: number; platformFeeCents: number; teacherAmountCents: number; listPriceCents: number; discountCents: number },
@@ -175,10 +188,11 @@ export function paidInvoiceRenewal(invoice: {
   amount_paid: number;
   period_start: number;
   period_end: number;
+  subscription?: unknown;
   parent?: { subscription_details?: { subscription?: StripeId } | null } | null;
   payments?: { data?: Array<{ payment?: { payment_intent?: StripeId } | null }> } | null;
 }) {
-  const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription ?? null);
+  const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) return null;
   const payment = invoice.payments?.data?.map((row) => stripeId(row.payment?.payment_intent ?? null)).find((id): id is string => Boolean(id)) ?? null;
   return {

@@ -44,6 +44,50 @@ export function guardSms(body: string, limit = 160) {
   return `${clean.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+/** Keep the short link when the note is longer than one segment. */
+export function composeSms(input: { title: string; body: string; link?: string; limit?: number }) {
+  const limit = input.limit ?? 160;
+  const link = (input.link ?? "").trim();
+  const tail = link ? ` ${link}` : "";
+  const head = `${input.title}. ${input.body}`.replace(/\s+/g, " ").trim();
+  if (!tail) return guardSms(head, limit);
+  if (tail.length >= limit) return guardSms(`${head}${tail}`, limit);
+  const room = limit - tail.length;
+  const clipped = head.length <= room ? head : `${head.slice(0, Math.max(0, room - 1))}…`;
+  return `${clipped}${tail}`.trim();
+}
+
+/** A text deferred for quiet hours must pass the same opt-out checks as one sent immediately. */
+export function deferredSmsAllowed(input: { triggerOn: boolean; event: string; textEligible: boolean; savedSms: boolean | null; smsOptIn: boolean }) {
+  if (!input.triggerOn) return false;
+  if (!smsWanted({ event: input.event, textEligible: input.textEligible, savedSms: input.savedSms })) return false;
+  return maySend({
+    channel: "sms",
+    consent: "transactional",
+    emailUnsubscribed: false,
+    emailSuppressed: false,
+    marketingOptIn: false,
+    smsOptIn: input.smsOptIn,
+    smsSuppressed: false,
+  });
+}
+
+export function textTransportReady(input: { smsProvider: boolean; imessageOn: boolean }) {
+  return input.smsProvider || input.imessageOn;
+}
+
+export function reminderJob(input: { userId: string; title: string; body: string; href: string; hours: number }) {
+  return {
+    userId: input.userId,
+    event: "booking.reminder" as const,
+    audience: "student" as const,
+    title: input.title,
+    body: input.body,
+    href: input.href,
+    textEligible: input.hours === 2,
+  };
+}
+
 export function withinMonthlyCap(spentCents: number, nextCostCents: number, capCents: number) {
   return spentCents + nextCostCents <= capCents;
 }

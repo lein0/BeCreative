@@ -17,9 +17,49 @@ const palette = {
   bewell: { paper: "#f3f7f4", ink: "#17241f", accent: "#2f6b5a", sand: "#e4eee8", name: "BeWell" },
 };
 
+const UNWRAP: Record<string, { prefix?: RegExp[]; suffix?: RegExp[] }> = {
+  "booking.confirmed": { prefix: [/^you're booked:\s*/i] },
+  "booking.reminder": { prefix: [/^reminder:\s*/i] },
+  "booking.cancelled": { prefix: [/^cancelled:?\s*/i, /^you cancelled\s*/i, /^cancellation:\s*/i], suffix: [/\s+was cancelled$/i, /\s+cancelled$/i] },
+  "booking.refunded": { prefix: [/^refund for\s*/i] },
+  "waitlist.spot_open": { prefix: [/^a spot opened for\s*/i, /^a seat opened:\s*/i] },
+  "class.changed": { suffix: [/\s+moved$/i] },
+  "receipt.sent": { prefix: [/^receipt for\s*/i] },
+  "teacher.booking": { prefix: [/^new booking:\s*/i] },
+  "teacher.cancelled": { prefix: [/^cancelled:\s*/i, /^you cancelled\s*/i, /^cancellation:\s*/i] },
+  "teacher.waitlist": { prefix: [/^waitlist:\s*/i] },
+  "student.waitlist": { prefix: [/^you're on the waitlist for\s*/i] },
+  "teacher.offer": { prefix: [/^purchase:\s*/i] },
+  "teacher.review": { prefix: [/^new review of\s*/i] },
+  "teacher.ticket": { prefix: [/^student question:\s*/i] },
+  "ticket.updated": { prefix: [/^reply:\s*/i, /^resolved:\s*/i, /^we opened\s*[“"]?/i] },
+};
+
+/** Notification titles already include the template prefix. Strip it once so the subject is not doubled. */
+export function emailItemName(template: string, title: string) {
+  const rules = UNWRAP[template];
+  let item = title.trim();
+  if (!rules) return item;
+  let previous = "";
+  while (item && item !== previous) {
+    previous = item;
+    for (const pattern of rules.prefix ?? []) item = item.replace(pattern, "").trim();
+    for (const pattern of rules.suffix ?? []) item = item.replace(pattern, "").trim();
+  }
+  return item || title.trim();
+}
+
+export function followerName(title: string) {
+  const match = title.trim().match(/^(.*) followed your studio$/i);
+  const name = match?.[1]?.trim();
+  return name || null;
+}
+
 function copy(template: string, props: EmailProps, brandName: string) {
-  const name = props.name || "there";
-  const title = props.title || "your class";
+  const storedName = props.name || "there";
+  const rawTitle = props.title || "your class";
+  const title = emailItemName(template, rawTitle);
+  const name = template === "teacher.follow" ? followerName(rawTitle) || storedName : storedName;
   const lines: Record<string, { subject: string; preheader: string; paragraphs: string[]; cta?: string }> = {
     "auth.verify": { subject: `Confirm your ${brandName} email`, preheader: "One tap finishes your account.", paragraphs: [`Hi ${name}, confirm this address so booking receipts can reach you.`], cta: "Confirm email" },
     "auth.reset": { subject: `Reset your ${brandName} password`, preheader: "This link expires soon.", paragraphs: [`Hi ${name}, use the button to choose a new password.`], cta: "Reset password" },
@@ -40,6 +80,7 @@ function copy(template: string, props: EmailProps, brandName: string) {
     "teacher.cancelled": { subject: `Cancelled: ${title}`, preheader: "Students were told and refunds follow the policy.", paragraphs: [props.body || `${title} was cancelled.`], cta: "View the date" },
     "teacher.follow": { subject: `${name} followed your studio`, preheader: "A new student wants to hear about classes.", paragraphs: [props.body || `${name} followed you.`], cta: "View profile" },
     "teacher.waitlist": { subject: `Waitlist: ${title}`, preheader: "Someone is hoping for a seat.", paragraphs: [props.body || `${name} joined the waitlist.`], cta: "View class" },
+    "student.waitlist": { subject: `You're on the waitlist for ${title}`, preheader: "You do not have a reserved seat yet.", paragraphs: [`Hi ${name}, ${title} is full right now.`, props.body || "We'll email you if a seat opens. That note is not a reservation."], cta: "View bookings" },
     "teacher.promoted": { subject: `Waitlist seat filled: ${title}`, preheader: "We moved the next student in.", paragraphs: [props.body || "A waitlisted student took the open seat."], cta: "View roster" },
     "teacher.offer": { subject: `Purchase: ${title}`, preheader: "A pack or membership sold.", paragraphs: [props.body || `Someone bought ${title}.`], cta: "View payouts" },
     "teacher.payout": { subject: "A payout was sent", preheader: "Stripe is moving the funds.", paragraphs: [props.body || "A payout left for your studio."], cta: "View payouts" },

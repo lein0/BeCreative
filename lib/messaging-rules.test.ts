@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelAfterAttempt, chooseTextChannel, guardSms, maySend, smsKeyword, smsOnByDefault, smsWanted, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
+import { channelAfterAttempt, chooseTextChannel, composeSms, deferredSmsAllowed, guardSms, maySend, reminderJob, smsKeyword, smsOnByDefault, smsWanted, textTransportReady, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
 import { templateFor } from "@/lib/triggers";
 
 describe("text defaults and consent", () => {
@@ -51,6 +51,8 @@ describe("SMS keywords and iMessage fallback", () => {
     expect(smsWanted({ event: "booking.confirmed", textEligible: false, savedSms: null })).toBe(false);
     expect(templateFor("booking.cancelled", "teacher")?.template).toBe("teacher.cancelled");
     expect(templateFor("booking.cancelled", "student")?.template).toBe("booking.cancelled");
+    expect(templateFor("waitlist.joined", "teacher")?.template).toBe("teacher.waitlist");
+    expect(templateFor("waitlist.joined", "student")?.template).toBe("student.waitlist");
   });
 
   it("returns keyword confirmation as TwiML for a form webhook", () => {
@@ -65,5 +67,26 @@ describe("SMS keywords and iMessage fallback", () => {
     expect(guardSms("a".repeat(180)).length).toBe(160);
     expect(withinMonthlyCap(4999, 1, 5000)).toBe(true);
     expect(withinMonthlyCap(5000, 1, 5000)).toBe(false);
+  });
+
+  it("keeps the short link when the note is longer than one segment", () => {
+    const link = "https://bcr.tv/abc";
+    const text = composeSms({ title: "Scene Study", body: "a".repeat(200), link });
+    expect(text.length).toBeLessThanOrEqual(160);
+    expect(text.endsWith(link)).toBe(true);
+  });
+
+  it("does not send a deferred text after an opt-out", () => {
+    expect(deferredSmsAllowed({ triggerOn: true, event: "booking.reminder", textEligible: true, savedSms: null, smsOptIn: true })).toBe(true);
+    expect(deferredSmsAllowed({ triggerOn: true, event: "booking.reminder", textEligible: true, savedSms: null, smsOptIn: false })).toBe(false);
+    expect(deferredSmsAllowed({ triggerOn: true, event: "booking.reminder", textEligible: true, savedSms: false, smsOptIn: true })).toBe(false);
+    expect(deferredSmsAllowed({ triggerOn: false, event: "waitlist.spot_open", textEligible: true, savedSms: null, smsOptIn: true })).toBe(false);
+  });
+
+  it("sends when only iMessage is configured, and includes the visit reminder text flag", () => {
+    expect(textTransportReady({ smsProvider: false, imessageOn: true })).toBe(true);
+    expect(textTransportReady({ smsProvider: false, imessageOn: false })).toBe(false);
+    expect(reminderJob({ userId: "u", title: "Sauna is in 2 hours", body: "Soon", href: "/bookings", hours: 2 }).textEligible).toBe(true);
+    expect(reminderJob({ userId: "u", title: "Sauna is in 24 hours", body: "Soon", href: "/bookings", hours: 24 })).toMatchObject({ event: "booking.reminder", audience: "student", textEligible: false });
   });
 });

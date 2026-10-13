@@ -4,6 +4,13 @@ import { bookings, classes, linkClicks, memberships, membershipSubscriptions, or
 import { enqueueJob } from "@/lib/jobs";
 import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
 
+export function winbackEligible(input: { marketingOptIn: boolean; emailUnsubscribed: boolean; emailSuppressed: boolean; classStarts: Date[]; visitStarts: Date[]; now: Date; inactiveDays: number }) {
+  if (!input.marketingOptIn || input.emailUnsubscribed || input.emailSuppressed) return false;
+  if (input.classStarts.length + input.visitStarts.length === 0) return false;
+  const cutoff = input.now.getTime() - input.inactiveDays * 86_400_000;
+  return ![...input.classStarts, ...input.visitStarts].some((start) => start.getTime() > cutoff);
+}
+
 function weekKey(now: Date) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
   const week = Math.ceil(((now.getTime() - start.getTime()) / 86400000 + start.getUTCDay() + 1) / 7);
@@ -47,17 +54,27 @@ export async function scheduleLifecycle(now = new Date()) {
     select u.id as "userId"
     from "user" u
     where u.marketing_opt_in = true and u.email_unsubscribed = false and u.email_suppressed = false and u.deleted_at is null
-      and exists (
-        select 1 from bookings b
-        join booking_sessions bs on bs.booking_id = b.id
-        join sessions s on s.id = bs.session_id
-        where b.user_id = u.id
+      and (
+        exists (
+          select 1 from bookings b
+          join booking_sessions bs on bs.booking_id = b.id
+          join sessions s on s.id = bs.session_id
+          where b.user_id = u.id
+        )
+        or exists (
+          select 1 from visit_bookings v
+          where v.user_id = u.id
+        )
       )
       and not exists (
         select 1 from bookings b
         join booking_sessions bs on bs.booking_id = b.id
         join sessions s on s.id = bs.session_id
         where b.user_id = u.id and s.starts_at > ${cutoff}
+      )
+      and not exists (
+        select 1 from visit_bookings v
+        where v.user_id = u.id and v.starts_at > ${cutoff}
       )
   `);
   const month = `${now.getUTCFullYear()}-${now.getUTCMonth() + 1}`;

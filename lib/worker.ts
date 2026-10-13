@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, services, sessions, teachers, visitBookings } from "@/lib/db/schema";
 import { DISPUTE_SUBMIT_ATTEMPTS } from "@/lib/dispute-evidence";
 import { claimJobs, enqueueJob, finishJob, requeueJob } from "@/lib/jobs";
+import { reminderJob } from "@/lib/messaging-rules";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
 import { captureException } from "@/lib/sentry";
 
@@ -83,15 +84,13 @@ export async function scheduleReminders(now = new Date()) {
       const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
       for (const booking of mine) {
         if (!booking.userId) continue;
-        await enqueueJob("reminder.send", {
+        await enqueueJob("reminder.send", reminderJob({
           userId: booking.userId,
-          event: "booking.reminder",
-          audience: "student",
           title: `${klass?.title ?? "Your class"} is in ${window.label}`,
           body: `It starts ${session.startsAt.toISOString()}.`,
           href: klass ? `/c/${klass.slug}` : "/bookings",
-          textEligible: window.hours === 2,
-        }, new Date(), `reminder:${session.id}:${booking.userId}:${window.hours}`);
+          hours: window.hours,
+        }), new Date(), `reminder:${session.id}:${booking.userId}:${window.hours}`);
         queued += 1;
       }
     }
@@ -102,12 +101,13 @@ export async function scheduleReminders(now = new Date()) {
     for (const visit of visits) {
       if (!visit.userId) continue;
       const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
-      await enqueueJob("reminder.send", {
+      await enqueueJob("reminder.send", reminderJob({
         userId: visit.userId,
         title: `${service?.title ?? "Your visit"} is in ${window.label}`,
         body: `It starts ${visit.startsAt.toISOString()}.`,
         href: service ? `/s/${service.slug}` : "/bookings",
-      }, new Date(), `reminder:visit:${visit.id}:${visit.userId}:${window.hours}`);
+        hours: window.hours,
+      }), new Date(), `reminder:visit:${visit.id}:${visit.userId}:${window.hours}`);
       queued += 1;
     }
   }

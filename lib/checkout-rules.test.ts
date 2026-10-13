@@ -11,6 +11,7 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   chargeFullyRefunded,
+  membershipPaymentRestoresAccess,
   membershipRenewalExtendsAccess,
   paidInvoiceRenewal,
   refundCancelsBooking,
@@ -162,6 +163,15 @@ describe("membership renewals", () => {
     expect(parsed?.paymentIntentId).toBe("pi_1");
     expect(parsed?.billingReason).toBe("subscription_cycle");
     expect(paidInvoiceRenewal({ id: "in_2", amount_paid: 0, period_start: 1, period_end: 2, parent: null })).toBeNull();
+    expect(paidInvoiceRenewal({ id: "in_old", billing_reason: "subscription_cycle", amount_paid: 8000, period_start: 1, period_end: 2, subscription: "sub_old" })?.subscriptionId).toBe("sub_old");
+  });
+
+  it("clears past_due when a later invoice is paid, and leaves the first invoice to checkout", () => {
+    const end = new Date("2026-12-01T00:00:00Z");
+    expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "past_due", currentPeriodEnd: end, invoicePeriodEnd: end })).toBe(true);
+    expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(true);
+    expect(membershipPaymentRestoresAccess({ billingReason: "subscription_create", currentStatus: "past_due", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(false);
+    expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: end })).toBe(false);
   });
 });
 

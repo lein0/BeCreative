@@ -27,6 +27,11 @@ export async function findUserByEmail(email: string) {
   return row ?? null;
 }
 
+export function allowedRecipients(recipients: string[], suppressedEmails: string[]) {
+  const blocked = new Set(suppressedEmails.map((email) => normalizeEmail(email)).filter(Boolean));
+  return individualDeliveries(recipients).filter((email) => !blocked.has(normalizeEmail(email)));
+}
+
 export function individualDeliveries(recipients: string[]) {
   const seen = new Set<string>();
   const deliveries: string[] = [];
@@ -84,19 +89,27 @@ export async function sendIndividually(input: Omit<EmailMessage, "to"> & { recip
 }
 
 export async function sendEmail(message: EmailMessage) {
+  const blocked: string[] = [];
+  for (const email of individualDeliveries(message.to)) {
+    const row = await findUserByEmail(email);
+    if (row?.emailSuppressed) blocked.push(row.email);
+  }
+  const to = allowedRecipients(message.to, blocked);
+  if (!to.length) return { id: null, ok: false as const, skipped: true as const };
+  const delivery = { ...message, to };
   const provider = getEmailProvider();
   const id = crypto.randomUUID();
   try {
-    const result = await provider.send(message);
+    const result = await provider.send(delivery);
     await db.insert(emailOutbox).values({
       id,
-      toAddresses: message.to,
-      subject: message.subject,
-      textBody: message.text,
-      htmlBody: message.html,
+      toAddresses: delivery.to,
+      subject: delivery.subject,
+      textBody: delivery.text,
+      htmlBody: delivery.html,
       provider: provider.name,
       status: provider.name === "console" ? "logged" : "sent",
-      teacherId: message.teacherId,
+      teacherId: delivery.teacherId,
       error: result.providerMessageId,
     });
     return { id, ok: true as const };
@@ -104,10 +117,10 @@ export async function sendEmail(message: EmailMessage) {
     const text = error instanceof Error ? error.message : "Email failed";
     await db.insert(emailOutbox).values({
       id,
-      toAddresses: message.to,
-      subject: message.subject,
-      textBody: message.text,
-      htmlBody: message.html,
+      toAddresses: delivery.to,
+      subject: delivery.subject,
+      textBody: delivery.text,
+      htmlBody: delivery.html,
       provider: provider.name,
       status: "failed",
       error: text,
