@@ -14,6 +14,12 @@ export function defaultPrefs(event: NotificationEvent, audience: "teacher" | "st
   };
 }
 
+/** A missing preference uses defaultPrefs, which leaves device push off. */
+export function devicePushWanted(savedPush: boolean | undefined, tokenCount: number) {
+  const push = savedPush ?? defaultPrefs("booking.confirmed", "student").push;
+  return tokenCount > 0 && push;
+}
+
 export function channelsFor(prefs: ChannelPrefs, input: {
   unsubscribed: boolean;
   webPushEnabled: boolean;

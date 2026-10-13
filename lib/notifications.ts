@@ -7,7 +7,7 @@ import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
 import { dispatchText, smsProviderConfigured } from "@/lib/messaging";
 import { maySend, smsWanted } from "@/lib/messaging-rules";
-import { channelsFor, defaultPrefs, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, devicePushWanted, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { shortenLink } from "@/lib/short-links";
@@ -156,10 +156,13 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
   const tokens = await db.select().from(deviceTokens).where(eq(deviceTokens.userId, row.userId));
-  const wantsDevicePush = tokens.length > 0 && (pref ? pref.push : true);
-  if (wantsDevicePush) {
-    const { sendDevicePush } = await import("@/lib/device-push");
-    await sendDevicePush(tokens, row.title, row.body, row.href ? clickUrl(row.href, "push", row.userId) : undefined);
+  if (devicePushWanted(pref?.push, tokens.length)) {
+    try {
+      const { sendDevicePush } = await import("@/lib/device-push");
+      await sendDevicePush(tokens, row.title, row.body, row.href ? clickUrl(row.href, "push", row.userId) : undefined);
+    } catch {
+      // Expo errors must not fail the job. Email already went out, and a retry would send it again.
+    }
   }
   await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
 }

@@ -20,7 +20,9 @@ describe("first-visit experiment subject", () => {
     expect(experimentSubject({ header: "minted-anon", userId: "user-1" })).toBe("minted-anon");
     expect(experimentSubject({ cookie: "cookie-anon", header: "other", userId: "user-1" })).toBe("cookie-anon");
     expect(experimentSubject({ userId: "user-1" })).toBe("user-1");
-    expect(experimentSubject({})).toBe("anonymous");
+    expect(experimentSubject({})).toBeNull();
+    expect(experimentSubject({ cookie: "anonymous", header: "anonymous", userId: "anonymous" })).toBeNull();
+    expect(experimentSubject({ cookie: "anonymous", userId: "user-1" })).toBe("user-1");
     state.cookie = undefined;
     state.header = "minted-anon";
     await expect(subjectFromCookies("user-1")).resolves.toBe("minted-anon");

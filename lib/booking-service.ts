@@ -26,6 +26,7 @@ import {
   visitBookings,
   waitlistEntries,
 } from "@/lib/db/schema";
+import { platformName } from "@/lib/analytics-events";
 import { sendEmail } from "@/lib/email";
 import {
   canSpendMembership,
@@ -612,7 +613,7 @@ export async function bookSession(input: {
             applicationFeeCents: created.quote.platformFeeCents,
             destinationAccountId: created.teacher.stripeAccountId,
             customerEmail: input.email,
-            metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+            metadata: orderMetadata(created.orderId, input.userId, input.platform),
             statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
           });
           if (intent?.client_secret) {
@@ -628,7 +629,7 @@ export async function bookSession(input: {
           customerEmail: input.email,
           successPath: `/bookings?paid=1`,
           cancelPath: `/c/${created.klass.slug}?cancelled=1`,
-          metadata: { type: "order", orderId: created.orderId, userId: input.userId },
+          metadata: orderMetadata(created.orderId, input.userId, input.platform),
           statementDescriptor: statementDescriptor(created.teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
         });
         if (session?.id) {
@@ -874,7 +875,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
 
 export async function rescheduleBooking(userId: string, bookingId: string, sessionId: string) {
   try {
-    return await db.transaction(async (tx) => {
+    const moved = await db.transaction(async (tx) => {
       const [booking] = await tx.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
       if (!booking) return { error: "Booking not found." };
       const links = await tx.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
@@ -887,24 +888,32 @@ export async function rescheduleBooking(userId: string, bookingId: string, sessi
       await tx.execute(sql`select id from sessions where id = ${sessionId} for update`);
       const [next] = await tx.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
       if (!next || next.classId !== booking.classId || next.status !== "scheduled" || next.startsAt <= new Date()) return { error: "That date is not open." };
-      if (link.sessionId === next.id) return { ok: true as const };
+      if (link.sessionId === next.id) return { ok: true as const, vacatedSessionId: null as string | null };
       const taken = await confirmedCount(next.id, tx as unknown as typeof db);
       if (taken >= next.capacity) return { error: "That date is full." };
       await tx.update(bookingSessions).set({ sessionId: next.id }).where(and(eq(bookingSessions.bookingId, booking.id), eq(bookingSessions.sessionId, link.sessionId)));
-      return { ok: true as const };
+      return { ok: true as const, vacatedSessionId: link.sessionId };
     });
+    if ("error" in moved) return moved;
+    if (moved.vacatedSessionId) await offerOpenedSeats([moved.vacatedSessionId]);
+    return { ok: true as const };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not move that date." };
   }
 }
 
-async function recordOfferMoney(userId: string, orderId: string, kind: string) {
-  const { capture } = await import("@/lib/analytics");
-  await capture({ name: "checkout_completed", userId, properties: { orderId, kind } });
-  if (kind === "pack" || kind === "membership") await capture({ name: "offer_purchased", userId, properties: { orderId, kind } });
+function orderMetadata(orderId: string, userId: string, platform?: string | null) {
+  return { type: "order", orderId, userId, platform: platformName(platform) };
 }
 
-export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
+async function recordOfferMoney(userId: string, orderId: string, kind: string, platform?: string | null) {
+  const { capture } = await import("@/lib/analytics");
+  const named = platformName(platform);
+  await capture({ name: "checkout_completed", userId, platform: named, properties: { orderId, kind } });
+  if (kind === "pack" || kind === "membership") await capture({ name: "offer_purchased", userId, platform: named, properties: { orderId, kind } });
+}
+
+export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null, platform?: string | null) {
   const updated = await db
     .update(orders)
     .set({ status: "paid", stripePaymentIntentId: paymentIntent, stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
@@ -912,7 +921,7 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
     .returning();
   if (!updated.length) return;
   const order = updated[0]!;
-  if (order.userId) await recordOfferMoney(order.userId, order.id, order.kind);
+  if (order.userId) await recordOfferMoney(order.userId, order.id, order.kind, platform);
   if (order.kind === "pack") {
     const purchases = await db.select().from(packPurchases).where(eq(packPurchases.orderId, order.id));
     for (const purchase of purchases) {
@@ -1094,7 +1103,7 @@ async function redemptionCounts(promoCodeId: string, userId: string) {
   return { totalRedemptions: Number(totals?.count ?? 0), customerRedemptions: Number(mine?.count ?? 0) };
 }
 
-export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean }) {
+export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; platform?: string }) {
   const fee = await fees();
   const attr = await attribution();
   const normalized = checkoutPromoCode(input.code, attr.code);
@@ -1185,17 +1194,22 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       return { error: error instanceof Error ? error.message : "Could not buy." };
     }
     if (status === "pending" && teacher && input.paymentSheet) {
-      const intent = await createPaymentIntent({
-        amountCents: quote.studentPaysCents,
-        applicationFeeCents: money.platformFeeCents,
-        destinationAccountId: teacher.stripeAccountId,
-        customerEmail: input.email,
-        metadata: { type: "order", orderId, userId: input.userId },
-        statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
-      });
-      if (intent?.client_secret) {
-        await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, orderId));
-        return { orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+      try {
+        const intent = await createPaymentIntent({
+          amountCents: quote.studentPaysCents,
+          applicationFeeCents: money.platformFeeCents,
+          destinationAccountId: teacher.stripeAccountId,
+          customerEmail: input.email,
+          metadata: orderMetadata(orderId, input.userId, input.platform),
+          statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
+        });
+        if (intent?.client_secret) {
+          await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, orderId));
+          return { orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "" };
+        }
+      } catch (error) {
+        await abandonFailedCheckout(orderId);
+        return { error: error instanceof Error ? error.message : "Could not start checkout." };
       }
     }
     if (status === "pending" && teacher) {
@@ -1208,7 +1222,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
           customerEmail: input.email,
           successPath: "/bookings?pack=1",
           cancelPath: `/t/${teacher.slug}`,
-          metadata: { type: "order", orderId, userId: input.userId },
+          metadata: orderMetadata(orderId, input.userId, input.platform),
           statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
         });
         if (session?.url) {
@@ -1224,7 +1238,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       await db.update(packPurchases).set({ creditsRemaining: packCreditsOnPayment(pack.creditCount) }).where(eq(packPurchases.id, purchaseId));
     }
     if (status !== "pending") {
-      await recordOfferMoney(input.userId, orderId, "pack");
+      await recordOfferMoney(input.userId, orderId, "pack", input.platform);
       await notifyOfferPurchased({ teacherUserId: teacher.userId, title: pack.name, href: "/teach/billing" });
     }
     return { ok: true };
@@ -1326,7 +1340,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
         customerEmail: input.email,
         successPath: "/bookings?membership=1",
         cancelPath: `/t/${teacher.slug}`,
-        metadata: { type: "order", orderId, userId: input.userId },
+        metadata: orderMetadata(orderId, input.userId, input.platform),
         statementDescriptor: statementDescriptor(teacher.studioName || "Studio", SHIP_DEFAULTS.statementDescriptorPrefix),
         recurring: plan.recurring ? { interval: "month", intervalCount: plan.termMonths } : null,
       });
@@ -1343,7 +1357,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, subId));
   }
   if (status !== "pending") {
-    await recordOfferMoney(input.userId, orderId, "membership");
+    await recordOfferMoney(input.userId, orderId, "membership", input.platform);
     await notifyOfferPurchased({ teacherUserId: teacher.userId, title: plan.name, href: "/teach/billing" });
   }
   return { ok: true };

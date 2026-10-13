@@ -60,3 +60,26 @@ export function twoProportionZ(control: { success: number; total: number }, vari
 export function variantScore(exposed: number, converted: number) {
   return { exposed, converted, rate: exposed === 0 ? 0 : converted / exposed };
 }
+
+/** Stable control arm. Postgres does not keep insert order, so key order is the control. */
+export function orderedByKey<T extends { key: string }>(rows: T[]) {
+  return [...rows].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/** A goal counts only when it happens at or after that subject's first exposure. */
+export function countConversionsAfterExposure(input: {
+  exposures: { subject: string; at: number }[];
+  goals: { subject: string; at: number }[];
+}) {
+  const first = new Map<string, number>();
+  for (const row of input.exposures) {
+    if (!row.subject) continue;
+    const prev = first.get(row.subject);
+    if (prev === undefined || row.at < prev) first.set(row.subject, row.at);
+  }
+  let converted = 0;
+  for (const [subject, at] of first) {
+    if (input.goals.some((goal) => goal.subject === subject && goal.at >= at)) converted += 1;
+  }
+  return { exposed: first.size, converted };
+}

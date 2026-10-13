@@ -9,11 +9,13 @@ export function bindAnonymousId(headers: Headers, existing: string | undefined) 
   return { id, minted: true as const };
 }
 
-/** Cookie, then the id minted for this request, then the signed-in user. */
+function usableSubject(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === "anonymous") return null;
+  return trimmed;
+}
+
+/** Cookie, then the id minted for this request, then the signed-in user. Never a shared anonymous bucket. */
 export function experimentSubject(input: { cookie?: string | null; header?: string | null; userId?: string | null }) {
-  const cookie = input.cookie?.trim();
-  if (cookie) return cookie;
-  const header = input.header?.trim();
-  if (header) return header;
-  return input.userId || "anonymous";
+  return usableSubject(input.cookie) ?? usableSubject(input.header) ?? usableSubject(input.userId);
 }

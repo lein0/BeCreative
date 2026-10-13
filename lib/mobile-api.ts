@@ -163,8 +163,9 @@ export async function handleMobileApi(request: Request, path: string[]) {
 
   if (method === "GET" && root === "experiments" && second) {
     const actor = await actorFromRequest(request);
-    const explicit = url.searchParams.get("subject");
-    const subject = explicit || (await subjectFromCookies(actor?.id));
+    const explicit = url.searchParams.get("subject")?.trim() ?? "";
+    const subject = explicit && explicit !== "anonymous" ? explicit : explicit ? null : await subjectFromCookies(actor?.id);
+    if (!subject) return json({ error: "Pass a subject id." }, 400);
     const assigned = await exposeExperiment(decodeURIComponent(second), subject, actor?.id, platform);
     if (!assigned) return json({ error: "Experiment not found." }, 404);
     return json(assigned);
@@ -241,7 +242,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "bookings" && !second) {
+    const limited = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
+    if (!limited.ok) return json({ error: "Too many booking attempts. Wait an hour and try again." }, 429);
     const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean };
+    if (body.policyAccepted !== true) return json({ error: "Accept the cancellation policy to book." }, 400);
     const result = await bookSession({
       userId: actor.id,
       email: actor.email,
@@ -282,14 +286,16 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "packs" && second === "purchase") {
+    const limited = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
+    if (!limited.ok) return json({ error: "Too many booking attempts. Wait an hour and try again." }, 429);
     const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, platform });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, platform });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 

@@ -1,0 +1,293 @@
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+
+vi.mock("@/lib/stripe", () => ({
+  stripeConfigured: () => true,
+  getStripe: () => null,
+  createCheckout: vi.fn(async () => {
+    throw new Error("stripe down");
+  }),
+  createPaymentIntent: vi.fn(async () => {
+    throw new Error("stripe down");
+  }),
+}));
+
+vi.mock("@/lib/email", () => ({
+  sendEmail: vi.fn(async () => ({ id: "email" })),
+  sendIndividually: vi.fn(async () => ({ id: "batch" })),
+}));
+
+vi.mock("@/lib/device-push", () => ({
+  sendDevicePush: vi.fn(async () => {
+    throw new Error("expo down");
+  }),
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ get: () => undefined }),
+  headers: async () => ({ get: () => null }),
+}));
+
+const { db } = await import("@/lib/db");
+const schema = await import("@/lib/db/schema");
+const { hashToken } = await import("@/lib/api-token");
+const { purchaseOffer, rescheduleBooking, fulfillPaidCheckout } = await import("@/lib/booking-service");
+const { dispatchStripeEvent } = await import("@/app/api/webhooks/stripe/route");
+const { handleMobileApi } = await import("@/lib/mobile-api");
+const { loadExperiment, assignExperiment } = await import("@/lib/experiments");
+const { experimentResults } = await import("@/lib/analytics-report");
+const { deliverOutbox } = await import("@/lib/notifications");
+const { sendEmail } = await import("@/lib/email");
+const { sendDevicePush } = await import("@/lib/device-push");
+const { GET } = await import("@/app/api/r/route");
+
+const tag = `sweep-${crypto.randomUUID().slice(0, 8)}`;
+const userIds: string[] = [];
+const teacherIds: string[] = [];
+const categoryIds: string[] = [];
+const orderIds: string[] = [];
+const promoIds: string[] = [];
+const experimentIds: string[] = [];
+
+async function person(name: string) {
+  const id = crypto.randomUUID();
+  userIds.push(id);
+  await db.insert(schema.user).values({ id, name, email: `${tag}-${name}@example.com`, emailVerified: true });
+  return id;
+}
+
+async function tokenFor(userId: string) {
+  const raw = `bc_${crypto.randomUUID().replace(/-/g, "")}`;
+  await db.insert(schema.apiTokens).values({
+    id: crypto.randomUUID(),
+    userId,
+    tokenHash: hashToken(raw),
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  return raw;
+}
+
+describe("PR 7 weekday Bugbot sweep", () => {
+  afterAll(async () => {
+    if (orderIds.length) await db.delete(schema.orders).where(inArray(schema.orders.id, orderIds));
+    if (promoIds.length) await db.delete(schema.promoCodes).where(inArray(schema.promoCodes.id, promoIds));
+    if (experimentIds.length) await db.delete(schema.experiments).where(inArray(schema.experiments.id, experimentIds));
+    if (userIds.length) {
+      await db.delete(schema.notificationOutbox).where(inArray(schema.notificationOutbox.userId, userIds));
+      await db.delete(schema.analyticsEvents).where(inArray(schema.analyticsEvents.userId, userIds));
+      await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, userIds.map((id) => `book:${id}`)));
+    }
+    await db.delete(schema.analyticsEvents).where(sql`${schema.analyticsEvents.anonymousId} like ${`${tag}%`} or ${schema.analyticsEvents.properties}->>'experiment' = ${`${tag}-cta`}`);
+    await db.delete(schema.rateBuckets).where(sql`${schema.rateBuckets.key} like ${`%${tag}%`}`);
+    if (teacherIds.length) await db.delete(schema.teachers).where(inArray(schema.teachers.id, teacherIds));
+    if (userIds.length) await db.delete(schema.user).where(inArray(schema.user.id, userIds));
+    if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
+  });
+
+  it("drops a pack hold when the PaymentSheet call throws", async () => {
+    const owner = await person("pack-owner");
+    const student = await person("pack-student");
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-studio`, studioName: tag, status: "approved", bio: "", stripeChargesEnabled: true });
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId, slug: `${tag}-pack`, name: "Five", creditCount: 5, priceCents: 4000 });
+    const promoId = crypto.randomUUID();
+    promoIds.push(promoId);
+    await db.insert(schema.promoCodes).values({ id: promoId, code: `${tag}-PACK`.toUpperCase(), discountType: "percent", percentOffBps: 1000, appliesTo: "all", active: true, maxRedemptions: 5 });
+    const [studentRow] = await db.select().from(schema.user).where(eq(schema.user.id, student));
+    const result = await purchaseOffer({ userId: student, email: studentRow!.email, kind: "pack", id: packId, code: `${tag}-PACK`, paymentSheet: true, platform: "ios" });
+    expect(result.error).toMatch(/stripe down/);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.userId, student));
+    expect(order?.status).toBe("cancelled");
+    if (order) orderIds.push(order.id);
+    const [redemption] = await db.select().from(schema.promoRedemptions).where(eq(schema.promoRedemptions.orderId, order!.id));
+    expect(redemption?.reversed).toBe(true);
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.orderId, order!.id));
+    expect(purchase?.creditsRemaining).toBe(0);
+  });
+
+  it("stores the mobile platform on paid pack events", async () => {
+    const student = await person("ios-student");
+    const orderId = crypto.randomUUID();
+    orderIds.push(orderId);
+    await db.insert(schema.orders).values({
+      id: orderId,
+      userId: student,
+      kind: "pack",
+      status: "pending",
+      listPriceCents: 4000,
+      studentPaysCents: 4000,
+      paymentPath: "card",
+    });
+    await dispatchStripeEvent({
+      type: "payment_intent.succeeded",
+      data: { object: { id: `${tag}-pi`, metadata: { orderId, platform: "ios" } } },
+    } as never);
+    const rows = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "checkout_completed")));
+    expect(rows.map((row) => row.platform)).toEqual(["ios"]);
+    const offers = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "offer_purchased")));
+    expect(offers.map((row) => row.platform)).toEqual(["ios"]);
+    await fulfillPaidCheckout(orderId, `${tag}-pi`, null, "android");
+    const still = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "checkout_completed")));
+    expect(still).toHaveLength(1);
+  });
+
+  it("offers the vacated seat after a reschedule", async () => {
+    const categoryId = crypto.randomUUID();
+    categoryIds.push(categoryId);
+    await db.insert(schema.categories).values({ id: categoryId, name: "Acting", slug: `${tag}-acting` });
+    const owner = await person("move-owner");
+    const student = await person("move-student");
+    const waiting = await person("move-wait");
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-move`, studioName: tag, status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug: `${tag}-class`,
+      title: "Scene study",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 1,
+      durationMinutes: 60,
+      pricePerSessionCents: 2500,
+      status: "published",
+      waitlistEnabled: true,
+    });
+    const fromId = crypto.randomUUID();
+    const toId = crypto.randomUUID();
+    await db.insert(schema.sessions).values([
+      { id: fromId, classId, startsAt: new Date("2027-04-01T18:00:00Z"), endsAt: new Date("2027-04-01T19:00:00Z"), localDate: "2027-04-01", capacity: 1 },
+      { id: toId, classId, startsAt: new Date("2027-04-08T18:00:00Z"), endsAt: new Date("2027-04-08T19:00:00Z"), localDate: "2027-04-08", capacity: 1 },
+    ]);
+    const bookingId = crypto.randomUUID();
+    await db.insert(schema.bookings).values({ id: bookingId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId: fromId });
+    const waitId = crypto.randomUUID();
+    await db.insert(schema.waitlistEntries).values({ id: waitId, sessionId: fromId, userId: waiting, status: "waiting" });
+    const same = await rescheduleBooking(student, bookingId, fromId);
+    expect(same).toEqual({ ok: true });
+    const [stillWaiting] = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.id, waitId));
+    expect(stillWaiting?.status).toBe("waiting");
+    const moved = await rescheduleBooking(student, bookingId, toId);
+    expect(moved).toEqual({ ok: true });
+    const [offered] = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.id, waitId));
+    expect(offered?.status).toBe("offered");
+  });
+
+  it("requires the cancellation policy and shares the booking rate limit", async () => {
+    const student = await person("api-student");
+    const raw = await tokenFor(student);
+    const denied = await handleMobileApi(new Request("http://localhost/api/v1/bookings", {
+      method: "POST",
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "missing" }),
+    }), ["bookings"]);
+    expect(denied.status).toBe(400);
+    expect(await denied.json()).toEqual({ error: "Accept the cancellation policy to book." });
+    const bookings = await db.select().from(schema.bookings).where(eq(schema.bookings.userId, student));
+    expect(bookings).toHaveLength(0);
+
+    const capped = await person("capped-student");
+    const cappedToken = await tokenFor(capped);
+    await db.insert(schema.rateBuckets).values({ key: `book:${capped}`, windowStart: new Date(), count: 30 });
+    const limited = await handleMobileApi(new Request("http://localhost/api/v1/bookings", {
+      method: "POST",
+      headers: { authorization: `Bearer ${cappedToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "missing", policyAccepted: true }),
+    }), ["bookings"]);
+    expect(limited.status).toBe(429);
+    const pack = await handleMobileApi(new Request("http://localhost/api/v1/packs/purchase", {
+      method: "POST",
+      headers: { authorization: `Bearer ${cappedToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: "missing" }),
+    }), ["packs", "purchase"]);
+    expect(pack.status).toBe(429);
+  });
+
+  it("refuses a shared anonymous experiment subject", async () => {
+    const before = await db.select({ id: schema.analyticsEvents.id }).from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, "anonymous"));
+    const missing = await handleMobileApi(new Request(`http://localhost/api/v1/experiments/${tag}-cta`), ["experiments", `${tag}-cta`]);
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "Pass a subject id." });
+    const shared = await handleMobileApi(new Request(`http://localhost/api/v1/experiments/${tag}-cta?subject=anonymous`), ["experiments", `${tag}-cta`]);
+    expect(shared.status).toBe(400);
+    const after = await db.select({ id: schema.analyticsEvents.id }).from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, "anonymous"));
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("uses key order as control and ignores pre-exposure goals", async () => {
+    const experimentId = crypto.randomUUID();
+    experimentIds.push(experimentId);
+    await db.insert(schema.experiments).values({ id: experimentId, key: `${tag}-cta`, name: "CTA", status: "draft", goalEvent: "checkout_completed" });
+    await db.insert(schema.experimentVariants).values([
+      { id: crypto.randomUUID(), experimentId, key: "save_seat", weight: 1, payload: {} },
+      { id: crypto.randomUUID(), experimentId, key: "book_this", weight: 1, payload: {} },
+    ]);
+    const loaded = await loadExperiment(`${tag}-cta`);
+    expect(loaded?.variants.map((variant) => variant.key)).toEqual(["book_this", "save_seat"]);
+    const assigned = await assignExperiment(`${tag}-cta`, `${tag}-person`);
+    expect(assigned?.variant.key).toBe("book_this");
+    const exposureAt = new Date("2026-06-01T00:00:00Z");
+    await db.insert(schema.analyticsEvents).values([
+      { id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: `${tag}-early`, platform: "web", properties: { experiment: `${tag}-cta`, variant: "book_this" }, createdAt: exposureAt },
+      { id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: `${tag}-late`, platform: "web", properties: { experiment: `${tag}-cta`, variant: "book_this" }, createdAt: exposureAt },
+      { id: crypto.randomUUID(), name: "experiment_exposed", anonymousId: `${tag}-other`, platform: "web", properties: { experiment: `${tag}-cta`, variant: "save_seat" }, createdAt: exposureAt },
+      { id: crypto.randomUUID(), name: "checkout_completed", anonymousId: `${tag}-early`, platform: "web", properties: { orderId: `${tag}-old` }, createdAt: new Date("2026-01-01T00:00:00Z") },
+      { id: crypto.randomUUID(), name: "checkout_completed", anonymousId: `${tag}-late`, platform: "web", properties: { orderId: `${tag}-new` }, createdAt: new Date("2026-07-01T00:00:00Z") },
+    ]);
+    const report = await experimentResults(`${tag}-cta`);
+    expect(report?.variants.map((variant) => ({ key: variant.key, exposed: variant.exposed, converted: variant.converted }))).toEqual([
+      { key: "book_this", exposed: 2, converted: 1 },
+      { key: "save_seat", exposed: 1, converted: 0 },
+    ]);
+  });
+
+  it("does not retry email when device push throws, and skips push without a saved opt-in", async () => {
+    const quiet = await person("push-off");
+    await db.insert(schema.deviceTokens).values({ id: crypto.randomUUID(), userId: quiet, token: `${tag}-off`, platform: "ios", provider: "expo" });
+    const quietOutbox = crypto.randomUUID();
+    await db.insert(schema.notificationOutbox).values({ id: quietOutbox, userId: quiet, event: "booking.confirmed", title: "Booked", body: "See you there." });
+    vi.mocked(sendDevicePush).mockClear();
+    await deliverOutbox(quietOutbox);
+    expect(sendDevicePush).not.toHaveBeenCalled();
+    const [quietRow] = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.id, quietOutbox));
+    expect(quietRow?.status).toBe("sent");
+
+    const opted = await person("push-on");
+    await db.insert(schema.notificationPreferences).values({
+      id: crypto.randomUUID(),
+      userId: opted,
+      event: "booking.confirmed",
+      email: true,
+      inApp: false,
+      sms: false,
+      push: true,
+    });
+    await db.insert(schema.deviceTokens).values({ id: crypto.randomUUID(), userId: opted, token: `${tag}-on`, platform: "ios", provider: "expo" });
+    const outboxId = crypto.randomUUID();
+    await db.insert(schema.notificationOutbox).values({ id: outboxId, userId: opted, event: "booking.confirmed", title: "Booked", body: "See you there.", href: "/bookings" });
+    vi.mocked(sendEmail).mockClear();
+    await deliverOutbox(outboxId);
+    await deliverOutbox(outboxId);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const [row] = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.id, outboxId));
+    expect(row?.status).toBe("sent");
+  });
+
+  it("keeps tracking redirects on this site when the target has a backslash", async () => {
+    const bad = await GET(new Request(`http://localhost:3000/api/r?to=${encodeURIComponent("/\\evil.example")}`));
+    expect(bad.status).toBe(302);
+    expect(new URL(bad.headers.get("location")!).pathname).toBe("/");
+    const scheme = await GET(new Request(`http://localhost:3000/api/r?to=${encodeURIComponent("/foo://bar")}`));
+    expect(new URL(scheme.headers.get("location")!).pathname).toBe("/");
+    const ok = await GET(new Request("http://localhost:3000/api/r?to=/bookings"));
+    expect(ok.status).toBe(302);
+    expect(new URL(ok.headers.get("location")!).pathname).toBe("/bookings");
+  });
+});

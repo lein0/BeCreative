@@ -35,14 +35,14 @@ export async function dispatchStripeEvent(event: Stripe.Event) {
   if (event.type === "payment_intent.succeeded") {
     const intent = event.data.object;
     const orderId = intent.metadata?.orderId;
-    if (orderId) await fulfillPaidCheckout(orderId, intent.id, null);
+    if (orderId) await fulfillPaidCheckout(orderId, intent.id, null, intent.metadata?.platform);
   }
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
     const paymentIntent = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
     const subscription = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
-    if (orderId) await fulfillPaidCheckout(orderId, paymentIntent ?? null, subscription ?? null);
+    if (orderId) await fulfillPaidCheckout(orderId, paymentIntent ?? null, subscription ?? null, session.metadata?.platform);
   }
   if (event.type === "invoice.paid") {
     const renewal = paidInvoiceRenewal(event.data.object);

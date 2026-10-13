@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lateCancelFee, resolvedPolicy, studentCancelOutcome, teacherRefundChoice } from "@/lib/cancel-policy";
-import { channelsFor, defaultPrefs, prefSaveUserPatch, smsAllowedNow, unsubscribeUrl, withinQuietHours } from "@/lib/notify-prefs";
+import { channelsFor, defaultPrefs, devicePushWanted, prefSaveUserPatch, smsAllowedNow, unsubscribeUrl, withinQuietHours } from "@/lib/notify-prefs";
 import { packCreditsToRestore, partialRefundRemaining, promoReversesOnRefund, refundIdempotencyKey, seriesProrate } from "@/lib/refund-math";
 import { SHIP_DEFAULTS, policySummary } from "@/lib/ship-defaults";
 import { duplicateChargeBlocked, webhookShouldProcess } from "@/lib/webhook-idempotency";
@@ -71,6 +71,9 @@ describe("refund math", () => {
 describe("notification preferences", () => {
   it("defaults teachers and students to email and in-app, with SMS and push off", () => {
     expect(defaultPrefs("booking.created", "teacher")).toMatchObject({ email: true, inApp: true, sms: false, push: false, cadence: "instant" });
+    expect(devicePushWanted(undefined, 1)).toBe(false);
+    expect(devicePushWanted(true, 1)).toBe(true);
+    expect(devicePushWanted(false, 2)).toBe(false);
     const channels = channelsFor(defaultPrefs("booking.confirmed", "student"), { unsubscribed: false, webPushEnabled: false, smsConfigured: false });
     expect(channels).toMatchObject({ email: true, inApp: true, sms: false, push: false, digest: false });
     expect(channelsFor({ ...defaultPrefs("booking.confirmed", "student"), email: true }, { unsubscribed: true, webPushEnabled: true, smsConfigured: true }).email).toBe(false);

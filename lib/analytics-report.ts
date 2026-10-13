@@ -1,7 +1,6 @@
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import { funnelReport } from "@/lib/analytics-math";
 import { STUDENT_FUNNEL, TEACHER_FUNNEL } from "@/lib/analytics-events";
-import { twoProportionZ, variantScore } from "@/lib/analytics-math";
+import { countConversionsAfterExposure, funnelReport, orderedByKey, twoProportionZ, variantScore } from "@/lib/analytics-math";
 import { db } from "@/lib/db";
 import {
   analyticsEvents,
@@ -280,14 +279,17 @@ export async function shareConversions(teacherId: string) {
 export async function experimentResults(key: string) {
   const [experiment] = await db.select().from(experiments).where(eq(experiments.key, key)).limit(1);
   if (!experiment) return null;
-  const variants = await db.select().from(experimentVariants).where(eq(experimentVariants.experimentId, experiment.id));
+  const variants = orderedByKey(await db.select().from(experimentVariants).where(eq(experimentVariants.experimentId, experiment.id)));
   const exposures = await db.select().from(analyticsEvents).where(and(eq(analyticsEvents.name, "experiment_exposed"), sql`${analyticsEvents.properties}->>'experiment' = ${key}`));
   const goals = await db.select().from(analyticsEvents).where(eq(analyticsEvents.name, experiment.goalEvent));
-  const goalSubjects = new Set(goals.map(subjectOf).filter(Boolean));
+  const goalRows = goals.map((event) => ({ subject: subjectOf(event), at: event.createdAt.getTime() })).filter((event) => event.subject);
   const scores = variants.map((variant) => {
-    const seen = new Set(exposures.filter((event) => event.properties.variant === variant.key).map(subjectOf).filter(Boolean));
-    const converted = [...seen].filter((subject) => goalSubjects.has(subject)).length;
-    return { key: variant.key, weight: variant.weight, ...variantScore(seen.size, converted) };
+    const seen = exposures
+      .filter((event) => event.properties.variant === variant.key)
+      .map((event) => ({ subject: subjectOf(event), at: event.createdAt.getTime() }))
+      .filter((event) => event.subject);
+    const counted = countConversionsAfterExposure({ exposures: seen, goals: goalRows });
+    return { key: variant.key, weight: variant.weight, ...variantScore(counted.exposed, counted.converted) };
   });
   const control = scores[0];
   const compared = scores.slice(1).map((score) => ({

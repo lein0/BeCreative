@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
 import { ANON_COOKIE, ANON_HEADER, experimentSubject } from "@/lib/anon";
-import { assignVariant } from "@/lib/analytics-math";
+import { assignVariant, orderedByKey } from "@/lib/analytics-math";
 import { capture } from "@/lib/analytics";
 import { db } from "@/lib/db";
 import { analyticsEvents, experimentVariants, experiments } from "@/lib/db/schema";
@@ -9,7 +9,7 @@ import { analyticsEvents, experimentVariants, experiments } from "@/lib/db/schem
 export async function loadExperiment(key: string) {
   const [experiment] = await db.select().from(experiments).where(eq(experiments.key, key)).limit(1);
   if (!experiment) return null;
-  const variants = await db.select().from(experimentVariants).where(eq(experimentVariants.experimentId, experiment.id));
+  const variants = orderedByKey(await db.select().from(experimentVariants).where(eq(experimentVariants.experimentId, experiment.id)));
   return { experiment, variants };
 }
 
@@ -70,5 +70,6 @@ export async function subjectFromCookies(userId?: string | null) {
 
 export async function serverExperiment(key: string, userId?: string | null, platform?: string) {
   const subject = await subjectFromCookies(userId);
+  if (!subject) return null;
   return exposeExperiment(key, subject, userId, platform);
 }

@@ -5,8 +5,11 @@ import { isCatalogEvent } from "@/lib/analytics-events";
 const PIXEL = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
 
 function sameOriginPath(raw: string | null) {
-  if (!raw) return "/";
-  if (raw.startsWith("/") && !raw.startsWith("//")) return raw;
+  if (!raw || raw.includes("\\")) return "/";
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    if (raw.includes("://")) return "/";
+    return raw;
+  }
   try {
     const url = new URL(raw);
     if (url.origin === new URL(appOrigin()).origin) return `${url.pathname}${url.search}`;
