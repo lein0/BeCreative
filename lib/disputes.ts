@@ -1,4 +1,4 @@
-import { and, arrayContains, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { classHasStarted, disputeLiability, disputeUpdateFromStripe, disputeAcceptsEvidence, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, refreshCheckedInEvidence, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
 import { textPdf } from "@/lib/evidence-pdf";
 import { db } from "@/lib/db";
@@ -47,11 +47,10 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
   const [visit] = booking ? [] : await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
   const [service] = visit ? await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1) : [];
   const links = booking ? await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id)) : [];
-  const sessionRows = links.length ? await db.select().from(sessions).where(eq(sessions.id, links[0]!.sessionId)) : [];
+  const sessionRows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
+  const orderedSessions = [...sessionRows].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
   const [acceptance] = await db.select().from(policyAcceptances).where(eq(policyAcceptances.orderId, order.id)).limit(1);
-  const emailRows = order.teacherId && person?.email
-    ? await db.select().from(emailOutbox).where(and(eq(emailOutbox.teacherId, order.teacherId), arrayContains(emailOutbox.toAddresses, [person.email]))).limit(5)
-    : [];
+  const emailRows = order.teacherId ? await db.select().from(emailOutbox).where(eq(emailOutbox.teacherId, order.teacherId)) : [];
   const history = order.userId ? await db.select().from(bookings).where(eq(bookings.userId, order.userId)) : [];
   const classIds = [...new Set(history.map((row) => row.classId))];
   const historyClasses = classIds.length ? await db.select().from(classes).where(inArray(classes.id, classIds)) : [];
@@ -74,7 +73,7 @@ export async function assemblePacket(orderId: string | null): Promise<EvidencePa
     customerName: person?.name || "Customer",
     customerEmail: person?.email || "",
     productDescription: klass ? `${klass.title}. ${klass.description}` : service ? `${service.title}. ${service.description}` : order.kind,
-    sessionWhen: sessionRows[0]?.startsAt.toISOString() ?? visit?.startsAt.toISOString() ?? "not recorded",
+    sessionWhen: orderedSessions.length ? orderedSessions.map((session) => session.startsAt.toISOString()).join(", ") : visit?.startsAt.toISOString() ?? "not recorded",
     policyText: acceptance?.policyText || empty.policyText,
     acceptedAt: acceptance?.acceptedAt.toISOString() ?? null,
     acceptedIp: acceptance?.ip ?? null,
@@ -151,6 +150,42 @@ export async function recordDispute(input: { id: string; paymentIntentId?: strin
   return { id: input.id, evidence };
 }
 
+async function orderCheckedIn(orderId: string | null | undefined) {
+  if (!orderId) return false;
+  const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, orderId)).limit(1);
+  if (!booking) return false;
+  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
+  return links.some((link) => link.checkedIn);
+}
+
+async function persistCheckedIn(dispute: { id: string; summary: string; evidence: Record<string, string> | null }) {
+  const refreshed = refreshCheckedInEvidence({
+    summary: dispute.summary,
+    evidence: dispute.evidence ?? {},
+    incomingEvidence: {},
+    attendanceConfirmed: true,
+  });
+  await db.update(disputes).set({
+    summary: refreshed.summary,
+    evidence: refreshed.evidence,
+    attendanceConfirmed: true,
+    updatedAt: new Date(),
+  }).where(eq(disputes.id, dispute.id));
+  return refreshed;
+}
+
+/** Roster check-in has to reach an open dispute without waiting for another Stripe event. */
+export async function recordCheckInForDisputes(orderId: string | null | undefined) {
+  if (!orderId || !(await orderCheckedIn(orderId))) return;
+  const rows = await db.select().from(disputes).where(eq(disputes.orderId, orderId));
+  const now = new Date();
+  for (const dispute of rows) {
+    if (dispute.evidenceStatus === "submitted" || dispute.evidenceStatus === "held" || !disputeAcceptsEvidence(dispute.status)) continue;
+    await persistCheckedIn(dispute);
+    await ensureQueuedJob("dispute.submit", { disputeId: dispute.id }, now, `dispute-submit:${dispute.id}`);
+  }
+}
+
 type SubmitResult = { ok: boolean; replayed?: boolean; skipped?: boolean; waiting?: boolean; retry?: boolean; error?: string; runAt?: Date };
 
 export async function submitDispute(disputeId: string, actorUserId?: string | null): Promise<SubmitResult> {
@@ -160,10 +195,19 @@ export async function submitDispute(disputeId: string, actorUserId?: string | nu
   const policy = await settings();
   const now = new Date();
   if (!actorUserId && (row.evidenceStatus === "held" || !policy.autoSubmit)) return { ok: true, skipped: true };
+  let summary = row.summary;
+  let evidence = row.evidence ?? {};
+  let attendanceConfirmed = row.attendanceConfirmed;
+  if (await orderCheckedIn(row.orderId)) {
+    const refreshed = await persistCheckedIn(row);
+    summary = refreshed.summary;
+    evidence = refreshed.evidence;
+    attendanceConfirmed = true;
+  }
   const ready = shouldAutoSubmit({
     autoSubmit: policy.autoSubmit || Boolean(actorUserId),
     held: false,
-    attendanceConfirmed: row.attendanceConfirmed,
+    attendanceConfirmed,
     dueBy: row.dueBy,
     now,
     leadHours: policy.leadHours,
@@ -172,7 +216,7 @@ export async function submitDispute(disputeId: string, actorUserId?: string | nu
     return { ok: true, waiting: true, runAt: nextDisputeSubmitAt({ dueBy: row.dueBy, leadHours: policy.leadHours, now, retry: false }) };
   }
   const notes = await db.select().from(disputeNotes).where(eq(disputeNotes.disputeId, row.id));
-  const packet = withTeacherNotes(row.summary, row.evidence ?? {}, notes.map((note) => note.body));
+  const packet = withTeacherNotes(summary, evidence, notes.map((note) => note.body));
   const pdf = textPdf(`Dispute ${row.id}`, packet.summary);
   const stripe = getStripe();
   if (!stripe) {

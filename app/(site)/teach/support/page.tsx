@@ -33,12 +33,16 @@ async function Body() {
             {messages.filter((message) => message.ticketId === ticket.id && !message.internal).map((message) => (
               <p key={message.id} className="mt-2 text-sm">{message.body}</p>
             ))}
-            <form action={supportReplyAction} className="mt-3 space-y-2">
-              <input type="hidden" name="ticketId" value={ticket.id} />
-              <input type="hidden" name="back" value="/teach/support" />
-              <label className="block text-sm">Reply<textarea name="body" required className={`${control} mt-1 min-h-20`} /></label>
-              <button className="rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Send</button>
-            </form>
+            {ticket.status === "merged" ? (
+              <p className="mt-3 text-sm text-ink/60">Merged. New replies go on the other ticket.</p>
+            ) : (
+              <form action={supportReplyAction} className="mt-3 space-y-2">
+                <input type="hidden" name="ticketId" value={ticket.id} />
+                <input type="hidden" name="back" value="/teach/support" />
+                <label className="block text-sm">Reply<textarea name="body" required className={`${control} mt-1 min-h-20`} /></label>
+                <button className="rounded-full bg-ink px-3 py-1.5 text-sm text-paper">Send</button>
+              </form>
+            )}
           </Panel>
         ))}
         {!rows.length ? <p className="text-ink/60">No student tickets.</p> : null}

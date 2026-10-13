@@ -1,13 +1,20 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { cannedReplies, platformSettings, teachers, ticketMessages, tickets, user } from "@/lib/db/schema";
+import { cannedReplies, platformSettings, teachers, ticketMessages, tickets, user, userRoles } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
 import { routeTicket, slaDue } from "@/lib/ticket-routing";
-import { SHIP_DEFAULTS } from "@/lib/ship-defaults";
+import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 
 async function slaHours() {
   const [row] = await db.select().from(platformSettings).limit(1);
   return row?.ticketTeacherSlaHours ?? SHIP_DEFAULTS.ticketTeacherSlaHours;
+}
+
+async function notifyAdmins(input: { event: NotificationEvent; title: string; body: string; href: string }) {
+  const admins = await db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, "admin"));
+  for (const admin of admins) {
+    await emitNotification({ userId: admin.userId, event: input.event, audience: "teacher", title: input.title, body: input.body, href: input.href });
+  }
 }
 
 export async function openTicket(input: { userId: string; teacherId?: string | null; bookingId?: string | null; orderId?: string | null; category: string; subject: string; body: string; priority?: string }) {
@@ -31,7 +38,7 @@ export async function openTicket(input: { userId: string; teacherId?: string | n
   await db.insert(ticketMessages).values({ id: crypto.randomUUID(), ticketId: id, authorUserId: input.userId, body: input.body });
   const [person] = await db.select().from(user).where(eq(user.id, input.userId)).limit(1);
   if (person) {
-    await emitNotification({ userId: person.id, event: "ticket.updated", audience: "student", title: `We opened “${input.subject}”`, body: "You will get a reply here and by email.", href: `/help` });
+    await emitNotification({ userId: person.id, event: "ticket.updated", audience: "student", title: `We opened “${input.subject}”`, body: "You will get a reply here and by email.", href: `/help/tickets/${id}` });
   }
   if (route.owner === "teacher" && input.teacherId) {
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, input.teacherId)).limit(1);
@@ -39,18 +46,26 @@ export async function openTicket(input: { userId: string; teacherId?: string | n
       await emitNotification({ userId: teacher.userId, event: "ticket.created", audience: "teacher", title: `Student question: ${input.subject}`, body: input.body, href: "/teach/support" });
     }
   }
+  if (route.owner === "admin") {
+    await notifyAdmins({ event: "ticket.created", title: `Support: ${input.subject}`, body: input.body, href: `/admin/support/${id}` });
+  }
   return { id, route: route.owner };
 }
 
 export async function replyToTicket(input: { ticketId: string; authorUserId: string; body: string; internal?: boolean; teacherSide?: boolean }) {
-  await db.insert(ticketMessages).values({ id: crypto.randomUUID(), ticketId: input.ticketId, authorUserId: input.authorUserId, body: input.body, internal: Boolean(input.internal) });
-  await db.update(tickets).set({ updatedAt: new Date(), status: input.internal ? "open" : "waiting" }).where(eq(tickets.id, input.ticketId));
+  const [source] = await db.select().from(tickets).where(eq(tickets.id, input.ticketId)).limit(1);
+  if (!source) return;
+  const destinationId = source.status === "merged" && source.mergedIntoId ? source.mergedIntoId : source.id;
+  const [ticket] = destinationId === source.id ? [source] : await db.select().from(tickets).where(eq(tickets.id, destinationId)).limit(1);
+  if (!ticket || ticket.status === "merged") return;
+  await db.insert(ticketMessages).values({ id: crypto.randomUUID(), ticketId: ticket.id, authorUserId: input.authorUserId, body: input.body, internal: Boolean(input.internal) });
+  const studentWrote = Boolean(ticket.userId && ticket.userId === input.authorUserId);
+  await db.update(tickets).set({ updatedAt: new Date(), status: input.internal || studentWrote ? "open" : "waiting" }).where(eq(tickets.id, ticket.id));
   if (!input.internal) {
-    const [ticket] = await db.select().from(tickets).where(eq(tickets.id, input.ticketId)).limit(1);
-    if (ticket?.userId && ticket.userId !== input.authorUserId) {
-      await emitNotification({ userId: ticket.userId, event: "ticket.updated", audience: "student", title: `Reply: ${ticket.subject}`, body: input.body, href: "/help" });
+    if (ticket.userId && ticket.userId !== input.authorUserId) {
+      await emitNotification({ userId: ticket.userId, event: "ticket.updated", audience: "student", title: `Reply: ${ticket.subject}`, body: input.body, href: `/help/tickets/${ticket.id}` });
     }
-    if (input.teacherSide && ticket?.teacherId) {
+    if (input.teacherSide && ticket.teacherId) {
       const [teacher] = await db.select().from(teachers).where(eq(teachers.id, ticket.teacherId)).limit(1);
       if (teacher && teacher.userId !== input.authorUserId) {
         await emitNotification({ userId: teacher.userId, event: "ticket.updated", audience: "teacher", title: `Reply: ${ticket.subject}`, body: input.body, href: "/teach/support" });
@@ -90,14 +105,16 @@ export async function recordCsat(ticketId: string, score: number) {
 
 export async function escalateDueTickets(now = new Date()) {
   const hours = await slaHours();
-  const open = await db.select().from(tickets).where(and(eq(tickets.route, "teacher"), isNull(tickets.escalatedAt), or(eq(tickets.status, "open"), eq(tickets.status, "waiting"))));
+  const routed = await db.select().from(tickets).where(eq(tickets.route, "teacher"));
   let count = 0;
-  for (const ticket of open) {
+  for (const ticket of routed) {
+    if (ticket.escalatedAt || (ticket.status !== "open" && ticket.status !== "waiting")) continue;
     const replies = await db.select().from(ticketMessages).where(eq(ticketMessages.ticketId, ticket.id));
     const teacherReplied = replies.some((message) => message.authorUserId && message.authorUserId !== ticket.userId && !message.internal);
     const decision = routeTicket({ category: ticket.category, createdAt: ticket.createdAt, now, slaHours: hours, teacherReplied });
     if (decision.escalate) {
       await db.update(tickets).set({ route: "admin", escalatedAt: now, updatedAt: now }).where(eq(tickets.id, ticket.id));
+      await notifyAdmins({ event: "ticket.updated", title: `Escalated: ${ticket.subject}`, body: "The teacher reply window passed.", href: `/admin/support/${ticket.id}` });
       count += 1;
     }
   }

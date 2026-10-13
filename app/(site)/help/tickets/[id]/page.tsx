@@ -35,7 +35,9 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
           </Panel>
         ))}
       </div>
-      {ticket.status === "resolved" ? (
+      {ticket.status === "merged" && ticket.mergedIntoId ? (
+        <p className="mt-6 text-sm"><Link href={`/help/tickets/${ticket.mergedIntoId}`} className="text-clay">This ticket was merged. Continue on the other thread.</Link></p>
+      ) : ticket.status === "resolved" ? (
         <form action={supportReplyAction} className="mt-6 flex flex-wrap items-end gap-2">
           <input type="hidden" name="ticketId" value={ticket.id} />
           <input type="hidden" name="command" value="csat" />

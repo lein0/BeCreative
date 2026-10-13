@@ -26,7 +26,7 @@ export async function ticketAction(formData: FormData) {
   if (bookingId && (!booking || booking.userId !== actor.id)) redirect("/help?error=That%20booking%20is%20not%20on%20your%20account.");
   const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];
   const category = text(formData, "category") || "class";
-  await openTicket({
+  const opened = await openTicket({
     userId: actor.id,
     teacherId: klass?.teacherId,
     bookingId: bookingId || null,
@@ -36,7 +36,7 @@ export async function ticketAction(formData: FormData) {
     body: text(formData, "body"),
     priority: text(formData, "priority") || "normal",
   });
-  redirect(category === "safety" ? "/help/safety?sent=1" : "/help?sent=1");
+  redirect(`/help/tickets/${opened.id}`);
 }
 
 export async function supportReplyAction(formData: FormData) {

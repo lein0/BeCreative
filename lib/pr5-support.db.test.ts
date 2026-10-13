@@ -76,7 +76,7 @@ describe("support actions", () => {
   it("opens a ticket for the actor's own booking", async () => {
     seedTable(schema.bookings, [{ id: "book-mine", userId: "student-1", classId: "class-1", orderId: "ord-1" }]);
     seedTable(schema.classes, [{ id: "class-1", teacherId: "teacher-1" }]);
-    await expect(ticketAction(form({ bookingId: "book-mine", subject: "Hi", body: "Help", category: "class" }))).rejects.toThrow("REDIRECT:/help?sent=1");
+    await expect(ticketAction(form({ bookingId: "book-mine", subject: "Hi", body: "Help", category: "class" }))).rejects.toThrow("REDIRECT:/help/tickets/new");
     expect(supportBox.openTicket).toHaveBeenCalledWith(expect.objectContaining({ userId: "student-1", teacherId: "teacher-1", bookingId: "book-mine", orderId: "ord-1" }));
   });
 

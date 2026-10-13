@@ -40,7 +40,7 @@ async function Body({ searchParams }: { searchParams: Promise<{ q?: string; sent
         ))}
         {!matches.length ? <p className="text-ink/60">Nothing matched. <Link className="text-clay" href="/help/safety">Report a problem</Link></p> : null}
       </div>
-      <p className="mt-8 text-sm"><Link href="/help/safety" className="text-clay">Report a problem or a safety concern</Link></p>
+      <p className="mt-8 text-sm"><Link href="/help/tickets" className="text-clay">Your tickets</Link> · <Link href="/help/safety" className="text-clay">Report a problem or a safety concern</Link></p>
     </div>
   );
 }

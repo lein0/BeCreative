@@ -19,7 +19,7 @@ vi.mock("@/lib/stripe", () => ({
 
 const { readTable, resetFakeDb, seedTable } = await import("@/lib/test/fake-db");
 const schema = await import("@/lib/db/schema");
-const { assemblePacket, handleEarlyFraud, recordDispute, submitDispute } = await import("@/lib/disputes");
+const { assemblePacket, handleEarlyFraud, recordCheckInForDisputes, recordDispute, submitDispute } = await import("@/lib/disputes");
 
 describe("dispute persistence", () => {
   beforeEach(() => {
@@ -216,5 +216,69 @@ describe("dispute persistence", () => {
     await recordDispute({ id: "dp_ci", paymentIntentId: "pi_ci", amountCents: 2000, reason: "general", status: "under_review" });
     expect(String(evidence().uncategorized_text)).toContain("Check-in: yes");
     expect(dispute.attendanceConfirmed).toBe(true);
+  });
+
+  it("files every series date and matches the customer's email regardless of case", async () => {
+    seedTable(schema.orders, [{ id: "ord_series", userId: "student-a", teacherId: "studio-a", kind: "series", studentPaysCents: 9000, refundedCents: 0 }]);
+    seedTable(schema.user, [{ id: "student-a", name: "Ava", email: "ava@example.com" }]);
+    seedTable(schema.classes, [{ id: "class-a", teacherId: "studio-a", title: "Series", description: "Four weeks", whatToBring: "", outcomes: "" }]);
+    seedTable(schema.bookings, [{ id: "book-series", orderId: "ord_series", classId: "class-a", userId: "student-a", status: "confirmed" }]);
+    seedTable(schema.bookingSessions, [
+      { id: "link-late", bookingId: "book-series", sessionId: "sess-late", checkedIn: false },
+      { id: "link-early", bookingId: "book-series", sessionId: "sess-early", checkedIn: false },
+    ]);
+    seedTable(schema.sessions, [
+      { id: "sess-late", startsAt: new Date("2026-11-03T19:00:00.000Z") },
+      { id: "sess-early", startsAt: new Date("2026-10-13T19:00:00.000Z") },
+    ]);
+    seedTable(schema.emailOutbox, [
+      { id: "e-case", teacherId: "studio-a", toAddresses: ["Ava@Example.com"], subject: "Series reminder" },
+      { id: "e-other", teacherId: "studio-a", toAddresses: ["other@example.com"], subject: "Someone else's receipt" },
+    ]);
+    const packet = await assemblePacket("ord_series");
+    expect(packet.sessionWhen).toContain("2026-10-13T19:00:00.000Z");
+    expect(packet.sessionWhen).toContain("2026-11-03T19:00:00.000Z");
+    expect(packet.sessionWhen.indexOf("2026-10-13")).toBeLessThan(packet.sessionWhen.indexOf("2026-11-03"));
+    expect(packet.emailsSent).toContain("Series reminder");
+    expect(packet.emailsSent).not.toContain("Someone else's receipt");
+  });
+
+  it("files a check-in that happens after the dispute opens", async () => {
+    const due = new Date(Date.now() + 10 * 24 * 3_600_000);
+    seedTable(schema.disputes, [{
+      id: "dp_late",
+      orderId: "ord_late",
+      evidenceStatus: "assembling",
+      attendanceConfirmed: false,
+      status: "needs_response",
+      summary: "Check-in: no",
+      evidence: { uncategorized_text: "Check-in: no" },
+      dueBy: due,
+      reason: "product_not_received",
+    }]);
+    seedTable(schema.jobs, [{
+      id: "job-late",
+      kind: "dispute.submit",
+      payload: { disputeId: "dp_late" },
+      status: "queued",
+      runAt: new Date(due.getTime() - 48 * 3_600_000),
+      attempts: 0,
+      idempotencyKey: "dispute-submit:dp_late",
+    }]);
+    seedTable(schema.bookings, [{ id: "book-late", orderId: "ord_late", classId: "class-a", userId: "student-a", status: "confirmed" }]);
+    seedTable(schema.bookingSessions, [{ id: "link-late", bookingId: "book-late", sessionId: "sess-late", checkedIn: true }]);
+    await recordCheckInForDisputes("ord_late");
+    const dispute = readTable(schema.disputes).find((row) => row.id === "dp_late")!;
+    expect(dispute.attendanceConfirmed).toBe(true);
+    expect(String((dispute.evidence as { uncategorized_text?: string }).uncategorized_text)).toContain("Check-in: yes");
+    expect((readTable(schema.jobs)[0]?.runAt as Date).getTime()).toBeLessThan(Date.now() + 5_000);
+
+    const update = vi.fn(async () => ({}));
+    stripeState.client = { files: { create: vi.fn(async () => ({ id: "file_late" })) }, disputes: { update } };
+    const filed = await submitDispute("dp_late");
+    expect(filed.ok).toBe(true);
+    const sent = update.mock.calls[0] as unknown as [string, { evidence: { uncategorized_text: string }; submit: boolean }];
+    expect(sent[1].evidence.uncategorized_text).toContain("Check-in: yes");
+    expect(sent[1].submit).toBe(true);
   });
 });
