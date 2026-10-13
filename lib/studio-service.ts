@@ -128,6 +128,45 @@ async function notifySession(sessionId: string, subject: string, text: string) {
   await sendIndividually({ recipients: emails, subject, text });
 }
 
+function classPlace(teacher: typeof teachers.$inferSelect, input: { venueName?: string; address?: string; neighborhood?: string; city?: string; postalCode?: string }) {
+  return {
+    name: input.venueName || teacher.studioName || teacher.slug,
+    addressLine1: input.address || "",
+    city: input.city || "Los Angeles",
+    state: "CA",
+    postalCode: input.postalCode || "90000",
+    neighborhood: input.neighborhood || "Los Angeles",
+  };
+}
+
+function samePlace(
+  current: { addressLine1: string; city: string; postalCode: string; neighborhood: string },
+  next: { addressLine1: string; city: string; postalCode: string; neighborhood: string },
+) {
+  return current.addressLine1 === next.addressLine1 && current.city === next.city && current.postalCode === next.postalCode && current.neighborhood === next.neighborhood;
+}
+
+async function saveClassLocation(
+  teacher: typeof teachers.$inferSelect,
+  input: { venueName?: string; address?: string; neighborhood?: string; city?: string; postalCode?: string },
+  existing: typeof locations.$inferSelect | undefined,
+) {
+  const place = classPlace(teacher, input);
+  if (existing && samePlace(existing, place)) {
+    if ((existing.name ?? "") !== place.name) await db.update(locations).set({ name: place.name }).where(eq(locations.id, existing.id));
+    return existing.id;
+  }
+  const geo = await geocoder().geocode(`${place.addressLine1}, ${place.neighborhood} ${place.city}`);
+  const coords = { lat: geo?.lat ?? 34.05, lng: geo?.lng ?? -118.25 };
+  if (existing) {
+    await db.update(locations).set({ ...place, ...coords }).where(eq(locations.id, existing.id));
+    return existing.id;
+  }
+  const locationId = crypto.randomUUID();
+  await db.insert(locations).values({ id: locationId, ...place, ...coords, isDemo: teacher.isDemo });
+  return locationId;
+}
+
 export async function saveClass(input: {
   actorUserId: string;
   teacherId: string;
@@ -163,22 +202,15 @@ export async function saveClass(input: {
   if (!teacher) return { error: "Teacher not found." };
   if (input.delivery === "virtual" && !input.virtualLink) return { error: "Add a virtual meeting link." };
   if (input.delivery === "in_person" && !input.address) return { error: "In-person classes need an address." };
+  const [existingClass] = input.classId
+    ? await db.select({ locationId: classes.locationId }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id))).limit(1)
+    : [];
+  const [existingLocation] = existingClass?.locationId
+    ? await db.select().from(locations).where(eq(locations.id, existingClass.locationId)).limit(1)
+    : [];
   let locationId: string | null = null;
   if (input.delivery === "in_person" && input.address) {
-    const geo = await geocoder().geocode(`${input.address}, ${input.neighborhood ?? ""} ${input.city ?? "Los Angeles"}`);
-    locationId = crypto.randomUUID();
-    await db.insert(locations).values({
-      id: locationId,
-      name: input.venueName || teacher.studioName || teacher.slug,
-      addressLine1: input.address,
-      city: input.city || "Los Angeles",
-      state: "CA",
-      postalCode: input.postalCode || "90000",
-      neighborhood: input.neighborhood || "Los Angeles",
-      lat: geo?.lat ?? 34.05,
-      lng: geo?.lng ?? -118.25,
-      isDemo: teacher.isDemo,
-    });
+    locationId = await saveClassLocation(teacher, input, existingLocation);
   }
   const status = input.publish && teacher.status === "approved" ? "published" : "draft";
   const classId = input.classId ?? crypto.randomUUID();

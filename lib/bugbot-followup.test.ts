@@ -3,9 +3,10 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 config({ path: ".env.local" });
 
-const { refundCreate, checkoutRetrieve } = vi.hoisted(() => ({
+const { refundCreate, checkoutRetrieve, checkoutExpire } = vi.hoisted(() => ({
   refundCreate: vi.fn(async () => ({ id: "re_test" })),
   checkoutRetrieve: vi.fn(async () => ({ status: "expired", payment_status: "unpaid" })),
+  checkoutExpire: vi.fn(async () => ({})),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -20,7 +21,7 @@ vi.mock("@/lib/stripe", async () => {
     stripeConfigured: () => true,
     getStripe: () => ({
       refunds: { create: refundCreate },
-      checkout: { sessions: { retrieve: checkoutRetrieve, expire: vi.fn(async () => ({})) } },
+      checkout: { sessions: { retrieve: checkoutRetrieve, expire: checkoutExpire } },
     }),
     createCheckout: vi.fn(async () => {
       throw new Error("stripe down");
@@ -42,7 +43,7 @@ const { bookSession, cancelBooking, confirmedCount, purchaseOffer, renewMembersh
 const { sendEmail, sendIndividually } = await import("@/lib/email");
 const { createCheckout } = await import("@/lib/stripe");
 const { classDetail, teacherProfile } = await import("@/lib/queries");
-const { manualBook, setPaused, syncRule } = await import("@/lib/studio-service");
+const { manualBook, saveClass, setPaused, syncRule } = await import("@/lib/studio-service");
 
 const tag = `bugbot-${crypto.randomUUID().slice(0, 8)}`;
 const userIds: string[] = [];
@@ -113,7 +114,7 @@ describe("Bugbot follow-ups", () => {
     await syncRule(recurrenceId, "2026-10-08");
     const before = await db.select().from(schema.sessions).where(eq(schema.sessions.recurrenceId, recurrenceId));
     expect(before.length).toBeGreaterThan(0);
-    const bookedSession = before.find((session) => session.localDate >= "2026-10-08");
+    const bookedSession = before.find((session) => session.localDate >= "2026-10-19");
     expect(bookedSession).toBeTruthy();
     const bookingId = crypto.randomUUID();
     await db.insert(schema.bookings).values({
@@ -586,5 +587,134 @@ describe("Bugbot follow-ups", () => {
     expect(checkoutRetrieve).not.toHaveBeenCalled();
     const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
     expect(order?.status).toBe("pending");
+  });
+
+  it("expires an open Stripe checkout when a student cancels an unpaid hold", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("hold-owner");
+    const student = await person("hold-student");
+    const teacherId = await studio(owner, `${tag}-hold`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-hold-class`, title: "Hold", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-08-01T18:00:00Z"), endsAt: new Date("2027-08-01T19:00:00Z"), localDate: "2027-08-01", capacity: 8,
+    });
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    const checkoutId = `cs_hold_${tag}`;
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: checkoutId,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockResolvedValue({ status: "open", payment_status: "unpaid" });
+    checkoutExpire.mockClear();
+    refundCreate.mockClear();
+    const result = await cancelBooking(student, bookingId);
+    expect(result).toEqual({ ok: true });
+    expect(checkoutExpire).toHaveBeenCalledWith(checkoutId);
+    expect(refundCreate).not.toHaveBeenCalled();
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("cancelled");
+    const [booking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
+    expect(booking?.status).toBe("cancelled");
+    checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
+  });
+
+  it("refunds an order that becomes paid while the student is cancelling", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("race-owner");
+    const student = await person("race-student");
+    const teacherId = await studio(owner, `${tag}-race`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-race-class`, title: "Race", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-09-01T18:00:00Z"), endsAt: new Date("2027-09-01T19:00:00Z"), localDate: "2027-09-01", capacity: 8,
+    });
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    const paymentIntent = `pi_race_${tag}`;
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_race_${tag}`,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockResolvedValue({ status: "open", payment_status: "unpaid" });
+    checkoutExpire.mockImplementation(async () => {
+      await db.update(schema.orders).set({ status: "paid", stripePaymentIntentId: paymentIntent }).where(eq(schema.orders.id, orderId));
+      return {};
+    });
+    refundCreate.mockClear();
+    const result = await cancelBooking(student, bookingId);
+    expect(result).toEqual({ ok: true });
+    expect(refundCreate).toHaveBeenCalledWith({ payment_intent: paymentIntent });
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("refunded");
+    checkoutExpire.mockReset();
+    checkoutExpire.mockResolvedValue({});
+    checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
+  });
+
+  it("reuses the location row when an in-person class is edited", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("loc-owner");
+    const teacherId = await studio(owner, `${tag}-loc`);
+    const place = {
+      actorUserId: owner,
+      teacherId,
+      delegated: false,
+      title: "Pin class",
+      description: "",
+      outcomes: "",
+      prerequisites: "",
+      whatToBring: "",
+      categoryId: cat,
+      skillLevel: "all",
+      format: "class",
+      delivery: "in_person",
+      maxSize: 10,
+      durationMinutes: 60,
+      pricePerSessionCents: 2000,
+      pricePerSeriesCents: null,
+      seriesBookingEnabled: false,
+      firstClassFree: false,
+      waitlistEnabled: false,
+      publish: true,
+      venueName: "Room A",
+      address: "100 Hollywood Blvd",
+      neighborhood: "Hollywood",
+      city: "Los Angeles",
+      postalCode: "90028",
+    };
+    const created = await saveClass(place);
+    if ("error" in created) throw new Error(created.error);
+    const [first] = await db.select().from(schema.classes).where(eq(schema.classes.id, created.classId));
+    const edited = await saveClass({ ...place, classId: created.classId, title: "Pin class renamed" });
+    if ("error" in edited) throw new Error(edited.error);
+    const [second] = await db.select().from(schema.classes).where(eq(schema.classes.id, created.classId));
+    expect(second?.locationId).toBe(first?.locationId);
+    expect(second?.title).toBe("Pin class renamed");
+    const kept = await db.select().from(schema.locations).where(eq(schema.locations.id, first!.locationId!));
+    expect(kept).toHaveLength(1);
+    const lat = kept[0]!.lat;
+    const moved = await saveClass({ ...place, classId: created.classId, address: "200 Santa Monica Blvd", neighborhood: "Santa Monica", postalCode: "90401" });
+    if ("error" in moved) throw new Error(moved.error);
+    const [afterMove] = await db.select().from(schema.classes).where(eq(schema.classes.id, created.classId));
+    expect(afterMove?.locationId).toBe(first?.locationId);
+    const [location] = await db.select().from(schema.locations).where(eq(schema.locations.id, first!.locationId!));
+    expect(location?.addressLine1).toBe("200 Santa Monica Blvd");
+    expect(location?.lat).not.toBe(lat);
+    const orphans = await db.select().from(schema.locations).where(eq(schema.locations.addressLine1, "100 Hollywood Blvd"));
+    expect(orphans).toHaveLength(0);
+    if (first?.locationId) {
+      await db.update(schema.classes).set({ locationId: null }).where(eq(schema.classes.locationId, first.locationId));
+      await db.delete(schema.locations).where(eq(schema.locations.id, first.locationId));
+    }
   });
 });

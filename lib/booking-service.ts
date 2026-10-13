@@ -53,6 +53,7 @@ import {
 import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import type Stripe from "stripe";
 
 export type ActionState = { error?: string; ok?: string } | null;
 
@@ -559,6 +560,61 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   }
 }
 
+function checkoutPaymentIds(session: Stripe.Checkout.Session) {
+  const payment = session.payment_intent;
+  const subscription = session.subscription;
+  return {
+    paymentIntent: !payment || typeof payment === "string" ? payment ?? null : payment.id,
+    subscriptionId: !subscription || typeof subscription === "string" ? subscription ?? null : subscription.id,
+  };
+}
+
+/** Close a still-open Checkout session before the seat is freed. A completed session is returned so the cancel can refund instead of dropping the charge. */
+async function settleOpenCheckout(order: typeof orders.$inferSelect): Promise<{ paid: true; paymentIntent: string | null; subscriptionId: string | null } | { paid: false } | { error: string }> {
+  if (order.status !== "pending" || !order.stripeCheckoutSessionId) return { paid: false };
+  const stripe = getStripe();
+  if (!stripe) return { paid: false };
+  try {
+    const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+    if (session.status === "complete" || session.payment_status === "paid") return { paid: true, ...checkoutPaymentIds(session) };
+    if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    return { paid: false };
+  } catch {
+    return { error: "Could not close checkout. Try again." };
+  }
+}
+
+async function refundPaidOrder(order: typeof orders.$inferSelect, refundCents: number, coversWholePayment: boolean) {
+  const stripe = getStripe();
+  if (stripe && order.stripePaymentIntentId) {
+    await stripe.refunds.create(coversWholePayment
+      ? { payment_intent: order.stripePaymentIntentId }
+      : { payment_intent: order.stripePaymentIntentId, amount: refundCents });
+    if (coversWholePayment) await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
+    return;
+  }
+  if (coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(and(eq(orders.id, order.id), eq(orders.status, "paid")));
+}
+
+async function settleCancelledOrder(order: typeof orders.$inferSelect, rows: { startsAt: Date }[], now: Date) {
+  const refundCents = unattendedRefundCents({ paidCents: order.studentPaysCents ?? 0, sessions: rows, now });
+  const coversWholePayment = order.studentPaysCents > 0 && refundCents >= order.studentPaysCents;
+  if (order.promoCodeId && coversWholePayment) await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+  if (order.status === "paid" && refundCents > 0) {
+    await refundPaidOrder(order, refundCents, coversWholePayment);
+    return;
+  }
+  if (!coversWholePayment) return;
+  const cancelled = await db
+    .update(orders)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(and(eq(orders.id, order.id), ne(orders.status, "paid"), ne(orders.status, "refunded")))
+    .returning({ id: orders.id });
+  if (cancelled.length) return;
+  const [fresh] = await db.select().from(orders).where(eq(orders.id, order.id)).limit(1);
+  if (fresh?.status === "paid" && refundCents > 0) await refundPaidOrder(fresh, refundCents, coversWholePayment);
+}
+
 export async function cancelBooking(userId: string, bookingId: string) {
   const now = new Date();
   const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
@@ -567,22 +623,17 @@ export async function cancelBooking(userId: string, bookingId: string) {
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
   const upcoming = rows.filter((session) => session.startsAt > now);
   if (!upcoming.length) return { error: "This class has already started." };
-  await releaseBookingSeat(booking, now);
-  if (booking.orderId) {
-    const [order] = await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1);
-    const refundCents = unattendedRefundCents({ paidCents: order?.studentPaysCents ?? 0, sessions: rows, now });
-    const coversWholePayment = order != null && order.studentPaysCents > 0 && refundCents >= order.studentPaysCents;
-    if (order?.promoCodeId && coversWholePayment) await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    if (order && order.status === "paid" && refundCents > 0) {
-      const stripe = getStripe();
-      if (stripe && order.stripePaymentIntentId) {
-        await stripe.refunds.create(coversWholePayment
-          ? { payment_intent: order.stripePaymentIntentId }
-          : { payment_intent: order.stripePaymentIntentId, amount: refundCents });
-        if (coversWholePayment) await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      } else if (coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
-    } else if (order && coversWholePayment) await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
+  let order = booking.orderId ? (await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1))[0] : undefined;
+  if (order) {
+    const settled = await settleOpenCheckout(order);
+    if ("error" in settled) return settled;
+    if (settled.paid) {
+      await fulfillPaidCheckout(order.id, settled.paymentIntent, settled.subscriptionId);
+      order = (await db.select().from(orders).where(eq(orders.id, order.id)).limit(1))[0] ?? order;
+    }
   }
+  await releaseBookingSeat(booking, now);
+  if (order) await settleCancelledOrder(order, rows, now);
   await offerOpenedSeats(rows.map((session) => session.id));
   return { ok: true };
 }
