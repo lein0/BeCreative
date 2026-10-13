@@ -58,7 +58,7 @@ import {
 } from "@/lib/checkout-rules";
 import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
-import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
+import { resolvedPolicy, studentCancelOutcome, lateCancelFee, nextUpcomingStart } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
 import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
@@ -720,18 +720,10 @@ export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect,
   }
 }
 
-export async function cancelBooking(userId: string, bookingId: string) {
-  const now = new Date();
-  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
-  if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
-  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
-  const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
-  const upcoming = rows.filter((session) => session.startsAt > now).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
-  if (!upcoming.length) return { error: "This class has already started." };
-  const [klass] = await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1);
+export async function studentCancelPolicy(teacherId: string) {
   const [platform] = await db.select().from(platformSettings).limit(1);
-  const [override] = klass ? await db.select().from(teacherPolicies).where(eq(teacherPolicies.teacherId, klass.teacherId)).limit(1) : [];
-  const policy = resolvedPolicy(
+  const [override] = teacherId ? await db.select().from(teacherPolicies).where(eq(teacherPolicies.teacherId, teacherId)).limit(1) : [];
+  return resolvedPolicy(
     {
       fullRefundHours: platform?.studentFullRefundHours ?? SHIP_DEFAULTS.studentFullRefundHours,
       creditOnlyHours: platform?.studentCreditOnlyHours ?? SHIP_DEFAULTS.studentCreditOnlyHours,
@@ -740,7 +732,20 @@ export async function cancelBooking(userId: string, bookingId: string) {
     },
     override ?? null,
   );
-  const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
+}
+
+export async function cancelBooking(userId: string, bookingId: string) {
+  const now = new Date();
+  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
+  if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
+  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
+  const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
+  const upcoming = rows.filter((session) => session.startsAt > now).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+  const startsAt = nextUpcomingStart(rows.map((session) => session.startsAt), now);
+  if (!startsAt) return { error: "This class has already started." };
+  const [klass] = await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1);
+  const policy = await studentCancelPolicy(klass?.teacherId ?? "");
+  const outcome = studentCancelOutcome({ now, startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
   const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
   await releaseBookingSeat(booking, now);
   const sessionCount = Math.max(1, rows.length);

@@ -1,11 +1,13 @@
 import { cronAuthorized } from "@/lib/jobs";
+import { escalateDueTickets } from "@/lib/support";
 import { scheduleReminders, workJobs } from "@/lib/worker";
 
 async function tick(request: Request) {
   if (!cronAuthorized(request.headers.get("authorization"))) return new Response("Unauthorized", { status: 401 });
   const reminders = await scheduleReminders();
   const jobs = await workJobs();
-  return Response.json({ ok: true, reminders, jobs });
+  const escalations = await escalateDueTickets();
+  return Response.json({ ok: true, reminders, jobs, escalations });
 }
 
 export async function GET(request: Request) {

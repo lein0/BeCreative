@@ -4,6 +4,31 @@ export function hoursUntil(startsAt: Date, now: Date) {
   return (startsAt.getTime() - now.getTime()) / 3_600_000;
 }
 
+export function nextUpcomingStart(starts: Date[], now: Date) {
+  let next: Date | null = null;
+  for (const start of starts) {
+    if (start.getTime() <= now.getTime()) continue;
+    if (!next || start.getTime() < next.getTime()) next = start;
+  }
+  return next;
+}
+
+export function describedCancelOutcome(input: {
+  sessionStarts: Date[];
+  now: Date;
+  fullRefundHours: number;
+  creditOnlyHours: number;
+}): CancelOutcome | "already_started" {
+  const startsAt = nextUpcomingStart(input.sessionStarts, input.now);
+  if (!startsAt) return "already_started";
+  return studentCancelOutcome({
+    now: input.now,
+    startsAt,
+    fullRefundHours: input.fullRefundHours,
+    creditOnlyHours: input.creditOnlyHours,
+  });
+}
+
 export function studentCancelOutcome(input: {
   now: Date;
   startsAt: Date;

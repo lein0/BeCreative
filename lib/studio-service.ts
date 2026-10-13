@@ -16,6 +16,7 @@ import {
   user,
 } from "@/lib/db/schema";
 import { confirmedCount, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { recordCheckInForDisputes } from "@/lib/disputes";
 import { decideManualBooking } from "@/lib/booking-rules";
 import { studioOwnsResource } from "@/lib/checkout-rules";
 import { sendIndividually } from "@/lib/email";
@@ -347,15 +348,15 @@ export async function manualBook(input: { classId: string; sessionId: string; te
 }
 
 export async function setCheckin(bookingSessionId: string, checkedIn: boolean, teacherId: string) {
-  const [row] = await db
-    .select({ ownerId: classes.teacherId })
-    .from(bookingSessions)
-    .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
-    .innerJoin(classes, eq(classes.id, sessions.classId))
-    .where(eq(bookingSessions.id, bookingSessionId))
-    .limit(1);
-  if (!row || !studioOwnsResource(row.ownerId, teacherId)) return;
+  const [link] = await db.select().from(bookingSessions).where(eq(bookingSessions.id, bookingSessionId)).limit(1);
+  if (!link) return;
+  const [session] = await db.select().from(sessions).where(eq(sessions.id, link.sessionId)).limit(1);
+  const [klass] = session ? await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1) : [];
+  if (!klass || !studioOwnsResource(klass.teacherId, teacherId)) return;
   await db.update(bookingSessions).set({ checkedIn, checkedInAt: checkedIn ? new Date() : null }).where(eq(bookingSessions.id, bookingSessionId));
+  if (!checkedIn) return;
+  const [booking] = await db.select().from(bookings).where(eq(bookings.id, link.bookingId)).limit(1);
+  await recordCheckInForDisputes(booking?.orderId);
 }
 
 export async function emailRoster(input: { sessionId?: string; classId?: string; includePast: boolean; subject: string; body: string; teacherId: string }) {

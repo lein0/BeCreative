@@ -92,7 +92,19 @@ App Runner does not run cron itself. Amazon EventBridge Scheduler calls the app 
 - Method: `POST`
 - Header: `Authorization: Bearer <CRON_SECRET>`
 
-That tick claims queued jobs with `FOR UPDATE SKIP LOCKED`, sends due notifications, and queues class reminders 24 hours and 2 hours before start. A replay of the same reminder does not send a second message.
+That tick claims queued jobs with `FOR UPDATE SKIP LOCKED`, sends due notifications, queues class reminders 24 hours and 2 hours before start, and escalates support tickets that sat with a teacher for 24 hours. A replay of the same reminder does not send a second message.
+
+## Staging and production
+
+Use two App Runner services and two RDS instances. Staging and production do not share `DATABASE_URL`, `AUTH_SECRET`, `CRON_SECRET`, or Stripe keys. Staging uses Stripe test keys. Production uses live keys. `APP_URL` is the public origin of that environment.
+
+Turn on automated RDS backups (a 7-day retention is a sound start) and confirm a restore once before launch. Point-in-time recovery covers a bad migration.
+
+Server actions are same-origin. Next.js rejects a cross-site post, which is the CSRF check for forms. Booking, refund, and support actions also stop after a burst of requests from the same account.
+
+`SENTRY_DSN` is optional. When it is unset, errors are written as JSON logs and nothing is sent to Sentry.
+
+GitHub Actions runs lint, typecheck, tests, migrations, and a production build on every pull request.
 
 ## What the health check covers
 

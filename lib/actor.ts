@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { sessionAllowedForUser } from "@/lib/account-data";
 import { auth } from "@/lib/auth";
 import type { Role } from "@/lib/constants";
 import { db } from "@/lib/db";
@@ -19,6 +20,7 @@ export type Actor = {
 export async function getActor(): Promise<Actor | null> {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user) return null;
+  if (!(await sessionAllowedForUser(session.user.id))) return null;
   const roles = await db.select().from(userRoles).where(eq(userRoles.userId, session.user.id));
   return {
     id: session.user.id,

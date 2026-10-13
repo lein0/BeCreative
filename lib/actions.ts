@@ -83,6 +83,9 @@ export async function resetPasswordAction(_prev: ActionState, formData: FormData
 export async function bookAction(formData: FormData): Promise<void> {
   const actor = await requireActor();
   const slug = text(formData, "slug");
+  const { hitRateLimit } = await import("@/lib/rate-limit");
+  const limit = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
+  if (!limit.ok) redirect(errorRedirectPath(`/c/${slug}`, "Too many booking attempts. Wait an hour and try again."));
   if (formData.get("policyAccepted") !== "1") redirect(errorRedirectPath(`/c/${slug}`, "Accept the cancellation policy to book."));
   const result = await bookSession({
     userId: actor.id,
@@ -416,6 +419,8 @@ export async function roleAction(formData: FormData) {
   for (const role of chosen.length ? chosen : ["student"]) {
     await db.insert(userRoles).values({ id: crypto.randomUUID(), userId, role });
   }
+  const { auditLog } = await import("@/lib/db/schema");
+  await db.insert(auditLog).values({ id: crypto.randomUUID(), actorUserId: actor.id, action: "role.change", entityType: "user", entityId: userId, summary: chosen.join(", ") || "student" });
   revalidatePath("/admin/users");
 }
 
@@ -691,6 +696,9 @@ export async function policySettingsAction(formData: FormData) {
 export async function adminRefundAction(formData: FormData) {
   const actor = await requireActor();
   if (!canManageRoles(actor.roles)) redirect("/admin");
+  const { hitRateLimit } = await import("@/lib/rate-limit");
+  const limit = await hitRateLimit(`refund:${actor.id}`, 30, 60 * 60 * 1000);
+  if (!limit.ok) redirect("/admin/refunds?error=Too%20many%20refunds.%20Wait%20an%20hour.");
   const jar = await cookies();
   const submitted = text(formData, "idempotencyKey");
   const key = nextAdminRefundKey({
