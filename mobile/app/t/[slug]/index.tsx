@@ -5,7 +5,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { MembershipOffer, PackOffer, TeacherProfile } from "@mobile/api/types";
 import { openCheckoutSession } from "@mobile/checkout/browser";
+import { checkoutReturnAction } from "@mobile/checkout/outcome";
 import { startMembershipCheckout, startPackCheckout } from "@mobile/checkout/offer";
+import { resumePurchasePath } from "../../../../lib/mobile-client";
 import { Body, Button, Card, Display, Notice, Screen, Title } from "@mobile/components/ui";
 import { money } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -28,7 +30,7 @@ export default function TeacherScreen() {
 
   async function buyPack(offer: PackOffer) {
     if (!user) {
-      router.push("/login");
+      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "" }) } });
       return;
     }
     setBusyId(offer.id);
@@ -36,7 +38,11 @@ export default function TeacherScreen() {
     try {
       const result = await startPackCheckout(api, offer);
       if (result.checkoutUrl && !result.clientSecret) {
-        await openCheckoutSession(result.checkoutUrl);
+        const next = checkoutReturnAction(await openCheckoutSession(result.checkoutUrl));
+        if (!next.proceed) {
+          setError(next.message);
+          return;
+        }
         router.push("/bookings");
         return;
       }
@@ -50,7 +56,7 @@ export default function TeacherScreen() {
 
   async function buyMembership(offer: MembershipOffer) {
     if (!user) {
-      router.push("/login");
+      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "" }) } });
       return;
     }
     setBusyId(offer.id);
@@ -58,7 +64,11 @@ export default function TeacherScreen() {
     try {
       const result = await startMembershipCheckout(api, offer);
       if (result.checkoutUrl) {
-        await openCheckoutSession(result.checkoutUrl);
+        const next = checkoutReturnAction(await openCheckoutSession(result.checkoutUrl));
+        if (!next.proceed) {
+          setError(next.message);
+          return;
+        }
         router.push("/bookings");
         return;
       }

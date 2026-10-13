@@ -65,6 +65,42 @@ export function resumeBookingPath(input: { slug: string; sessionId?: string | nu
   return `/book/${encodeURIComponent(input.slug)}${qs ? `?${qs}` : ""}`;
 }
 
+export function resumePurchasePath(input: { teacherSlug: string; packSlug?: string | null; membershipSlug?: string | null }) {
+  const teacher = encodeURIComponent(input.teacherSlug);
+  if (input.packSlug) return `/t/${teacher}/p/${encodeURIComponent(input.packSlug)}`;
+  if (input.membershipSlug) return `/t/${teacher}/m/${encodeURIComponent(input.membershipSlug)}`;
+  return `/t/${teacher}`;
+}
+
+const WAIVER_GATE_ERRORS = new Set([
+  "The waiver didn't load. Try again before checkout.",
+  "The waiver is still loading.",
+  "Type your name to sign.",
+]);
+
+/** Signature field and checkout share one loaded waiver. A missing fetch cannot sign a prefilled name. */
+export function waiverSignGate(input: {
+  classRequiresSignature: boolean;
+  waiver: { required: boolean; signed: boolean } | null;
+  loadFailed: boolean;
+  signedName: string;
+}) {
+  if (!input.classRequiresSignature) return { showNameField: false, readyToSign: false, blockReason: null as string | null };
+  if (input.loadFailed) {
+    return { showNameField: false, readyToSign: false, blockReason: "The waiver didn't load. Try again before checkout." };
+  }
+  if (!input.waiver) return { showNameField: false, readyToSign: false, blockReason: "The waiver is still loading." };
+  const mustSign = input.waiver.required && !input.waiver.signed;
+  if (!mustSign) return { showNameField: false, readyToSign: false, blockReason: null };
+  if (!input.signedName.trim()) return { showNameField: true, readyToSign: false, blockReason: "Type your name to sign." };
+  return { showNameField: true, readyToSign: true, blockReason: null };
+}
+
+export function withoutStaleWaiverError(current: string | null) {
+  if (current && WAIVER_GATE_ERRORS.has(current)) return null;
+  return current;
+}
+
 export function bookingSubmitLock() {
   let held = false;
   return {

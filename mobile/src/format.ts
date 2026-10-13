@@ -32,6 +32,10 @@ export function matchesLocalDay(iso: string | null, day: string, timeZone = CLAS
   return localDayKey(iso, timeZone) === day;
 }
 
+export function rescheduleOptionLabel(startsAt: string | null, timeZone?: string | null) {
+  return whenLabel(startsAt, timeZone || undefined);
+}
+
 export function whenLabel(iso: string | null, timeZone = CLASS_TIME_ZONE): string {
   if (!iso) return "Dates soon";
   return new Intl.DateTimeFormat("en-US", {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, resumePurchasePath, systemPathForIncomingUrl, waiverSignGate, withoutStaleWaiverError } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -40,6 +40,30 @@ describe("live mobile checkout", () => {
     expect(postLoginPath("/book/scene%20study?session=slot-1")).toBe("/book/scene%20study?session=slot-1");
     expect(postLoginPath("https://evil.example/book")).toBe("/explore");
     expect(postLoginPath("//evil.example")).toBe("/explore");
+    expect(resumePurchasePath({ teacherSlug: "maya chen", packSlug: "scene-10" })).toBe("/t/maya%20chen/p/scene-10");
+    expect(resumePurchasePath({ teacherSlug: "maya", membershipSlug: "bewell" })).toBe("/t/maya/m/bewell");
+    expect(postLoginPath(resumePurchasePath({ teacherSlug: "maya" }))).toBe("/t/maya");
+  });
+
+  it("keeps the waiver name field and the signature step on the same loaded waiver", () => {
+    const pending = waiverSignGate({ classRequiresSignature: true, waiver: null, loadFailed: false, signedName: "Maya Chen" });
+    expect(pending.readyToSign).toBe(false);
+    expect(pending.showNameField).toBe(false);
+    expect(pending.blockReason).toMatch(/loading/i);
+    const failed = waiverSignGate({ classRequiresSignature: true, waiver: null, loadFailed: true, signedName: "Maya Chen" });
+    expect(failed.readyToSign).toBe(false);
+    expect(failed.blockReason).toMatch(/didn't load/i);
+    const needsName = waiverSignGate({ classRequiresSignature: true, waiver: { required: true, signed: false }, loadFailed: false, signedName: "  " });
+    expect(needsName.showNameField).toBe(true);
+    expect(needsName.readyToSign).toBe(false);
+    const ready = waiverSignGate({ classRequiresSignature: true, waiver: { required: true, signed: false }, loadFailed: false, signedName: "Maya Chen" });
+    expect(ready.showNameField).toBe(true);
+    expect(ready.readyToSign).toBe(true);
+    const already = waiverSignGate({ classRequiresSignature: true, waiver: { required: true, signed: true }, loadFailed: false, signedName: "Maya Chen" });
+    expect(already.showNameField).toBe(false);
+    expect(already.readyToSign).toBe(false);
+    expect(withoutStaleWaiverError(pending.blockReason)).toBeNull();
+    expect(withoutStaleWaiverError("Accept the cancellation policy.")).toBe("Accept the cancellation policy.");
   });
 
   it("keeps PaymentSheet returns off the bookings route", () => {

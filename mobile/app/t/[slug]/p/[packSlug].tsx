@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import { ApiError } from "@mobile/api";
 import type { PackOffer } from "@mobile/api/types";
 import { openCheckoutSession } from "@mobile/checkout/browser";
+import { checkoutReturnAction } from "@mobile/checkout/outcome";
 import { startPackCheckout } from "@mobile/checkout/offer";
+import { resumePurchasePath } from "../../../../../lib/mobile-client";
 import { Body, Button, Display, Notice, Screen } from "@mobile/components/ui";
 import { money } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -29,7 +31,7 @@ export default function PackLink() {
   async function buy() {
     if (!offer) return;
     if (!user) {
-      router.push("/login");
+      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "", packSlug }) } });
       return;
     }
     setBusy(true);
@@ -37,7 +39,11 @@ export default function PackLink() {
     try {
       const result = await startPackCheckout(api, offer);
       if (result.checkoutUrl && !result.clientSecret) {
-        await openCheckoutSession(result.checkoutUrl);
+        const next = checkoutReturnAction(await openCheckoutSession(result.checkoutUrl));
+        if (!next.proceed) {
+          setError(next.message);
+          return;
+        }
         router.replace("/bookings");
         return;
       }

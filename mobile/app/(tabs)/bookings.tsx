@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { BookingListItem, Slot } from "@mobile/api/types";
 import { Body, Button, Card, ConfirmDialog, Display, Notice, Sheet, Title } from "@mobile/components/ui";
-import { placeLabel, whenLabel } from "@mobile/format";
+import { placeLabel, rescheduleOptionLabel, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
@@ -18,6 +18,7 @@ export default function Bookings() {
   const [error, setError] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [moveId, setMoveId] = useState<string | null>(null);
+  const [moveZone, setMoveZone] = useState<string | null>(null);
   const [options, setOptions] = useState<Slot[]>([]);
 
   const load = useCallback(() => {
@@ -51,6 +52,7 @@ export default function Bookings() {
     }
     const detail = await api.classDetail(row.slug);
     setOptions(detail.slots);
+    setMoveZone(row.timezone);
     setMoveId(row.id);
   }
 
@@ -94,7 +96,7 @@ export default function Bookings() {
       />
       <Sheet visible={Boolean(moveId)} title="Move this booking" onClose={() => setMoveId(null)}>
         {options.map((slot) => (
-          <Button key={slot.id} label={whenLabel(slot.startsAt)} tone="ghost" onPress={() => void moveTo(slot.id)} />
+          <Button key={slot.id} label={rescheduleOptionLabel(slot.startsAt, moveZone)} tone="ghost" onPress={() => void moveTo(slot.id)} />
         ))}
       </Sheet>
     </SafeAreaView>

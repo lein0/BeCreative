@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath } from "../../../lib/mobile-client";
+import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath, waiverSignGate, withoutStaleWaiverError } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -27,9 +27,8 @@ export default function BookScreen() {
   const [agreed, setAgreed] = useState(false);
   const [signedName, setSignedName] = useState(user?.name ?? "");
   const [waiverBody, setWaiverBody] = useState<string | null>(null);
-  const [waiverSigned, setWaiverSigned] = useState(false);
-  const [signatureRequired, setSignatureRequired] = useState(false);
-  const [waiverRequired, setWaiverRequired] = useState(false);
+  const [waiver, setWaiver] = useState<{ required: boolean; signed: boolean } | null>(null);
+  const [waiverFailed, setWaiverFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -39,25 +38,49 @@ export default function BookScreen() {
 
   useEffect(() => {
     if (!slug || !ready) return;
+    let stale = false;
+    setWaiver(null);
+    setWaiverFailed(false);
+    setWaiverBody(null);
+    setError((current) => withoutStaleWaiverError(current));
     void api.classDetail(slug).then((next) => {
+      if (stale) return;
       setDetail(next);
-      setSignatureRequired(next.signatureRequired);
       const preferred = typeof sessionParam === "string" ? sessionParam : null;
       setSessionId(next.slots.some((slot) => slot.id === preferred) ? preferred : next.slots[0]?.id ?? null);
       void track("booking_started", { slug: next.class.slug });
-      if (user) {
-        void api.waiver(next.teacher.slug).then((waiver) => {
-          setWaiverBody(waiver.body);
-          setWaiverSigned(waiver.signed);
-          setWaiverRequired(waiver.required);
-          setSignatureRequired(next.signatureRequired && waiver.required);
-        }).catch(() => undefined);
-      }
-    }).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load this class."));
+      if (!user) return;
+      return api.waiver(next.teacher.slug).then((loaded) => {
+        if (stale) return;
+        setWaiverBody(loaded.body);
+        setWaiver({ required: loaded.required, signed: loaded.signed });
+        setWaiverFailed(false);
+        setError((current) => withoutStaleWaiverError(current));
+      }).catch(() => {
+        if (stale) return;
+        setWaiverFailed(true);
+        setError("The waiver didn't load. Try again before checkout.");
+      });
+    }).catch((err: unknown) => {
+      if (!stale) setError(err instanceof ApiError ? err.message : "Could not load this class.");
+    });
     if (user) void api.wallet().then((wallet) => setPacks(wallet.packs.filter((item) => item.remaining > 0))).catch(() => undefined);
+    return () => {
+      stale = true;
+    };
   }, [api, ready, sessionParam, slug, track, user]);
 
   const eligiblePacks = detail ? packsForClass(packs, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
+  const waiverGate = waiverSignGate({
+    classRequiresSignature: Boolean(user && detail?.signatureRequired),
+    waiver,
+    loadFailed: waiverFailed,
+    signedName,
+  });
+
+  useEffect(() => {
+    if (!waiverGate.blockReason) setError((current) => withoutStaleWaiverError(current));
+  }, [waiverGate.blockReason]);
   const seriesPrice = detail?.class.seriesPriceCents ?? null;
   const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
 
@@ -75,13 +98,13 @@ export default function BookScreen() {
         setError("Accept the cancellation policy.");
         return;
       }
-      if (signatureRequired && !waiverSigned) {
-        if (!signedName.trim()) {
-          setError("Type your name to sign.");
-          return;
-        }
+      if (waiverGate.blockReason) {
+        setError(waiverGate.blockReason);
+        return;
+      }
+      if (waiverGate.readyToSign) {
         await api.signWaiver(detail.teacher.slug, signedName.trim());
-        setWaiverSigned(true);
+        setWaiver({ required: true, signed: true });
       }
       const result = await api.book({
         sessionId: series ? undefined : sessionId ?? undefined,
@@ -133,9 +156,9 @@ export default function BookScreen() {
         <Card>
           <Body>Cancellation policy</Body>
           <Body muted>{waiverBody || "Full refund until 24 hours before the start. Studio credit until 2 hours before. After that the seat is not refunded."}</Body>
-          {waiverSigned && signatureRequired ? <Body>You already signed this waiver.</Body> : null}
+          {waiver?.signed && detail.signatureRequired ? <Body>You already signed this waiver.</Body> : null}
           <ToggleRow label="I agree" value={agreed} onChange={setAgreed} />
-          {signatureRequired && waiverRequired && !waiverSigned ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
+          {waiverGate.showNameField ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
         </Card>
         {error ? <Notice>{error}</Notice> : null}
         <Body>Price {money(shownPrice ?? 0)}. The discount is applied at checkout.</Body>
