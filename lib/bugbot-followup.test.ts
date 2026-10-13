@@ -554,7 +554,7 @@ describe("Bugbot follow-ups", () => {
       : undefined;
     expect(bookingId).toBeTruthy();
     const cancelled = await cancelBooking(holder, bookingId!);
-    expect(cancelled.ok).toBe(true);
+    expect(cancelled).toEqual({ ok: true });
     const [entry] = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.userId, waiting));
     expect(entry?.status).toBe("offered");
     expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: [waitingRow!.email], subject: "A seat opened: Waitlist class" }));
