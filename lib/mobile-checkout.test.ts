@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, nativeIntentPath, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -85,5 +85,26 @@ describe("live mobile checkout", () => {
     expect(lock.tryAcquire()).toBe(false);
     lock.release();
     expect(lock.tryAcquire()).toBe(true);
+  });
+
+  it("releases Continue after checkout opens so Back can reopen Stripe", () => {
+    const lock = bookingSubmitLock();
+    const started = bookingContinuePlan(false, lock);
+    expect(started.action).toBe("book");
+    expect(bookingContinuePlan(false, lock).action).toBe("wait");
+    if (started.action !== "book") throw new Error("expected a booking");
+    const settled = started.finish(true);
+    expect(settled).toEqual({ busy: false, reopenCheckout: true });
+    expect(bookingContinuePlan(settled.reopenCheckout, lock).action).toBe("reopen");
+    expect(lock.tryAcquire()).toBe(true);
+  });
+
+  it("falls back when a native intent path throws", () => {
+    const explode = () => {
+      throw new Error("bad path");
+    };
+    expect(nativeIntentPath("/bookings", true, explode)).toBe("/explore");
+    expect(nativeIntentPath("/bookings", false, explode)).toBe("/bookings");
+    expect(nativeIntentPath("becreative://stripe-return", true)).toBeNull();
   });
 });

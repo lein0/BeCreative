@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, resumeBookingPath } from "../../../lib/mobile-client";
+import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, resumeBookingPath } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -32,6 +32,7 @@ export default function BookScreen() {
   const [waiverSigned, setWaiverSigned] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reopenCheckout, setReopenCheckout] = useState(false);
 
   useEffect(() => {
     if (user?.name) setSignedName((current) => current || user.name);
@@ -63,15 +64,24 @@ export default function BookScreen() {
   const seriesPrice = detail?.class.seriesPriceCents ?? null;
   const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
 
+  useEffect(() => {
+    setReopenCheckout(false);
+  }, [sessionId, series, promo, usePack, useMembership]);
+
   async function submit() {
     if (!detail || !user) {
       router.push({ pathname: "/login", params: { next: resumeBookingPath({ slug: slug ?? "", sessionId, series, code: promo }) } });
       return;
     }
-    if (!submitLock.current.tryAcquire()) return;
+    const plan = bookingContinuePlan(reopenCheckout, submitLock.current);
+    if (plan.action === "reopen") {
+      router.push("/checkout");
+      return;
+    }
+    if (plan.action !== "book") return;
     setBusy(true);
     setError(null);
-    let held = false;
+    let openedCheckout = false;
     try {
       if (!agreed && !waiverSigned) {
         setError("Accept the cancellation policy.");
@@ -106,14 +116,13 @@ export default function BookScreen() {
       await track("checkout_started", { orderId: result.orderId ?? "" });
       setCheckoutDraft(draftFromResult(detail.class.title, result));
       router.push("/checkout");
-      held = true;
+      openedCheckout = true;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not start checkout.");
     } finally {
-      if (!held) {
-        submitLock.current.release();
-        setBusy(false);
-      }
+      const settled = plan.finish(openedCheckout);
+      setBusy(settled.busy);
+      setReopenCheckout(settled.reopenCheckout);
     }
   }
 

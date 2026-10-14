@@ -107,6 +107,27 @@ export function bookingSubmitLock() {
   };
 }
 
+/** Back from checkout must be able to open the existing Stripe session again. */
+export function bookingContinuePlan(reopenCheckout: boolean, lock: { tryAcquire(): boolean; release(): void }) {
+  if (reopenCheckout) return { action: "reopen" as const };
+  if (!lock.tryAcquire()) return { action: "wait" as const };
+  return {
+    action: "book" as const,
+    finish(openedCheckout: boolean) {
+      lock.release();
+      return { busy: false, reopenCheckout: openedCheckout };
+    },
+  };
+}
+
+export function nativeIntentPath(path: string, initial: boolean, resolve: (value: string) => string | null = systemPathForIncomingUrl) {
+  try {
+    return resolve(path);
+  } catch {
+    return initial ? "/explore" : path;
+  }
+}
+
 export function checkoutFollowsBooking(result: { alreadyBooked?: boolean }) {
   return result.alreadyBooked ? "bookings" : "checkout";
 }
