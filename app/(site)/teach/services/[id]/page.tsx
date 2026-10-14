@@ -4,7 +4,7 @@ import { Panel } from "@/components/bits";
 import { requireActor } from "@/lib/actor";
 import { teacherByUser } from "@/lib/queries";
 import { formatDateTimeInZone } from "@/lib/time";
-import { visitRoster } from "@/lib/wellness-service";
+import { rosterWaiver, visitRoster } from "@/lib/wellness-service";
 
 export default function ServiceRosterPage({ params }: { params: Promise<{ id: string }> }) {
   return (
@@ -27,7 +27,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
       <h1 className="display text-5xl">{roster.service.title}</h1>
       <div className="mt-6 space-y-3">
         {roster.visits.map((row) => {
-          const signature = roster.signatures.find((item) => item.id === row.visit.waiverSignatureId) ?? roster.signatures.find((item) => item.userId === row.visit.userId);
+          const signature = rosterWaiver(row.visit, roster.signatures);
           return (
             <Panel key={row.visit.id}>
               <p className="display text-2xl">{row.student?.name ?? "Guest"}</p>

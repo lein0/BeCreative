@@ -621,7 +621,12 @@ export async function cancelBooking(userId: string, bookingId: string) {
   return { ok: true };
 }
 
-export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
+export async function fulfillPaidCheckout(
+  orderId: string,
+  paymentIntent: string | null,
+  subscriptionId: string | null,
+  options?: { sendBookingEmail?: boolean },
+) {
   const updated = await db
     .update(orders)
     .set({ status: "paid", stripePaymentIntentId: paymentIntent, stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
@@ -641,7 +646,7 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
   }
-  if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
+  if (options?.sendBookingEmail !== false && paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
     const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
     if (person?.email && order.kind === "visit") {
       const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);

@@ -340,6 +340,7 @@ export async function bookVisit(input: {
       if (normalized.code && !entitlement && listPrice > 0) {
         const [found] = await tx.select().from(promoCodes).where(eq(promoCodes.code, normalized.code)).limit(1);
         if (!found) throw new Error("That code is not recognized.");
+        await tx.execute(sql`select id from promo_codes where id = ${found.id} for update`);
         const [totals] = await tx.select({ count: sql<number>`count(*)::int` }).from(promoRedemptions).where(and(eq(promoRedemptions.promoCodeId, found.id), eq(promoRedemptions.reversed, false)));
         const [mine] = await tx.select({ count: sql<number>`count(*)::int` }).from(promoRedemptions).where(and(eq(promoRedemptions.promoCodeId, found.id), eq(promoRedemptions.userId, input.userId), eq(promoRedemptions.reversed, false)));
         const verdict = validatePromo({
@@ -565,6 +566,17 @@ export async function upcomingVisits(teacherId: string) {
   return rows.sort((a, b) => a.visit.startsAt.getTime() - b.visit.startsAt.getTime());
 }
 
+export function rosterWaiver<T extends { id: string; userId: string; version: number; signedAt: Date }>(
+  visit: { waiverSignatureId: string | null; userId: string | null; createdAt: Date },
+  signatures: T[],
+) {
+  if (visit.waiverSignatureId) return signatures.find((item) => item.id === visit.waiverSignatureId) ?? null;
+  const atBooking = signatures
+    .filter((item) => item.userId === visit.userId && item.signedAt.getTime() <= visit.createdAt.getTime())
+    .sort((a, b) => b.signedAt.getTime() - a.signedAt.getTime() || b.version - a.version);
+  return atBooking[0] ?? null;
+}
+
 export async function visitRoster(serviceId: string) {
   const [service] = await db.select().from(services).where(eq(services.id, serviceId)).limit(1);
   if (!service) return null;
@@ -596,7 +608,7 @@ async function settlePendingCheckout(order: typeof orders.$inferSelect) {
       }
     }
     if (paid()) {
-      await fulfillPaidCheckout(order.id, paymentIntentOf(session), null);
+      await fulfillPaidCheckout(order.id, paymentIntentOf(session), null, { sendBookingEmail: false });
       const [fresh] = await db.select().from(orders).where(eq(orders.id, order.id)).limit(1);
       return fresh ?? order;
     }

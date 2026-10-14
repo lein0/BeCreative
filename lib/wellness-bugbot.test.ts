@@ -48,7 +48,7 @@ const { db } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { sendEmail } = await import("@/lib/email");
 const { fulfillPaidCheckout } = await import("@/lib/booking-service");
-const { bookVisit, cancelVisit, openSlotsForService } = await import("@/lib/wellness-service");
+const { bookVisit, cancelVisit, openSlotsForService, rosterWaiver } = await import("@/lib/wellness-service");
 
 const tag = `bug-${crypto.randomUUID().slice(0, 8)}`;
 const ids: { teacher?: string; users: string[]; category?: string } = { users: [] };
@@ -473,13 +473,93 @@ describe("wellness bugbot regressions", () => {
       startsAt,
       endsAt: new Date(startsAt.getTime() + 60 * 60_000),
     });
+    vi.mocked(sendEmail).mockClear();
     const result = await cancelVisit(student, visitId);
     expect(result).toEqual({ ok: true });
+    expect(sendEmail).not.toHaveBeenCalled();
     expect(stripe.expire).not.toHaveBeenCalled();
     expect(stripe.refund).toHaveBeenCalledWith({ payment_intent: "pi_123" });
     const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
     const [visit] = await db.select().from(schema.visitBookings).where(eq(schema.visitBookings.id, visitId));
     expect(order?.status).toBe("refunded");
     expect(visit?.status).toBe("cancelled");
+  });
+
+  it("lets only one visit redeem a limited code", async () => {
+    const otherOwner = await person("promo-owner");
+    const otherTeacher = crypto.randomUUID();
+    await db.insert(schema.teachers).values({
+      id: otherTeacher,
+      userId: otherOwner,
+      slug: `${tag}-other`,
+      studioName: "Other Studio",
+      status: "approved",
+      bio: "",
+    });
+    const first = await appointment("Promo A", ids.teacher!, ids.category!);
+    const second = await appointment("Promo B", otherTeacher, ids.category!);
+    const code = `${tag}-ONCE`.toUpperCase();
+    await db.insert(schema.promoCodes).values({
+      id: crypto.randomUUID(),
+      code,
+      discountType: "amount",
+      amountOffCents: 100,
+      appliesTo: "all",
+      active: true,
+      maxRedemptions: 1,
+    });
+    const openA = await openSlotsForService(first.serviceId, new Date(), 2);
+    const openB = await openSlotsForService(second.serviceId, new Date(), 2);
+    if (openA.kind !== "appointment" || openB.kind !== "appointment") throw new Error("expected appointments");
+    const studentA = await person("promo-a");
+    const studentB = await person("promo-b");
+    const [a, b] = await Promise.all([
+      bookVisit({
+        userId: studentA,
+        email: "promo-a@example.com",
+        serviceId: first.serviceId,
+        optionId: first.optionId,
+        startsAt: openA.options[0]!.slots[0]!.startsAt.toISOString(),
+        code,
+      }),
+      bookVisit({
+        userId: studentB,
+        email: "promo-b@example.com",
+        serviceId: second.serviceId,
+        optionId: second.optionId,
+        startsAt: openB.options[0]!.slots[0]!.startsAt.toISOString(),
+        code,
+      }),
+    ]);
+    const results = [a, b];
+    expect(results.filter((result) => "orderId" in result && result.orderId)).toHaveLength(1);
+    expect(results.some((result) => "error" in result && /redemption limit/i.test(result.error ?? ""))).toBe(true);
+    const redemptions = await db
+      .select()
+      .from(schema.promoRedemptions)
+      .where(inArray(schema.promoRedemptions.userId, [studentA, studentB]));
+    expect(redemptions.filter((row) => !row.reversed)).toHaveLength(1);
+  });
+
+  it("shows the waiver signed at booking, not a later signature", () => {
+    const student = "student-1";
+    const bookedAt = new Date("2026-10-01T12:00:00Z");
+    const earlier = {
+      id: "sig-v1",
+      userId: student,
+      version: 1,
+      signedAt: new Date("2026-09-01T12:00:00Z"),
+    };
+    const later = {
+      id: "sig-v2",
+      userId: student,
+      version: 2,
+      signedAt: new Date("2026-10-10T12:00:00Z"),
+    };
+    const visit = { waiverSignatureId: null as string | null, userId: student, createdAt: bookedAt };
+    expect(rosterWaiver(visit, [later, earlier])?.id).toBe("sig-v1");
+    expect(rosterWaiver({ ...visit, waiverSignatureId: "sig-v1" }, [later, earlier])?.version).toBe(1);
+    expect(rosterWaiver({ ...visit, createdAt: new Date("2026-08-01T12:00:00Z") }, [later, earlier])).toBeNull();
+    expect(rosterWaiver({ ...visit, waiverSignatureId: "missing" }, [later, earlier])).toBeNull();
   });
 });
