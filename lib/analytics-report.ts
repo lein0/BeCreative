@@ -160,6 +160,7 @@ export async function studentFunnel(filter: AnalyticsFilter) {
     }
   }
   const steps = STUDENT_FUNNEL.map((step) => {
+    if (step.key === "paid") return { name: step.label, count: new Set(classCheckouts.map((row) => subjectOf(row)).filter(Boolean)).size };
     if (step.key === "attended") return { name: step.label, count: attended };
     if (step.key === "rebooked_30d") return { name: step.label, count: rebooked };
     const people = new Set<string>();

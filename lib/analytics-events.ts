@@ -29,6 +29,15 @@ export type AnalyticsEventName = (typeof ANALYTICS_EVENTS)[number];
 
 export const MONEY_EVENTS = new Set<AnalyticsEventName>(["checkout_completed", "offer_purchased", "booking_cancelled", "promo_applied"]);
 
+/** Written by the server. Clients must not post these through /track. */
+export const SERVER_EVENTS = new Set<AnalyticsEventName>([
+  ...MONEY_EVENTS,
+  "experiment_exposed",
+  "stripe_connected",
+  "class_published",
+  "first_booking_received",
+]);
+
 export function isCatalogEvent(name: string): name is AnalyticsEventName {
   return (ANALYTICS_EVENTS as readonly string[]).includes(name);
 }

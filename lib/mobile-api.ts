@@ -27,7 +27,8 @@ import { exposeExperiment, subjectFromCookies } from "@/lib/experiments";
 import { FAQ_ARTICLES } from "@/lib/faq";
 import { hitRateLimit } from "@/lib/rate-limit";
 import { catalog, classDetail, matchesServiceQuery, publishedServices, teacherProfile } from "@/lib/queries";
-import { isCatalogEvent, MONEY_EVENTS, platformName } from "@/lib/analytics-events";
+import { isCatalogEvent, platformName, SERVER_EVENTS } from "@/lib/analytics-events";
+import { rateLimitAddress } from "@/lib/client-ip";
 import { openTicket } from "@/lib/support";
 import { signWaiver } from "@/lib/wellness-service";
 import { applyContactPrefs } from "@/lib/contact-prefs";
@@ -82,6 +83,22 @@ async function ticketTargets(userId: string, bookingId?: string, teacherId?: str
   return {};
 }
 
+async function requestSubject(request: Request) {
+  const url = new URL(request.url);
+  const actor = await actorFromRequest(request);
+  const raw = url.searchParams.get("anonymousId")?.trim() || request.headers.get("x-bc-anon")?.trim() || "";
+  return { userId: actor?.id ?? null, anonymousId: raw && raw !== "anonymous" ? raw : null };
+}
+
+function offerAttribution(body: { ref?: string; utmSource?: string; utm_source?: string; utmMedium?: string; utm_medium?: string; utmCampaign?: string; utm_campaign?: string }) {
+  return {
+    ref: body.ref,
+    utmSource: body.utmSource || body.utm_source,
+    utmMedium: body.utmMedium || body.utm_medium,
+    utmCampaign: body.utmCampaign || body.utm_campaign,
+  };
+}
+
 async function requireActor(request: Request) {
   const actor = await actorFromRequest(request);
   if (!actor) return { error: json({ error: "Sign in required." }, 401) };
@@ -93,9 +110,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
   const method = request.method.toUpperCase();
   const url = new URL(request.url);
   const platform = platformName(url.searchParams.get("platform") || request.headers.get("x-platform"));
+  const client = rateLimitAddress(request.headers);
 
   if (method === "POST" && root === "auth" && second === "sign-in") {
-    const limit = await hitRateLimit(`api-signin:${request.headers.get("x-forwarded-for") || "api"}`, 10, 60_000);
+    const limit = await hitRateLimit(`api-signin:${client}`, 10, 60_000);
     if (!limit.ok) return json({ error: "Too many attempts." }, 429);
     const body = await request.json() as { email?: string; password?: string; anonymousId?: string };
     try {
@@ -113,7 +131,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "auth" && second === "sign-up") {
-    const limit = await hitRateLimit(`api-signup:${request.headers.get("x-forwarded-for") || "api"}`, 10, 60_000);
+    const limit = await hitRateLimit(`api-signup:${client}`, 10, 60_000);
     if (!limit.ok) return json({ error: "Too many attempts." }, 429);
     const body = await request.json() as { email?: string; password?: string; name?: string; phone?: string; smsOptIn?: boolean; marketingOptIn?: boolean; anonymousId?: string };
     try {
@@ -143,11 +161,11 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "track") {
-    const limit = await hitRateLimit(`api-track:${request.headers.get("x-forwarded-for") || "track"}`, 120, 60_000);
+    const limit = await hitRateLimit(`api-track:${client}`, 120, 60_000);
     if (!limit.ok) return json({ error: "Too many events." }, 429);
     const body = await request.json() as { name?: string; anonymousId?: string; properties?: Record<string, string>; consent?: boolean; path?: string; platform?: string };
     if (!body.name || !isCatalogEvent(body.name)) return json({ error: "Unknown event." }, 400);
-    if (MONEY_EVENTS.has(body.name)) return json({ error: "That event is recorded by the server." }, 400);
+    if (SERVER_EVENTS.has(body.name)) return json({ error: "That event is recorded by the server." }, 400);
     const actor = await actorFromRequest(request);
     await capture({
       name: body.name,
@@ -179,10 +197,11 @@ export async function handleMobileApi(request: Request, path: string[]) {
       level: url.searchParams.get("level") || undefined,
       format: url.searchParams.get("format") || undefined,
     });
-    if (platform !== "web") await capture({ name: "screen_view", platform, path: "/explore" });
-    if (url.searchParams.get("q")) await capture({ name: "search", platform, properties: { q: url.searchParams.get("q") || "" } });
+    const subject = await requestSubject(request);
+    if (platform !== "web") await capture({ name: "screen_view", ...subject, platform, path: "/explore" });
+    if (url.searchParams.get("q")) await capture({ name: "search", ...subject, platform, properties: { q: url.searchParams.get("q") || "" } });
     const filters = ["category", "vertical", "level", "format"].filter((key) => url.searchParams.get(key));
-    if (filters.length) await capture({ name: "filter_used", platform, path: "/explore", properties: { filters: filters.join(",") } });
+    if (filters.length) await capture({ name: "filter_used", ...subject, platform, path: "/explore", properties: { filters: filters.join(",") } });
     return json({ classes: rows.map(publicClass) });
   }
 
@@ -190,7 +209,8 @@ export async function handleMobileApi(request: Request, path: string[]) {
     const q = url.searchParams.get("q") || "";
     const rows = await catalog({ q, vertical: url.searchParams.get("vertical") || undefined });
     const visits = (await publishedServices()).filter((row) => matchesServiceQuery(row, q));
-    await capture({ name: "search", platform, properties: { q } });
+    const subject = await requestSubject(request);
+    await capture({ name: "search", ...subject, platform, properties: { q } });
     return json({
       classes: rows.map(publicClass),
       services: visits.map((row) => ({ id: row.service.id, slug: row.service.slug, title: row.service.title, teacher: row.teacher.studioName || row.teacher.slug })),
@@ -200,7 +220,8 @@ export async function handleMobileApi(request: Request, path: string[]) {
   if (method === "GET" && root === "classes" && second && second !== "slots" && !third) {
     const detail = await classDetail(decodeURIComponent(second));
     if (!detail) return json({ error: "Class not found." }, 404);
-    await capture({ name: "class_viewed", platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
+    const subject = await requestSubject(request);
+    await capture({ name: "class_viewed", ...subject, platform, path: `/c/${detail.class.slug}`, vertical: detail.category.vertical, category: detail.category.slug, city: detail.location?.city, properties: { classId: detail.class.id, teacherId: detail.teacher.id } });
     return json({
       class: publicClass(detail),
       description: detail.class.description,
@@ -244,7 +265,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   if (method === "POST" && root === "bookings" && !second) {
     const limited = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
     if (!limited.ok) return json({ error: "Too many booking attempts. Wait an hour and try again." }, 429);
-    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean };
+    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean; ref?: string; utmSource?: string; utm_source?: string; utmMedium?: string; utm_medium?: string; utmCampaign?: string; utm_campaign?: string };
     if (body.policyAccepted !== true) return json({ error: "Accept the cancellation policy to book." }, 400);
     const result = await bookSession({
       userId: actor.id,
@@ -259,6 +280,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       paymentSheet: body.paymentSheet,
       platform,
       ip: request.headers.get("x-forwarded-for"),
+      ...offerAttribution(body),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
@@ -288,14 +310,16 @@ export async function handleMobileApi(request: Request, path: string[]) {
   if (method === "POST" && root === "packs" && second === "purchase") {
     const limited = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
     if (!limited.ok) return json({ error: "Too many booking attempts. Wait an hour and try again." }, 429);
-    const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, platform });
+    const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean; ref?: string; utmSource?: string; utm_source?: string; utmMedium?: string; utm_medium?: string; utmCampaign?: string; utm_campaign?: string };
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, platform, ...offerAttribution(body) });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
-    const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, platform });
+    const limited = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
+    if (!limited.ok) return json({ error: "Too many booking attempts. Wait an hour and try again." }, 429);
+    const body = await request.json() as { id?: string; code?: string; ref?: string; utmSource?: string; utm_source?: string; utmMedium?: string; utm_medium?: string; utmCampaign?: string; utm_campaign?: string };
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, platform, ...offerAttribution(body) });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 

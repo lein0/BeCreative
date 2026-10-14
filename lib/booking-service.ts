@@ -103,6 +103,21 @@ async function attribution() {
   return { ref, utmSource, utmMedium, utmCampaign, code };
 }
 
+function givenAttribution(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function attributionFrom(input: { ref?: string | null; utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null }, cookie: Awaited<ReturnType<typeof attribution>>) {
+  return {
+    ref: givenAttribution(input.ref) ?? cookie.ref,
+    utmSource: givenAttribution(input.utmSource) ?? cookie.utmSource,
+    utmMedium: givenAttribution(input.utmMedium) ?? cookie.utmMedium,
+    utmCampaign: givenAttribution(input.utmCampaign) ?? cookie.utmCampaign,
+    code: cookie.code,
+  };
+}
+
 function toRule(row: typeof promoCodes.$inferSelect): PromoRule {
   return {
     code: row.code,
@@ -284,8 +299,12 @@ export async function bookSession(input: {
   ip?: string | null;
   paymentSheet?: boolean;
   platform?: string;
+  ref?: string | null;
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
 }): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean }> {
-  const attr = await attribution();
+  const attr = attributionFrom(input, await attribution());
   const codeInput = checkoutPromoCode(input.code, attr.code);
   if (codeInput.error) return { error: codeInput.error };
   const fee = await fees();
@@ -1103,9 +1122,9 @@ async function redemptionCounts(promoCodeId: string, userId: string) {
   return { totalRedemptions: Number(totals?.count ?? 0), customerRedemptions: Number(mine?.count ?? 0) };
 }
 
-export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; platform?: string }) {
+export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; platform?: string; ref?: string | null; utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null }) {
   const fee = await fees();
-  const attr = await attribution();
+  const attr = attributionFrom(input, await attribution());
   const normalized = checkoutPromoCode(input.code, attr.code);
   if (normalized.error) return { error: normalized.error };
   const now = new Date();

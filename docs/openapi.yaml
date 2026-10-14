@@ -89,7 +89,7 @@ paths:
   /track:
     post:
       summary: Record a catalog event
-      description: First-party storage always. PostHog only when POSTHOG_KEY is set and consent is true or the bc_cookie cookie is 1. Money events (checkout_completed, offer_purchased, booking_cancelled, promo_applied) are rejected here and recorded by the server.
+      description: First-party storage always. PostHog only when POSTHOG_KEY is set and consent is true or the bc_cookie cookie is 1. Server events (checkout_completed, offer_purchased, booking_cancelled, promo_applied, experiment_exposed, stripe_connected, class_published, first_booking_received) are rejected here and recorded by the server.
       parameters:
         - in: header
           name: X-Platform
@@ -195,6 +195,9 @@ paths:
         - in: query
           name: platform
           schema: { type: string, enum: [web, ios, android] }
+        - in: query
+          name: anonymousId
+          schema: { type: string }
       responses:
         "200":
           description: Class list
@@ -208,6 +211,9 @@ paths:
         - in: query
           name: vertical
           schema: { type: string }
+        - in: query
+          name: anonymousId
+          schema: { type: string }
       responses:
         "200":
           description: Classes and services
@@ -218,6 +224,9 @@ paths:
         - in: path
           name: slug
           required: true
+          schema: { type: string }
+        - in: query
+          name: anonymousId
           schema: { type: string }
       responses:
         "200":
@@ -274,6 +283,10 @@ paths:
                 payWith: { type: string, description: "cash, pack:<id>, or membership:<id>" }
                 policyAccepted: { type: boolean }
                 paymentSheet: { type: boolean }
+                ref: { type: string }
+                utmSource: { type: string }
+                utmMedium: { type: string }
+                utmCampaign: { type: string }
       responses:
         "200":
           description: Order, clientSecret, or checkoutUrl
@@ -336,6 +349,10 @@ paths:
                 id: { type: string }
                 code: { type: string }
                 paymentSheet: { type: boolean }
+                ref: { type: string }
+                utmSource: { type: string }
+                utmMedium: { type: string }
+                utmCampaign: { type: string }
       responses:
         "200":
           description: Order or client secret
@@ -353,6 +370,10 @@ paths:
               properties:
                 id: { type: string }
                 code: { type: string }
+                ref: { type: string }
+                utmSource: { type: string }
+                utmMedium: { type: string }
+                utmCampaign: { type: string }
       responses:
         "200":
           description: Checkout URL or confirmation

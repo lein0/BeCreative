@@ -79,6 +79,7 @@ describe("PR 7 weekday Bugbot sweep", () => {
     }
     await db.delete(schema.analyticsEvents).where(sql`${schema.analyticsEvents.anonymousId} like ${`${tag}%`} or ${schema.analyticsEvents.properties}->>'experiment' = ${`${tag}-cta`}`);
     await db.delete(schema.rateBuckets).where(sql`${schema.rateBuckets.key} like ${`%${tag}%`}`);
+    await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-signin:203.0.113.77", "api-track:unknown"]));
     if (teacherIds.length) await db.delete(schema.teachers).where(inArray(schema.teachers.id, teacherIds));
     if (userIds.length) await db.delete(schema.user).where(inArray(schema.user.id, userIds));
     if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
@@ -278,6 +279,137 @@ describe("PR 7 weekday Bugbot sweep", () => {
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const [row] = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.id, outboxId));
     expect(row?.status).toBe("sent");
+  });
+
+  it("stores a subject on mobile screen, search, and class views", async () => {
+    const categoryId = crypto.randomUUID();
+    categoryIds.push(categoryId);
+    await db.insert(schema.categories).values({ id: categoryId, name: "Acting", slug: `${tag}-view` });
+    const owner = await person("view-owner");
+    const student = await person("view-student");
+    const raw = await tokenFor(student);
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-view-studio`, studioName: tag, status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug: `${tag}-view-class`,
+      title: "Scene study",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 8,
+      durationMinutes: 60,
+      pricePerSessionCents: 0,
+      status: "published",
+    });
+    const headers = { authorization: `Bearer ${raw}`, "x-platform": "ios" };
+    const explore = await handleMobileApi(new Request(`http://localhost/api/v1/explore?anonymousId=${tag}-phone`, { headers }), ["explore"]);
+    expect(explore.status).toBe(200);
+    const search = await handleMobileApi(new Request(`http://localhost/api/v1/search?q=scene&anonymousId=${tag}-phone`, { headers }), ["search"]);
+    expect(search.status).toBe(200);
+    const detail = await handleMobileApi(new Request(`http://localhost/api/v1/classes/${tag}-view-class?anonymousId=${tag}-phone`, { headers }), ["classes", `${tag}-view-class`]);
+    expect(detail.status).toBe(200);
+    const rows = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, `${tag}-phone`));
+    expect(rows.map((row) => row.name).sort()).toEqual(["class_viewed", "screen_view", "search"]);
+    expect(rows.every((row) => row.userId === student)).toBe(true);
+  });
+
+  it("rejects client-posted experiment exposures", async () => {
+    const response = await handleMobileApi(new Request("http://localhost/api/v1/track", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.40" },
+      body: JSON.stringify({ name: "experiment_exposed", anonymousId: `${tag}-poison`, properties: { experiment: `${tag}-cta`, variant: "save_seat" } }),
+    }), ["track"]);
+    expect(response.status).toBe(400);
+    const rows = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, `${tag}-poison`));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rate-limits membership purchase with the booking cap", async () => {
+    const student = await person("member-student");
+    const raw = await tokenFor(student);
+    await db.insert(schema.rateBuckets).values({ key: `book:${student}`, windowStart: new Date(), count: 30 });
+    const response = await handleMobileApi(new Request("http://localhost/api/v1/memberships/purchase", {
+      method: "POST",
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: "missing" }),
+    }), ["memberships", "purchase"]);
+    expect(response.status).toBe(429);
+  });
+
+  it("keeps a spoofed forwarding header on the proxy address", async () => {
+    await db.insert(schema.rateBuckets).values({ key: "api-signin:203.0.113.77", windowStart: new Date(), count: 10 });
+    const spoofed = await handleMobileApi(new Request("http://localhost/api/v1/auth/sign-in", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "1.2.3.4, 203.0.113.77" },
+      body: JSON.stringify({ email: "a@example.com", password: "secret" }),
+    }), ["auth", "sign-in"]);
+    expect(spoofed.status).toBe(429);
+    const rotated = await handleMobileApi(new Request("http://localhost/api/v1/auth/sign-in", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "9.9.9.9, 203.0.113.77" },
+      body: JSON.stringify({ email: "b@example.com", password: "secret" }),
+    }), ["auth", "sign-in"]);
+    expect(rotated.status).toBe(429);
+    await db.insert(schema.rateBuckets).values({ key: "api-track:unknown", windowStart: new Date(), count: 120 }).onConflictDoUpdate({ target: schema.rateBuckets.key, set: { count: 120, windowStart: new Date() } });
+    const garbage = await handleMobileApi(new Request("http://localhost/api/v1/track", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": `${tag}-rotate` },
+      body: JSON.stringify({ name: "screen_view", anonymousId: `${tag}-rotate` }),
+    }), ["track"]);
+    expect(garbage.status).toBe(429);
+  });
+
+  it("stores share attribution from a mobile booking", async () => {
+    const categoryId = crypto.randomUUID();
+    categoryIds.push(categoryId);
+    await db.insert(schema.categories).values({ id: categoryId, name: "Acting", slug: `${tag}-attr` });
+    const owner = await person("attr-owner");
+    const student = await person("attr-student");
+    const raw = await tokenFor(student);
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-attr-studio`, studioName: tag, status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug: `${tag}-attr-class`,
+      title: "Free study",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 8,
+      durationMinutes: 60,
+      pricePerSessionCents: 0,
+      status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId,
+      classId,
+      startsAt: new Date("2027-05-01T18:00:00Z"),
+      endsAt: new Date("2027-05-01T19:00:00Z"),
+      localDate: "2027-05-01",
+      capacity: 8,
+    });
+    const response = await handleMobileApi(new Request("http://localhost/api/v1/bookings", {
+      method: "POST",
+      headers: { authorization: `Bearer ${raw}`, "content-type": "application/json", "x-forwarded-for": "203.0.113.50" },
+      body: JSON.stringify({ sessionId, policyAccepted: true, ref: `${tag}-bio`, utm_source: "instagram", utmMedium: "social", utmCampaign: "fall" }),
+    }), ["bookings"]);
+    expect(response.status).toBe(200);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.userId, student));
+    expect(order?.ref).toBe(`${tag}-bio`);
+    expect(order?.utmSource).toBe("instagram");
+    expect(order?.utmMedium).toBe("social");
+    expect(order?.utmCampaign).toBe("fall");
+    if (order) orderIds.push(order.id);
   });
 
   it("keeps tracking redirects on this site when the target has a backslash", async () => {

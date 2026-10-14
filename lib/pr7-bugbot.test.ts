@@ -43,6 +43,7 @@ describe("PR 7 remaining bugbot regressions", () => {
     if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
     await db.delete(schema.analyticsEvents).where(sql`${schema.analyticsEvents.anonymousId} like ${`${tag}%`}`);
     await db.delete(schema.rateBuckets).where(sql`${schema.rateBuckets.key} like ${`%${tag}%`}`);
+    await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-signup:203.0.113.11", "api-signup:203.0.113.12", "api-signup:203.0.113.13", "api-signup:203.0.113.14", "api-signin:203.0.113.15"]));
   });
 
   it("does not issue a bearer token for an unverified signup when verification is required", async () => {
@@ -58,7 +59,7 @@ describe("PR 7 remaining bugbot regressions", () => {
       body: JSON.stringify({ email, password: "correct horse battery", name: "New Student" }),
     }), ["auth", "sign-up"]);
     try {
-      const blocked = await signup(`${tag}-plain@example.com`, `${tag}-plain`);
+      const blocked = await signup(`${tag}-plain@example.com`, "203.0.113.11");
       expect(blocked.status).toBe(200);
       const blockedBody = await blocked.json() as { token?: string; verificationRequired?: boolean };
       expect(blockedBody.verificationRequired).toBe(true);
@@ -66,7 +67,7 @@ describe("PR 7 remaining bugbot regressions", () => {
       const tokens = await db.select().from(schema.apiTokens).where(inArray(schema.apiTokens.userId, userIds));
       expect(tokens).toHaveLength(0);
 
-      const allowed = await signup(`${tag}-verified@example.com`, `${tag}-verified`);
+      const allowed = await signup(`${tag}-verified@example.com`, "203.0.113.12");
       expect(allowed.status).toBe(200);
       const allowedBody = await allowed.json() as { token?: string };
       expect(allowedBody.token).toMatch(/^bc_/);
@@ -82,7 +83,7 @@ describe("PR 7 remaining bugbot regressions", () => {
     try {
       const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/sign-up", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-forwarded-for": `${tag}-open` },
+        headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.13" },
         body: JSON.stringify({ email: `${tag}-open@example.com`, password: "correct horse battery", name: "Open" }),
       }), ["auth", "sign-up"]);
       expect(response.status).toBe(200);
@@ -96,7 +97,7 @@ describe("PR 7 remaining bugbot regressions", () => {
   });
 
   it("throttles student sign-up the same way as sign-in", async () => {
-    const ip = `${tag}-limit`;
+    const ip = "203.0.113.14";
     let status = 200;
     for (let attempt = 0; attempt < 11; attempt += 1) {
       const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/sign-up", {
@@ -117,7 +118,7 @@ describe("PR 7 remaining bugbot regressions", () => {
     try {
       const response = await handleMobileApi(new Request("http://localhost/api/v1/auth/sign-in", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-forwarded-for": `${tag}-signin` },
+        headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.15" },
         body: JSON.stringify({ email: `${tag}-signin-plain@example.com`, password: "secret" }),
       }), ["auth", "sign-in"]);
       expect(response.status).toBe(403);

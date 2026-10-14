@@ -81,6 +81,7 @@ describe("PR 7 bugbot regressions", () => {
     if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
     await db.delete(schema.analyticsEvents).where(sql`${schema.analyticsEvents.anonymousId} like ${`${tag}%`} or ${schema.analyticsEvents.properties}->>'q' like ${`%${tag}%`} or ${schema.analyticsEvents.properties}->>'slug' like ${`${tag}%`}`);
     await db.delete(schema.rateBuckets).where(sql`${schema.rateBuckets.key} like ${`%${tag}%`}`);
+    await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-track:203.0.113.21", "api-track:203.0.113.22"]));
   });
 
   it("cancels an open PaymentIntent before expiring the checkout hold", async () => {
@@ -202,7 +203,7 @@ describe("PR 7 bugbot regressions", () => {
   it("rejects client money events and still accepts page views", async () => {
     const denied = await handleMobileApi(new Request("http://localhost/api/v1/track", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": `${tag}-money` },
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.21" },
       body: JSON.stringify({ name: "checkout_completed", anonymousId: `${tag}-money` }),
     }), ["track"]);
     expect(denied.status).toBe(400);
@@ -210,7 +211,7 @@ describe("PR 7 bugbot regressions", () => {
     expect(stored).toHaveLength(0);
     const allowed = await handleMobileApi(new Request("http://localhost/api/v1/track", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": `${tag}-page` },
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.22" },
       body: JSON.stringify({ name: "page_view", anonymousId: `${tag}-page` }),
     }), ["track"]);
     expect(allowed.status).toBe(200);
@@ -475,8 +476,10 @@ describe("PR 7 bugbot regressions", () => {
       { id: crypto.randomUUID(), name: "checkout_completed", userId: oldStudent, anonymousId: `${tag}-cancelled`, platform: "web", properties: { orderId: cancelledOrder, kind: "booking" }, createdAt: paidAt },
     ]);
     const funnel = await studentFunnel({ from: new Date("2031-04-01T00:00:00Z"), to: new Date("2031-04-30T23:59:59Z") });
+    const paid = funnel.find((step) => step.name === "Paid");
     const attended = funnel.find((step) => step.name === "Attended");
     const rebooked = funnel.find((step) => step.name === "Rebooked in 30 days");
+    expect(paid?.count).toBe(2);
     expect(attended?.count).toBe(1);
     expect(rebooked?.count).toBe(1);
   });
