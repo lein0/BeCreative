@@ -138,6 +138,11 @@ export function membershipRenewalExtendsAccess(input: {
   return input.invoicePeriodEnd.getTime() > input.currentPeriodEnd.getTime();
 }
 
+/** Renewal orders reuse the subscription id. The membership row stays on the original order, so a failed invoice has to name every linked order. */
+export function orderIdsForFailedSubscription(orderIds: string[]) {
+  return [...new Set(orderIds.filter((id) => id.length > 0))];
+}
+
 /** A later paid invoice clears past_due even when this period was already stored. The first invoice stays with checkout. */
 export function membershipPaymentRestoresAccess(input: {
   billingReason: string | null | undefined;

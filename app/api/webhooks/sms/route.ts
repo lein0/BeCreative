@@ -1,5 +1,5 @@
 import { applySmsKeyword, sendKeywordReply } from "@/lib/messaging";
-import { smsWebhookIsForm, twimlMessage } from "@/lib/messaging-rules";
+import { inboundSmsFields, smsWebhookIsForm, twimlMessage } from "@/lib/messaging-rules";
 import { hitRateLimit } from "@/lib/rate-limit";
 import { snsSubscribeUrlAllowed } from "@/lib/sns-url";
 
@@ -20,15 +20,15 @@ export async function POST(request: Request) {
     phone = params.get("From") || params.get("from") || "";
     body = params.get("Body") || params.get("body") || "";
   } else {
-    const json = JSON.parse(raw) as { Type?: string; SubscribeURL?: string; Message?: string; phone?: string; body?: string; From?: string; Body?: string; originationNumber?: string; messageBody?: string };
+    const json = JSON.parse(raw) as { Type?: string; SubscribeURL?: string };
     if (json.Type === "SubscriptionConfirmation" && json.SubscribeURL) {
       if (!snsSubscribeUrlAllowed(json.SubscribeURL)) return new Response("Invalid confirmation URL", { status: 400 });
       await fetch(json.SubscribeURL);
       return Response.json({ ok: true });
     }
-    const message = json.Type === "Notification" && json.Message ? JSON.parse(json.Message) as typeof json : json;
-    phone = message.originationNumber || message.From || message.phone || "";
-    body = message.messageBody || message.Body || message.body || "";
+    const message = inboundSmsFields(json);
+    phone = message.phone;
+    body = message.body;
   }
   if (!phone) return Response.json({ ok: false }, { status: 400 });
   const result = await applySmsKeyword(phone, body);

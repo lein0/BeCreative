@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelAfterAttempt, chooseTextChannel, composeSms, deferredSmsAllowed, guardSms, maySend, reminderJob, smsKeyword, smsOnByDefault, smsWanted, textTransportReady, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
+import { channelAfterAttempt, chooseTextChannel, composeSms, deferredSmsAllowed, guardSms, inboundSmsFields, maySend, reminderJob, smsKeyword, smsOnByDefault, smsWanted, textTransportReady, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
 import { templateFor } from "@/lib/triggers";
 
 describe("text defaults and consent", () => {
@@ -81,6 +81,22 @@ describe("SMS keywords and iMessage fallback", () => {
     expect(deferredSmsAllowed({ triggerOn: true, event: "booking.reminder", textEligible: true, savedSms: null, smsOptIn: false })).toBe(false);
     expect(deferredSmsAllowed({ triggerOn: true, event: "booking.reminder", textEligible: true, savedSms: false, smsOptIn: true })).toBe(false);
     expect(deferredSmsAllowed({ triggerOn: false, event: "waitlist.spot_open", textEligible: true, savedSms: null, smsOptIn: true })).toBe(false);
+  });
+
+  it("reads STOP from a Telnyx message.received payload", () => {
+    const fields = inboundSmsFields({
+      data: {
+        event_type: "message.received",
+        payload: { from: { phone_number: "+13105550100" }, text: "STOP" },
+      },
+    });
+    expect(fields).toEqual({ phone: "+13105550100", body: "STOP" });
+    expect(smsKeyword(fields.body)).toBe("stop");
+    expect(inboundSmsFields({ originationNumber: "+13105550100", messageBody: "HELP" })).toEqual({ phone: "+13105550100", body: "HELP" });
+    expect(inboundSmsFields({
+      Type: "Notification",
+      Message: JSON.stringify({ data: { payload: { from: { phone_number: "+13105550199" }, text: "START" } } }),
+    })).toEqual({ phone: "+13105550199", body: "START" });
   });
 
   it("sends when only iMessage is configured, and includes the visit reminder text flag", () => {

@@ -120,6 +120,45 @@ export function smsWebhookIsForm(contentType: string) {
   return contentType.toLowerCase().includes("application/x-www-form-urlencoded");
 }
 
+function record(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function textField(source: Record<string, unknown> | null, key: string) {
+  const value = source?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function phoneField(value: unknown) {
+  if (typeof value === "string") return value;
+  return textField(record(value), "phone_number");
+}
+
+function unwrapInbound(json: unknown) {
+  const root = record(json);
+  if (!root) return null;
+  if (root.Type === "Notification" && typeof root.Message === "string") {
+    try {
+      return record(JSON.parse(root.Message)) ?? root;
+    } catch {
+      return root;
+    }
+  }
+  return root;
+}
+
+/** Twilio form fields are read separately. JSON covers AWS Pinpoint and Telnyx `data.payload`. */
+export function inboundSmsFields(json: unknown) {
+  const message = unwrapInbound(json);
+  const data = record(message?.data);
+  const payload = record(data?.payload) ?? record(message?.payload);
+  return {
+    phone: textField(message, "originationNumber") || textField(message, "From") || textField(message, "phone") || phoneField(payload?.from),
+    body: textField(message, "messageBody") || textField(message, "Body") || textField(message, "body") || textField(payload, "text"),
+  };
+}
+
 export function twimlMessage(body: string) {
   const text = body
     .replace(/&/g, "&amp;")

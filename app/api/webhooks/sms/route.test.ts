@@ -46,4 +46,21 @@ describe("SMS keyword webhook", () => {
     expect(response.status).toBe(200);
     expect(sendKeywordReply).toHaveBeenCalledWith("+13105550100", "BeCreative class reminders. Reply STOP to opt out.");
   });
+
+  it("reads STOP from a Telnyx message.received payload", async () => {
+    vi.mocked(applySmsKeyword).mockResolvedValue({ keyword: "stop", reply });
+    const response = await POST(new Request("http://localhost/api/webhooks/sms", {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        data: {
+          event_type: "message.received",
+          payload: { from: { phone_number: "+13105550100" }, text: "STOP" },
+        },
+      }),
+    }));
+    expect(response.status).toBe(200);
+    expect(applySmsKeyword).toHaveBeenCalledWith("+13105550100", "STOP");
+    expect(sendKeywordReply).toHaveBeenCalledWith("+13105550100", reply);
+  });
 });

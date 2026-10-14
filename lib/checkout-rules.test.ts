@@ -13,6 +13,7 @@ import {
   chargeFullyRefunded,
   membershipPaymentRestoresAccess,
   membershipRenewalExtendsAccess,
+  orderIdsForFailedSubscription,
   paidInvoiceRenewal,
   refundCancelsBooking,
   renewalChargeSplit,
@@ -172,6 +173,11 @@ describe("membership renewals", () => {
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(true);
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_create", currentStatus: "past_due", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(false);
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: end })).toBe(false);
+  });
+
+  it("keeps the original order when a renewal order shares the subscription", () => {
+    expect(orderIdsForFailedSubscription(["renewal:in_9", "order_original", "renewal:in_9"])).toEqual(["renewal:in_9", "order_original"]);
+    expect(orderIdsForFailedSubscription(["", "order_original"])).toEqual(["order_original"]);
   });
 });
 
