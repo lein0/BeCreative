@@ -191,6 +191,8 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   onClose,
+  confirmDisabled = false,
+  dismissible = true,
 }: {
   visible: boolean;
   title: string;
@@ -198,12 +200,17 @@ export function ConfirmDialog({
   confirmLabel: string;
   onConfirm: () => void;
   onClose: () => void;
+  confirmDisabled?: boolean;
+  dismissible?: boolean;
 }) {
+  const close = () => {
+    if (dismissible) onClose();
+  };
   return (
-    <Sheet visible={visible} title={title} onClose={onClose}>
+    <Sheet visible={visible} title={title} onClose={close}>
       <Body>{body}</Body>
-      <Button label={confirmLabel} onPress={onConfirm} />
-      <Button label="Keep it" tone="ghost" onPress={onClose} />
+      <Button label={confirmLabel} disabled={confirmDisabled} onPress={onConfirm} />
+      <Button label="Keep it" tone="ghost" disabled={!dismissible} onPress={close} />
     </Sheet>
   );
 }

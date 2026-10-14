@@ -96,6 +96,12 @@ export function waiverSignGate(input: {
   return { showNameField: true, readyToSign: true, blockReason: null };
 }
 
+/** A failed waiver fetch is only a checkout error when this class asks for a signature. */
+export function waiverLoadNotice(classRequiresSignature: boolean, loadFailed: boolean) {
+  if (!classRequiresSignature || !loadFailed) return null;
+  return "The waiver didn't load. Try again before checkout.";
+}
+
 export function withoutStaleWaiverError(current: string | null) {
   if (current && WAIVER_GATE_ERRORS.has(current)) return null;
   return current;

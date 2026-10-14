@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath, waiverSignGate, withoutStaleWaiverError } from "../../../lib/mobile-client";
+import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath, waiverLoadNotice, waiverSignGate, withoutStaleWaiverError } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -59,7 +59,8 @@ export default function BookScreen() {
       }).catch(() => {
         if (stale) return;
         setWaiverFailed(true);
-        setError("The waiver didn't load. Try again before checkout.");
+        const notice = waiverLoadNotice(next.signatureRequired, true);
+        setError((current) => notice ?? withoutStaleWaiverError(current));
       });
     }).catch((err: unknown) => {
       if (!stale) setError(err instanceof ApiError ? err.message : "Could not load this class.");

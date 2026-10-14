@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, resumePurchasePath, systemPathForIncomingUrl, waiverSignGate, withoutStaleWaiverError } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingSubmitLock, checkoutFollowsBooking, fieldAutoCapitalize, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, resumePurchasePath, systemPathForIncomingUrl, waiverLoadNotice, waiverSignGate, withoutStaleWaiverError } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -64,6 +64,11 @@ describe("live mobile checkout", () => {
     expect(already.readyToSign).toBe(false);
     expect(withoutStaleWaiverError(pending.blockReason)).toBeNull();
     expect(withoutStaleWaiverError("Accept the cancellation policy.")).toBe("Accept the cancellation policy.");
+    const unsignedClass = waiverSignGate({ classRequiresSignature: false, waiver: null, loadFailed: true, signedName: "Maya Chen" });
+    expect(unsignedClass.blockReason).toBeNull();
+    expect(unsignedClass.readyToSign).toBe(false);
+    expect(waiverLoadNotice(false, true)).toBeNull();
+    expect(waiverLoadNotice(true, true)).toMatch(/didn't load/i);
   });
 
   it("keeps PaymentSheet returns off the bookings route", () => {

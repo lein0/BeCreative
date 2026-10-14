@@ -1,9 +1,10 @@
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { DeleteAccountInput, SocialProvider } from "@mobile/api/types";
+import { accountDeleteDialog, accountDeleteStart } from "@mobile/account/delete-dialog";
 import { friendlySocialError } from "@mobile/auth/messages";
 import { Body, Button, Card, ConfirmDialog, Display, Field, Notice, Title, ToggleRow } from "@mobile/components/ui";
 import { appleSignIn, googleSignIn } from "@mobile/device/social";
@@ -24,6 +25,7 @@ export default function You() {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState<DeleteAccountInput | null>(null);
   const [busy, setBusy] = useState(false);
+  const deleting = useRef(false);
 
   useEffect(() => {
     if (!ready || !user) return;
@@ -95,7 +97,8 @@ export default function You() {
   }
 
   async function removeAccount() {
-    if (!pending) return;
+    if (!pending || accountDeleteStart(deleting.current) === "ignore") return;
+    deleting.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -112,6 +115,7 @@ export default function You() {
         setError("Could not delete the account.");
       }
     } finally {
+      deleting.current = false;
       setBusy(false);
     }
   }
@@ -158,6 +162,8 @@ export default function You() {
         title="Delete account"
         body="Your name and email are removed, and this device is signed out. This can't be undone in the app."
         confirmLabel={busy ? "Deleting…" : "Delete my account"}
+        confirmDisabled={accountDeleteDialog(busy).confirmDisabled}
+        dismissible={accountDeleteDialog(busy).dismissible}
         onConfirm={() => void removeAccount()}
         onClose={() => setPending(null)}
       />
