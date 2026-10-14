@@ -5,6 +5,7 @@ import { capture, stitchAnonymous } from "@/lib/analytics";
 import { auth, emailVerificationRequired } from "@/lib/auth";
 import { bookSession, cancelBooking, purchaseOffer, rescheduleBooking } from "@/lib/booking-service";
 import { disclosureForMembership, disclosurePayload, cancelMembership } from "@/lib/renewal";
+import { usableTimeZone } from "@/lib/sms-window";
 import { db } from "@/lib/db";
 import {
   apiTokens,
@@ -511,18 +512,21 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "PUT" && root === "preferences") {
-    const body = await request.json() as { event?: string; email?: boolean; inApp?: boolean; sms?: boolean; push?: boolean; cadence?: string; smsOptIn?: boolean; marketingOptIn?: boolean; phone?: string };
+    const body = await request.json() as { event?: string; email?: boolean; inApp?: boolean; sms?: boolean; push?: boolean; cadence?: string; smsOptIn?: boolean; marketingOptIn?: boolean; phone?: string; timezone?: string };
     if (body.event) {
       const [existing] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, actor.id), eq(notificationPreferences.event, body.event))).limit(1);
       const row = { email: Boolean(body.email), inApp: body.inApp !== false, sms: Boolean(body.sms), push: Boolean(body.push), cadence: body.cadence === "daily" ? "daily" : "instant" };
       if (existing) await db.update(notificationPreferences).set(row).where(eq(notificationPreferences.id, existing.id));
       else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event: body.event, ...row });
     }
-    await db.update(user).set({
+    const timezone = body.timezone === undefined ? null : usableTimeZone(body.timezone);
+    const profile = {
       ...(body.phone !== undefined ? { phone: body.phone || null } : {}),
       ...(body.smsOptIn !== undefined ? { smsOptIn: body.smsOptIn } : {}),
       ...(body.marketingOptIn !== undefined ? { marketingOptIn: body.marketingOptIn } : {}),
-    }).where(eq(user.id, actor.id));
+      ...(timezone ? { timezone } : {}),
+    };
+    if (Object.keys(profile).length) await db.update(user).set(profile).where(eq(user.id, actor.id));
     return json({ ok: true });
   }
 

@@ -133,6 +133,7 @@ export type PreferenceUpdate = {
   smsOptIn?: boolean;
   marketingOptIn?: boolean;
   phone?: string;
+  timezone?: string;
 };
 
 export type HelpArticleSummary = { slug: string; title: string; category: string };

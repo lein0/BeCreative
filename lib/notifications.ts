@@ -1,6 +1,6 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { bookings, classes, deviceTokens, notificationOutbox, notificationPreferences, notifications, platformSettings, recurrences, teachers, triggerOverrides, unsubscribeTokens, user } from "@/lib/db/schema";
+import { bookingSessions, bookings, classes, deviceTokens, notificationOutbox, notificationPreferences, notifications, platformSettings, recurrences, services, sessions, teachers, triggerOverrides, unsubscribeTokens, user, visitBookings } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { appOrigin } from "@/lib/env";
@@ -9,6 +9,7 @@ import { dispatchText, smsProviderConfigured } from "@/lib/messaging";
 import { maySend, smsWanted } from "@/lib/messaging-rules";
 import { channelsFor, defaultPrefs, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { smsSendDecision } from "@/lib/sms-window";
+import { pickActivityTimeZone, smsHrefTarget, teacherActivityTimeZone } from "@/lib/sms-zone";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { shortenLink } from "@/lib/short-links";
@@ -167,29 +168,72 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
 }
 
 async function classTimeZone(classId: string) {
-  const [rule] = await db.select({ timezone: recurrences.timezone }).from(recurrences).where(eq(recurrences.classId, classId)).limit(1);
+  const [rule] = await db.select({ timezone: recurrences.timezone }).from(recurrences).where(eq(recurrences.classId, classId)).orderBy(asc(recurrences.id)).limit(1);
   return rule?.timezone ?? null;
+}
+
+async function teacherZones(teacherIds: string[]) {
+  const map = new Map<string, { locationId: string | null; timeZone: string | null }[]>();
+  if (!teacherIds.length) return map;
+  const rows = await db
+    .select({ teacherId: classes.teacherId, locationId: classes.locationId, timeZone: recurrences.timezone })
+    .from(classes)
+    .innerJoin(recurrences, eq(recurrences.classId, classes.id))
+    .where(inArray(classes.teacherId, teacherIds))
+    .orderBy(asc(classes.id), asc(recurrences.id));
+  for (const row of rows) {
+    const list = map.get(row.teacherId) ?? [];
+    list.push({ locationId: row.locationId, timeZone: row.timeZone });
+    map.set(row.teacherId, list);
+  }
+  return map;
+}
+
+async function activityTimeZone(userId: string, href: string | null) {
+  const target = smsHrefTarget(href);
+  if (target?.kind === "class") {
+    const [klass] = await db.select({ id: classes.id }).from(classes).where(eq(classes.slug, target.slug)).limit(1);
+    const zone = klass ? await classTimeZone(klass.id) : null;
+    if (zone) return zone;
+  }
+  if (target?.kind === "visit") {
+    const [service] = await db.select({ teacherId: services.teacherId, locationId: services.locationId }).from(services).where(eq(services.slug, target.slug)).limit(1);
+    if (service) {
+      const zones = await teacherZones([service.teacherId]);
+      const zone = teacherActivityTimeZone(zones.get(service.teacherId) ?? [], service.locationId);
+      if (zone) return zone;
+    }
+  }
+  const classRows = await db
+    .select({ startsAt: sessions.startsAt, timeZone: recurrences.timezone })
+    .from(bookings)
+    .innerJoin(bookingSessions, eq(bookingSessions.bookingId, bookings.id))
+    .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
+    .leftJoin(recurrences, eq(recurrences.classId, bookings.classId))
+    .where(and(eq(bookings.userId, userId), eq(bookings.status, "confirmed"), ne(sessions.status, "cancelled")));
+  const visitRows = await db
+    .select({ startsAt: visitBookings.startsAt, teacherId: services.teacherId, locationId: services.locationId })
+    .from(visitBookings)
+    .innerJoin(services, eq(services.id, visitBookings.serviceId))
+    .where(and(eq(visitBookings.userId, userId), eq(visitBookings.status, "confirmed")));
+  const visitTeachers = await teacherZones([...new Set(visitRows.map((row) => row.teacherId))]);
+  const booked = pickActivityTimeZone([
+    ...classRows.map((row) => ({ startsAt: row.startsAt.getTime(), timeZone: row.timeZone })),
+    ...visitRows.map((row) => ({
+      startsAt: row.startsAt.getTime(),
+      timeZone: teacherActivityTimeZone(visitTeachers.get(row.teacherId) ?? [], row.locationId),
+    })),
+  ]);
+  if (booked) return booked;
+  const [teacher] = await db.select({ id: teachers.id }).from(teachers).where(eq(teachers.userId, userId)).limit(1);
+  if (!teacher) return null;
+  const own = await teacherZones([teacher.id]);
+  return teacherActivityTimeZone(own.get(teacher.id) ?? [], null);
 }
 
 async function smsZone(userId: string, href: string | null) {
   const [person] = await db.select({ timezone: user.timezone }).from(user).where(eq(user.id, userId)).limit(1);
-  let classTimeZoneValue: string | null = null;
-  const classSlug = href?.match(/^\/c\/([^/?#]+)/)?.[1];
-  if (classSlug) {
-    const [klass] = await db.select({ id: classes.id }).from(classes).where(eq(classes.slug, classSlug)).limit(1);
-    if (klass) classTimeZoneValue = await classTimeZone(klass.id);
-  }
-  if (!classTimeZoneValue) {
-    const [booking] = await db.select({ classId: bookings.classId }).from(bookings).where(and(eq(bookings.userId, userId), eq(bookings.status, "confirmed"))).limit(1);
-    if (booking) classTimeZoneValue = await classTimeZone(booking.classId);
-  }
-  if (!classTimeZoneValue) {
-    const [teacher] = await db.select({ id: teachers.id }).from(teachers).where(eq(teachers.userId, userId)).limit(1);
-    if (teacher) {
-      const [klass] = await db.select({ id: classes.id }).from(classes).where(eq(classes.teacherId, teacher.id)).limit(1);
-      if (klass) classTimeZoneValue = await classTimeZone(klass.id);
-    }
-  }
+  const classTimeZoneValue = await activityTimeZone(userId, href);
   return smsSendDecision(new Date(), { recipientTimeZone: person?.timezone, classTimeZone: classTimeZoneValue }).timeZone;
 }
 

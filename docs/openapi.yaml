@@ -672,6 +672,7 @@ paths:
                 smsOptIn: { type: boolean }
                 marketingOptIn: { type: boolean }
                 phone: { type: string }
+                timezone: { type: string, description: Device IANA zone, stored on the user so texts use the recipient's clock. }
       responses:
         "200":
           description: Saved

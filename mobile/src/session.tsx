@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform } from "react-native";
 import { isCatalogEvent } from "../../lib/analytics-events";
+import { syncDeviceTimeZone } from "../../lib/sms-zone";
 import { createStudentApi, resolveApiMode, type StudentApi } from "./api";
 import type { AuthResult, ExperimentAssignment, PlatformName, StudentUser, Vertical } from "./api/types";
 import { readStored, writeStored } from "./storage";
@@ -94,6 +95,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(() => {
+    if (!user) return;
+    void syncDeviceTimeZone((body) => api.updatePreferences(body)).catch(() => undefined);
+  }, [api, user]);
 
   const acceptSession = useCallback(async (session: AuthResult) => {
     if (!session.token) return;
