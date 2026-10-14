@@ -4,10 +4,11 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 config({ path: ".env.local" });
 
 const emailOk = vi.hoisted(() => ({ current: true }));
+const failEmails = vi.hoisted(() => ({ current: new Set<string>() }));
 const stopRenewal = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
 
 vi.mock("@/lib/email", () => ({
-  sendEmail: vi.fn(async () => ({ id: "email", ok: emailOk.current })),
+  sendEmail: vi.fn(async (input?: { to?: string[] }) => ({ id: "email", ok: emailOk.current && !input?.to?.some((address) => failEmails.current.has(address)) })),
   sendIndividually: vi.fn(async () => ({ id: "batch", ok: true })),
 }));
 
@@ -100,6 +101,7 @@ async function subscription(input: {
 describe("renewal scheduler regressions", () => {
   beforeEach(() => {
     emailOk.current = true;
+    failEmails.current = new Set();
     stopRenewal.mockReset();
     stopRenewal.mockResolvedValue({ ok: true });
     vi.mocked(sendEmail).mockClear();
@@ -295,5 +297,51 @@ describe("renewal scheduler regressions", () => {
     const [sub] = await db.select().from(schema.membershipSubscriptions).where(eq(schema.membershipSubscriptions.id, subId));
     expect(sub?.cancelAtPeriodEnd).toBe(false);
     expect(sub?.renewalPriceCents).toBe(12000);
+  });
+
+  it("keeps the previous price when another member's price notice was the one that sent", async () => {
+    const now = new Date("2026-10-12T12:00:00.000Z");
+    const effectiveAt = new Date(now.getTime() + 21 * day);
+    const owner = await person("owner-shared-price");
+    const noticed = await person("price-noticed");
+    const missed = await person("price-missed");
+    failEmails.current.add(`${tag}-price-missed@example.com`);
+    const teacherId = await studio(owner);
+    const membershipId = await plan(teacherId, 1);
+    await db.insert(schema.membershipPriceChanges).values({
+      id: crypto.randomUUID(),
+      membershipId,
+      oldPriceCents: 12000,
+      newPriceCents: 14000,
+      effectiveAt,
+    });
+    const periodEnd = new Date(now.getTime() + 40 * day);
+    const noticedId = await subscription({
+      userId: noticed,
+      teacherId,
+      membershipId,
+      createdAt: new Date(now.getTime() - 40 * day),
+      periodStart: now,
+      periodEnd,
+      renewalPriceCents: 12000,
+    });
+    const missedId = await subscription({
+      userId: missed,
+      teacherId,
+      membershipId,
+      createdAt: new Date(now.getTime() - 40 * day),
+      periodStart: now,
+      periodEnd,
+      renewalPriceCents: 12000,
+    });
+    await scheduleRenewalNotices(now, [noticedId, missedId]);
+    await scheduleRenewalNotices(now, [noticedId, missedId]);
+    const rows = await db.select().from(schema.membershipSubscriptions).where(inArray(schema.membershipSubscriptions.id, [noticedId, missedId]));
+    expect(rows.find((row) => row.id === noticedId)?.renewalPriceCents).toBe(14000);
+    expect(rows.find((row) => row.id === missedId)?.renewalPriceCents).toBe(12000);
+    const [change] = await db.select().from(schema.membershipPriceChanges).where(eq(schema.membershipPriceChanges.membershipId, membershipId));
+    expect(change?.noticeSentAt).toBeTruthy();
+    const missedNotices = await db.select().from(schema.renewalNotices).where(eq(schema.renewalNotices.subscriptionId, missedId));
+    expect(missedNotices.some((notice) => notice.kind === "price_change" && notice.status === "sent")).toBe(false);
   });
 });

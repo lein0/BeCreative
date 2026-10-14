@@ -12,6 +12,7 @@ import {
   legalIdentity,
   membershipOffer,
   planNotices,
+  memberPriceNoticeSentAt,
   missedNoticeSkipsCharge,
   noticeOwedToMember,
   missedRequiredNotice,
@@ -321,6 +322,20 @@ describe("notice scheduler windows", () => {
     expect(missedNoticeSkipsCharge("intro_ending")).toBe(true);
     expect(missedNoticeSkipsCharge("material_change")).toBe(true);
     expect(missedNoticeSkipsCharge("price_change")).toBe(false);
+    const effectiveAtForMember = noon("2026-08-01");
+    expect(memberPriceNoticeSentAt([
+      { kind: "price_change", eventOn: "2026-08-01", status: "failed", sentAt: null },
+      { kind: "price_change", eventOn: "2026-09-01", status: "sent", sentAt: noon("2026-07-11") },
+    ], effectiveAtForMember)).toBeNull();
+    expect(memberPriceNoticeSentAt([
+      { kind: "price_change", eventOn: "2026-08-01", status: "sent", sentAt: noon("2026-07-11") },
+    ], effectiveAtForMember)).toEqual(noon("2026-07-11"));
+    expect(priceAfterNotice({
+      lockedPriceCents: 12000,
+      catalogPriceCents: 14000,
+      change: { newPriceCents: 14000, effectiveAt: effectiveAtForMember, noticeSentAt: memberPriceNoticeSentAt([], effectiveAtForMember) },
+      renewsAt: effectiveAtForMember,
+    }).priceCents).toBe(12000);
     expect(noticeOwedToMember(noon("2026-07-01"), noon("2026-08-01"))).toBe(true);
     expect(noticeOwedToMember(noon("2026-08-02"), noon("2026-08-01"))).toBe(false);
     expect(noticeAlert("pre_renewal", "subscription sub", true)).toContain("will not be charged");

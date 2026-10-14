@@ -35,6 +35,7 @@ import {
   mergeTemplates,
   missedNoticeSkipsCharge,
   noticeAlert,
+  memberPriceNoticeSentAt,
   noticeMail,
   noticeOwedToMember,
   planNotices,
@@ -556,6 +557,8 @@ export async function scheduleRenewalNotices(now = new Date(), subscriptionIds?:
           subject: mail.subject,
           body: mail.text,
         }).where(eq(renewalNotices.id, prior.id));
+        prior.status = status;
+        prior.sentAt = status === "sent" ? now : null;
       } else {
         const inserted = await db.insert(renewalNotices).values({
           id: crypto.randomUUID(),
@@ -573,11 +576,11 @@ export async function scheduleRenewalNotices(now = new Date(), subscriptionIds?:
           body: mail.text,
         }).onConflictDoNothing().returning();
         if (!inserted.length) continue;
+        mine.push(inserted[0]);
       }
       if (status === "sent") sent += 1;
       if (status === "sent" && decision.kind === "price_change" && price) {
         await db.update(membershipPriceChanges).set({ noticeSentAt: now }).where(eq(membershipPriceChanges.id, price.id));
-        price.noticeSentAt = now;
       }
       if (status === "sent" && decision.kind === "material_change" && material) {
         await db.update(membershipMaterialChanges).set({ noticeSentAt: now }).where(eq(membershipMaterialChanges.id, material.id));
@@ -590,7 +593,7 @@ export async function scheduleRenewalNotices(now = new Date(), subscriptionIds?:
     const priced = priceAfterNotice({
       lockedPriceCents: sub.renewalPriceCents,
       catalogPriceCents: plan.priceCents,
-      change: applicable ? { newPriceCents: applicable.newPriceCents, effectiveAt: applicable.effectiveAt, noticeSentAt: applicable.noticeSentAt } : null,
+      change: applicable ? { newPriceCents: applicable.newPriceCents, effectiveAt: applicable.effectiveAt, noticeSentAt: memberPriceNoticeSentAt(mine, applicable.effectiveAt) } : null,
       renewsAt: sub.currentPeriodEnd,
       now,
     });

@@ -578,6 +578,16 @@ export function missedNoticeSkipsCharge(kind: NoticeKind) {
   return PAUSE_NOTICE_KINDS.has(kind);
 }
 
+/** A plan-level stamp is not this member's notice. Only their own sent row counts. */
+export function memberPriceNoticeSentAt(
+  notices: { kind: string; eventOn: string; status: string; sentAt: Date | null }[],
+  effectiveAt: Date,
+) {
+  const eventOn = isoDate(effectiveAt);
+  const row = notices.find((notice) => notice.kind === "price_change" && notice.eventOn === eventOn && notice.status === "sent");
+  return row?.sentAt ?? null;
+}
+
 export function priceAfterNotice(input: {
   lockedPriceCents: number;
   catalogPriceCents: number;
