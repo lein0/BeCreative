@@ -61,7 +61,7 @@ import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
-import { applyStudioCredit, entitlementRestoreKey, parseStudioCreditLedgerSource, refundFailureKeepsSeat, seriesProrate, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { applyStudioCredit, entitlementRestoreKey, parseStudioCreditLedgerSource, refundFailureKeepsSeat, seriesProrate, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS, waitlistEventForAudience } from "@/lib/ship-defaults";
@@ -757,8 +757,8 @@ export async function cancelBooking(userId: string, bookingId: string) {
   if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
-  const upcoming = rows.filter((session) => session.startsAt > now).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
-  if (!upcoming.length) return { error: "This class has already started." };
+  const counts = studentCancelRefundCounts(rows, now);
+  if (!counts.hasFuture) return { error: "This class has already started." };
   const [klass] = await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1);
   const [platform] = await db.select().from(platformSettings).limit(1);
   const [override] = klass ? await db.select().from(teacherPolicies).where(eq(teacherPolicies.teacherId, klass.teacherId)).limit(1) : [];
@@ -771,10 +771,12 @@ export async function cancelBooking(userId: string, bookingId: string) {
     },
     override ?? null,
   );
-  const outcome = studentCancelOutcome({ now, startsAt: upcoming[0]!.startsAt, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours });
-  const fee = lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents });
-  const sessionCount = Math.max(1, rows.length);
-  const cancelledCount = upcoming.length;
+  const outcome = counts.refundAnchor
+    ? studentCancelOutcome({ now, startsAt: counts.refundAnchor, fullRefundHours: policy.fullRefundHours, creditOnlyHours: policy.creditOnlyHours })
+    : "none";
+  const fee = counts.cancelledCount > 0 ? lateCancelFee({ outcome, lateCancelFeeCents: policy.lateCancelFeeCents }) : 0;
+  const sessionCount = counts.sessionCount;
+  const cancelledCount = counts.cancelledCount;
   if (booking.orderId && outcome === "full_refund") {
     const result = await issueRefund({
       orderId: booking.orderId,
@@ -818,7 +820,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       event: refunded ? "booking.refunded" : "booking.cancelled",
       audience: "student",
       title: `Cancelled ${klass.title}`,
-      body: refunded ? (attendedRemain ? "A refund for the sessions you have not attended is on the way." : "A full refund is on the way to your original payment method.") : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
+      body: cancelledCount === 0 ? "The remaining dates were already cancelled, so no further refund is due." : refunded ? (attendedRemain ? "A refund for the sessions you have not attended is on the way." : "A full refund is on the way to your original payment method.") : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
       href: `/c/${klass.slug}`,
     });
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);

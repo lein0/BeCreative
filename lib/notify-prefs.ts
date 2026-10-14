@@ -51,6 +51,11 @@ export function nextQuietEnd(end: string, now = new Date(), timeZone = SHIP_DEFA
   return zonedTimeToUtc(addDaysYmd(today, 1), clock, timeZone);
 }
 
+/** Inbox scanners prefetch GET links. Only an explicit POST confirms unsubscribe. */
+export function unsubscribeConfirmedBy(method: string) {
+  return method.toUpperCase() === "POST";
+}
+
 export function unsubscribeUrl(origin: string, token: string) {
   return `${origin.replace(/\/$/, "")}/unsubscribe/${encodeURIComponent(token)}`;
 }

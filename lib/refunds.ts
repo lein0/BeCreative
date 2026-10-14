@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { auditLog, orders, packPurchases, promoRedemptions, refundLedger, studioCredits } from "@/lib/db/schema";
-import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundCashAlreadyReserved, refundIdempotencyKey, refundLedgerStatus, refundReplayIsSuccess, reservedStripeMarker, seriesProrate, nextStripeRefundKey } from "@/lib/refund-math";
+import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundCashAlreadyReserved, refundIdempotencyKey, refundLedgerStatus, refundReplayIsSuccess, reservedStripeMarker, seriesProrate, nextStripeRefundKey, studioCreditRestoreForPostedRefund } from "@/lib/refund-math";
 import { getStripe } from "@/lib/stripe";
 
 export async function issueRefund(input: {
@@ -146,8 +146,10 @@ export async function issueRefund(input: {
   }
   const full = posted.full;
   if (full) {
-    const { releaseSeatsForRefundedOrder } = await import("@/lib/booking-service");
+    const { releaseSeatsForRefundedOrder, restoreStudioCreditForOrder } = await import("@/lib/booking-service");
     await releaseSeatsForRefundedOrder(order.id);
+    const credit = studioCreditRestoreForPostedRefund({ full, orderId: order.id });
+    if (credit) await restoreStudioCreditForOrder(order.id, credit);
   }
   await db.insert(auditLog).values({
     id: crypto.randomUUID(),

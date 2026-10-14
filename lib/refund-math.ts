@@ -34,6 +34,44 @@ export function refundIdempotencyKey(orderId: string, amountCents: number, reaso
   return scope ? `refund:${orderId}:${scope}:${amountCents}:${reason}` : `refund:${orderId}:${amountCents}:${reason}`;
 }
 
+/** Ledger keys are colon-separated. The session id is its own segment. */
+export function refundLedgerMatchesSession(idempotencyKey: string, sessionId: string) {
+  return Boolean(sessionId) && idempotencyKey.split(":").includes(sessionId);
+}
+
+/** A posted refund is done. Failed and in-flight card refunds can be submitted again. */
+export function teacherRefundStillOpen(status: string) {
+  return status === "failed" || status === "pending";
+}
+
+/** The date is already cancelled, so a later submit only retries the card refund. */
+export function teacherCancelRetriesRefundOnly(sessionStatus: string) {
+  return sessionStatus === "cancelled";
+}
+
+/**
+ * Dates the teacher already cancelled were prorated then. A student cancel refunds only the dates still on the books.
+ * sessionCount stays the original series length so the share matches the first proration.
+ */
+export function studentCancelRefundCounts(sessions: { startsAt: Date; status: string }[], now: Date) {
+  const future = sessions.filter((session) => session.startsAt.getTime() > now.getTime());
+  const refundable = future
+    .filter((session) => session.status !== "cancelled")
+    .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+  return {
+    hasFuture: future.length > 0,
+    sessionCount: Math.max(1, sessions.length),
+    cancelledCount: refundable.length,
+    refundAnchor: refundable[0]?.startsAt ?? null,
+  };
+}
+
+/** A full posted refund gives back studio credit that was spent on the order. A partial refund does not. */
+export function studioCreditRestoreForPostedRefund(input: { full: boolean; orderId: string }) {
+  if (!input.full) return null;
+  return { scope: `refund-${input.orderId}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true as const };
+}
+
 /** A successful submit clears the key. An error redirect keeps it so the retry is the same refund. */
 export function nextAdminRefundKey(input: { stored: string | null; succeeded: boolean; minted: string }) {
   if (input.succeeded || !input.stored?.trim()) return input.minted;

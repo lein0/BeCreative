@@ -1,11 +1,11 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { resolvedPolicy, studentCancelOutcome, teacherRefundChoice, lateCancelFee } from "@/lib/cancel-policy";
-import { sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
+import { sessionBelongsToClass } from "@/lib/checkout-rules";
 import { db } from "@/lib/db";
-import { bookingSessions, bookings, classes, creditLedger, introRedemptions, membershipSubscriptions, orders, packPurchases, platformSettings, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
+import { bookingSessions, bookings, classes, creditLedger, introRedemptions, membershipSubscriptions, orders, packPurchases, platformSettings, refundLedger, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
 import { shouldRestoreEntitlement } from "@/lib/pricing";
-import { entitlementRestoreKey, introRestoresWhenBookingCloses, packCreditsToRestore, refundFailureKeepsSeat } from "@/lib/refund-math";
+import { entitlementRestoreKey, introRestoresWhenBookingCloses, packCreditsToRestore, refundFailureKeepsSeat, refundLedgerMatchesSession, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
 import { releaseVisitSeat, restoreStudioCreditForOrder } from "@/lib/booking-service";
 
@@ -33,13 +33,13 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
   if (input.classId && !sessionBelongsToClass(session.classId, input.classId)) return { error: "That date is not part of this class." };
   const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
   if (!klass) return { error: "Class not found." };
-  if (sessionCancelAlreadyApplied(session.status)) return { ok: true, replayed: true, refundedCents: 0 };
+  if (teacherCancelRetriesRefundOnly(session.status)) return retryOpenTeacherRefunds(session.id, input.actorUserId);
   const claimed = await db
     .update(sessions)
     .set({ status: "cancelled", exception: "skipped", cancellationReason: input.reason || "Teacher cancelled this date" })
     .where(and(eq(sessions.id, session.id), ne(sessions.status, "cancelled")))
     .returning();
-  if (!claimed.length) return { ok: true, replayed: true, refundedCents: 0 };
+  if (!claimed.length) return retryOpenTeacherRefunds(session.id, input.actorUserId);
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.sessionId, session.id));
   const bookingIds = links.map((link) => link.bookingId);
   const bookingRows = bookingIds.length ? await db.select().from(bookings).where(inArray(bookings.id, bookingIds)) : [];
@@ -146,6 +146,38 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
   }
   if (refundErrors.length) return { error: refundErrors[0], refundedCents: refunded };
   return { ok: true, refundedCents: refunded };
+}
+
+/** The date stays cancelled. This only resubmits card refunds that never posted. */
+async function retryOpenTeacherRefunds(sessionId: string, actorUserId: string) {
+  const links = await db.select().from(bookingSessions).where(eq(bookingSessions.sessionId, sessionId));
+  const bookingIds = links.map((link) => link.bookingId);
+  const bookingRows = bookingIds.length ? await db.select().from(bookings).where(inArray(bookings.id, bookingIds)) : [];
+  let refunded = 0;
+  const refundErrors: string[] = [];
+  let retried = false;
+  for (const booking of bookingRows) {
+    if (!booking.orderId) continue;
+    const ledgers = await db.select().from(refundLedger).where(and(eq(refundLedger.orderId, booking.orderId), eq(refundLedger.reasonCode, "teacher_cancel")));
+    const open = ledgers.filter((row) => refundLedgerMatchesSession(row.idempotencyKey, sessionId) && teacherRefundStillOpen(row.status));
+    if (!open.length) continue;
+    retried = true;
+    const mates = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
+    const result = await issueRefund({
+      orderId: booking.orderId,
+      sessionCount: Math.max(1, mates.length),
+      cancelledCount: 1,
+      reasonCode: "teacher_cancel",
+      actorUserId,
+      scope: sessionId,
+    });
+    if ("error" in result && result.error) {
+      if (refundFailureKeepsSeat(result.error)) refundErrors.push(result.error);
+    } else if ("amountCents" in result) refunded += result.amountCents ?? 0;
+  }
+  if (!retried) return { ok: true as const, replayed: true, refundedCents: 0 };
+  if (refundErrors.length) return { error: refundErrors[0], refundedCents: refunded, replayed: true };
+  return { ok: true as const, replayed: true, refundedCents: refunded };
 }
 
 export async function teacherCancelUpcoming(input: { classId: string; actorUserId: string; reason?: string; wantCredit?: boolean }) {

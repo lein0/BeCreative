@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { checkoutMustReleaseSeat, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
-import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, outboxStatusAfterDelivery, phoneFromForm, unsubscribeUrl } from "@/lib/notify-prefs";
+import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, outboxStatusAfterDelivery, phoneFromForm, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
-import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerStatus, refundReplayIsSuccess, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
 import { classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
 import { statementDescriptor, statementDescriptorSuffix } from "@/lib/connect-rules";
 import { nextQuietEnd } from "@/lib/notify-prefs";
@@ -247,6 +247,62 @@ describe("daily digest", () => {
     expect(nextDigestTime(new Date("2026-10-13T10:00:00.000Z")).toISOString()).toBe("2026-10-13T15:00:00.000Z");
     expect(nextDigestTime(new Date("2026-10-13T16:00:00.000Z")).toISOString()).toBe("2026-10-14T15:00:00.000Z");
     expect(nextDigestTime(new Date("2026-10-13T15:00:00.000Z")).toISOString()).toBe("2026-10-14T15:00:00.000Z");
+  });
+});
+
+describe("failed teacher refunds can retry", () => {
+  it("retries an open card refund and does not rerun a posted cancel", () => {
+    expect(teacherCancelRetriesRefundOnly("cancelled")).toBe(true);
+    expect(teacherCancelRetriesRefundOnly("scheduled")).toBe(false);
+    expect(teacherRefundStillOpen("failed")).toBe(true);
+    expect(teacherRefundStillOpen("pending")).toBe(true);
+    expect(teacherRefundStillOpen("posted")).toBe(false);
+    const key = "refund:order-1:session-9:2500:teacher_cancel";
+    expect(refundLedgerMatchesSession(key, "session-9")).toBe(true);
+    expect(refundLedgerMatchesSession(key, "order-1")).toBe(true);
+    expect(refundLedgerMatchesSession(key, "session-8")).toBe(false);
+  });
+});
+
+describe("student refund skips cancelled dates", () => {
+  it("does not count a teacher-cancelled date in the refund share", () => {
+    const now = new Date("2026-10-13T15:00:00.000Z");
+    const counts = studentCancelRefundCounts([
+      { startsAt: new Date("2026-10-01T15:00:00.000Z"), status: "scheduled" },
+      { startsAt: new Date("2026-10-20T15:00:00.000Z"), status: "cancelled" },
+      { startsAt: new Date("2026-10-27T15:00:00.000Z"), status: "scheduled" },
+      { startsAt: new Date("2026-11-03T15:00:00.000Z"), status: "scheduled" },
+    ], now);
+    expect(counts.hasFuture).toBe(true);
+    expect(counts.sessionCount).toBe(4);
+    expect(counts.cancelledCount).toBe(2);
+    expect(counts.refundAnchor?.toISOString()).toBe("2026-10-27T15:00:00.000Z");
+    const onlyCancelled = studentCancelRefundCounts([
+      { startsAt: new Date("2026-10-20T15:00:00.000Z"), status: "cancelled" },
+    ], now);
+    expect(onlyCancelled.hasFuture).toBe(true);
+    expect(onlyCancelled.cancelledCount).toBe(0);
+    expect(onlyCancelled.refundAnchor).toBeNull();
+  });
+});
+
+describe("unsubscribe confirmation", () => {
+  it("does not unsubscribe on GET", () => {
+    expect(unsubscribeConfirmedBy("GET")).toBe(false);
+    expect(unsubscribeConfirmedBy("get")).toBe(false);
+    expect(unsubscribeConfirmedBy("POST")).toBe(true);
+  });
+});
+
+describe("full refund restores studio credit", () => {
+  it("returns the remainder only when the refund covers the order", () => {
+    expect(studioCreditRestoreForPostedRefund({ full: true, orderId: "order-1" })).toEqual({
+      scope: "refund-order-1",
+      sessionCount: 1,
+      cancelledCount: 1,
+      closeRemainder: true,
+    });
+    expect(studioCreditRestoreForPostedRefund({ full: false, orderId: "order-1" })).toBeNull();
   });
 });
 
