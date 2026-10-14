@@ -17,7 +17,7 @@ export default function StudentTicketsPage() {
 }
 
 async function Body() {
-  const actor = await requireActor();
+  const actor = await requireActor("/help/tickets");
   const rows = await db.select().from(tickets).where(eq(tickets.userId, actor.id));
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">

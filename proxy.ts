@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { promoCookieFromLink } from "@/lib/pricing";
 
-const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings"];
+const guarded = ["/teach", "/admin", "/manage", "/bookings", "/crm", "/notifications", "/settings", "/help/tickets"];
 
 export function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;

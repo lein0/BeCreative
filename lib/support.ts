@@ -79,8 +79,13 @@ export async function assignTicket(ticketId: string, assigneeUserId: string) {
 }
 
 export async function mergeTickets(sourceId: string, targetId: string) {
-  await db.update(tickets).set({ status: "merged", mergedIntoId: targetId, updatedAt: new Date() }).where(eq(tickets.id, sourceId));
+  if (!sourceId || !targetId || sourceId === targetId) return { ok: false as const };
+  const [source] = await db.select().from(tickets).where(eq(tickets.id, sourceId)).limit(1);
+  const [target] = await db.select().from(tickets).where(eq(tickets.id, targetId)).limit(1);
+  if (!source || !target || source.userId !== target.userId || target.status === "merged") return { ok: false as const };
   await db.update(ticketMessages).set({ ticketId: targetId }).where(eq(ticketMessages.ticketId, sourceId));
+  await db.update(tickets).set({ status: "merged", mergedIntoId: targetId, updatedAt: new Date() }).where(eq(tickets.id, sourceId));
+  return { ok: true as const };
 }
 
 export async function resolveTicket(ticketId: string) {

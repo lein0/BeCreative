@@ -20,7 +20,7 @@ export async function workJobs(limit = 20) {
         const { submitDispute } = await import("@/lib/disputes");
         const result = await submitDispute(String(payload.disputeId ?? ""));
         if (result.waiting) {
-          await requeueJob(job.id, result.runAt ?? new Date(Date.now() + 60 * 60 * 1000));
+          await requeueJob(job.id, result.runAt ?? new Date(Date.now() + 60 * 60 * 1000), undefined, Math.max(0, job.attempts - 1));
           continue;
         }
         if (result.retry) {

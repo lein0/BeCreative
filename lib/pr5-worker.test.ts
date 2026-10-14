@@ -45,7 +45,13 @@ describe("dispute submit worker", () => {
     claim(1);
     box.submit.mockResolvedValue({ ok: true, waiting: true, runAt });
     await workJobs();
-    expect(box.requeue).toHaveBeenCalledWith("job-1", runAt);
+    expect(box.requeue).toHaveBeenCalledWith("job-1", runAt, undefined, 0);
+    expect(box.finish).not.toHaveBeenCalled();
+
+    box.requeue.mockClear();
+    claim(5);
+    await workJobs();
+    expect(box.requeue).toHaveBeenCalledWith("job-1", runAt, undefined, 4);
     expect(box.finish).not.toHaveBeenCalled();
   });
 

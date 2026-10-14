@@ -6,16 +6,17 @@ import { control, Panel } from "@/components/bits";
 import { db } from "@/lib/db";
 import { disputeNotes, disputes } from "@/lib/db/schema";
 
-export default function DisputeDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default function DisputeDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   return (
     <Suspense fallback={null}>
-      <Body params={params} />
+      <Body params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function Body({ params }: { params: Promise<{ id: string }> }) {
+async function Body({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   const { id } = await params;
+  const query = await searchParams;
   const [row] = await db.select().from(disputes).where(eq(disputes.id, id)).limit(1);
   if (!row) notFound();
   const notes = await db.select().from(disputeNotes).where(eq(disputeNotes.disputeId, id));
@@ -23,6 +24,7 @@ async function Body({ params }: { params: Promise<{ id: string }> }) {
     <div>
       <h1 className="display text-4xl">{row.reason}</h1>
       <p className="mt-2 text-sm text-ink/60">{row.status} · {row.evidenceStatus}</p>
+      {query.error ? <p className="mt-3 text-sm text-clay">{query.error}</p> : null}
       <form action={disputeAction} className="mt-4 space-y-2">
         <input type="hidden" name="disputeId" value={row.id} />
         <input type="hidden" name="back" value={`/admin/disputes/${row.id}`} />

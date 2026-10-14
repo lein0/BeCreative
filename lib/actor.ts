@@ -6,6 +6,7 @@ import { auth } from "@/lib/auth";
 import type { Role } from "@/lib/constants";
 import { db } from "@/lib/db";
 import { teachers, userRoles } from "@/lib/db/schema";
+import { safeNextPath } from "@/lib/checkout-rules";
 import { canEditTeacherContent } from "@/lib/permissions";
 
 export type Actor = {
@@ -32,9 +33,9 @@ export async function getActor(): Promise<Actor | null> {
   };
 }
 
-export async function requireActor() {
+export async function requireActor(nextPath?: string) {
   const actor = await getActor();
-  if (!actor) redirect("/login");
+  if (!actor) redirect(nextPath ? `/login?next=${encodeURIComponent(safeNextPath(nextPath))}` : "/login");
   return actor;
 }
 

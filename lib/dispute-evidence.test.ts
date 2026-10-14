@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disputeAcceptsEvidence, disputeLiability, earlyFraudDecision, evidenceForReason, refreshCheckedInEvidence, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
+import { disputeAcceptsEvidence, disputeLiability, disputeUpdateFromStripe, earlyFraudDecision, evidenceForReason, refreshCheckedInEvidence, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
 
 const packet: EvidencePacket = {
   customerName: "Jules Navarro",
@@ -67,5 +67,17 @@ describe("dispute evidence", () => {
     expect(disputeAcceptsEvidence("lost")).toBe(false);
     expect(disputeAcceptsEvidence("won")).toBe(false);
     expect(disputeAcceptsEvidence("under_review")).toBe(true);
+  });
+
+  it("keeps a confirmed check-in and a stored deadline when Stripe omits them", () => {
+    const due = new Date("2026-10-20T00:00:00.000Z");
+    const merged = disputeUpdateFromStripe(
+      { summary: "kept", evidence: { refund_policy: "kept" }, amountBearer: "platform", feeBearer: "teacher", attendanceConfirmed: true, dueBy: due },
+      { summary: "incoming", evidence: { refund_policy: "fresh" }, amountBearer: "teacher", feeBearer: "platform", attendanceConfirmed: false, dueBy: null, status: "under_review" },
+    );
+    expect(merged.attendanceConfirmed).toBe(true);
+    expect(merged.dueBy).toEqual(due);
+    expect(merged.summary).toBe("kept");
+    expect(merged.status).toBe("under_review");
   });
 });

@@ -44,8 +44,14 @@ export async function ensureQueuedJob(kind: string, payload: Record<string, unkn
   return existing.id;
 }
 
-export async function requeueJob(id: string, runAt: Date, error?: string) {
-  await db.update(jobs).set({ status: "queued", runAt, lockedAt: null, lastError: error ?? null }).where(eq(jobs.id, id));
+export async function requeueJob(id: string, runAt: Date, error?: string, attempts?: number) {
+  await db.update(jobs).set({
+    status: "queued",
+    runAt,
+    lockedAt: null,
+    lastError: error ?? null,
+    ...(typeof attempts === "number" ? { attempts } : {}),
+  }).where(eq(jobs.id, id));
 }
 
 export async function finishJob(id: string, error?: string) {

@@ -102,15 +102,17 @@ export function nextDisputeSubmitAt(input: { dueBy: Date | null; leadHours: numb
 }
 
 export function disputeUpdateFromStripe<T extends { summary: string; evidence: Record<string, string>; amountBearer: string; feeBearer: string }>(
-  existing: { summary: string; evidence: Record<string, string>; amountBearer: string; feeBearer: string },
-  incoming: T,
-): T {
+  existing: { summary: string; evidence: Record<string, string>; amountBearer: string; feeBearer: string; attendanceConfirmed?: boolean; dueBy?: Date | null },
+  incoming: T & { attendanceConfirmed?: boolean; dueBy?: Date | null },
+): T & { attendanceConfirmed: boolean; dueBy: Date | null } {
   return {
     ...incoming,
     summary: existing.summary,
     evidence: existing.evidence,
     amountBearer: existing.amountBearer,
     feeBearer: existing.feeBearer,
+    attendanceConfirmed: Boolean(existing.attendanceConfirmed) || Boolean(incoming.attendanceConfirmed),
+    dueBy: incoming.dueBy ?? existing.dueBy ?? null,
   };
 }
 

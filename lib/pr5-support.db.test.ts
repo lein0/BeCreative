@@ -9,8 +9,17 @@ const actorBox = vi.hoisted(() => ({
     image: null as string | null,
     roles: ["student"] as Role[],
     isDemo: false,
+  } as null | {
+    id: string;
+    name: string;
+    email: string;
+    image: string | null;
+    roles: Role[];
+    isDemo: boolean;
   },
 }));
+
+const cookieBox = vi.hoisted(() => ({ value: "" }));
 
 const supportBox = vi.hoisted(() => ({
   openTicket: vi.fn(async () => ({ id: "new", route: "teacher" })),
@@ -18,14 +27,14 @@ const supportBox = vi.hoisted(() => ({
   resolveTicket: vi.fn(async () => undefined),
   recordCsat: vi.fn(async () => undefined),
   assignTicket: vi.fn(async () => undefined),
-  mergeTickets: vi.fn(async () => undefined),
+  mergeTickets: vi.fn(async (): Promise<{ ok: boolean }> => ({ ok: true })),
   saveCannedReply: vi.fn(async () => undefined),
 }));
 
 const disputeBox = vi.hoisted(() => ({
   addDisputeNote: vi.fn(async () => undefined),
   holdDispute: vi.fn(async () => undefined),
-  submitDispute: vi.fn(async () => ({ ok: true })),
+  submitDispute: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
   editDisputeSummary: vi.fn(async () => undefined),
   overrideLiability: vi.fn(async () => undefined),
 }));
@@ -34,7 +43,24 @@ vi.mock("@/lib/db", async () => {
   const { createFakeDb } = await import("@/lib/test/fake-db");
   return { db: createFakeDb() };
 });
-vi.mock("@/lib/actor", () => ({ requireActor: async () => actorBox.current }));
+vi.mock("@/lib/actor", () => ({
+  requireActor: async () => {
+    if (!actorBox.current) throw new Error("REDIRECT:/login");
+    return actorBox.current;
+  },
+  getActor: async () => actorBox.current,
+}));
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    set: (_name: string, value: string) => {
+      cookieBox.value = value;
+    },
+    get: () => ({ value: cookieBox.value }),
+    delete: () => {
+      cookieBox.value = "";
+    },
+  }),
+}));
 vi.mock("@/lib/support", () => supportBox);
 vi.mock("@/lib/disputes", () => disputeBox);
 vi.mock("@/lib/rate-limit", () => ({ hitRateLimit: async () => ({ ok: true }) }));
@@ -59,6 +85,7 @@ describe("support actions", () => {
   beforeEach(() => {
     resetFakeDb();
     actorBox.current = { id: "student-1", name: "Sam", email: "sam@example.com", image: null, roles: ["student"], isDemo: false };
+    cookieBox.value = "";
     supportBox.openTicket.mockClear();
     supportBox.replyToTicket.mockClear();
     supportBox.resolveTicket.mockClear();
@@ -114,5 +141,25 @@ describe("support actions", () => {
     seedTable(schema.teachers, [{ id: "studio-a", userId: "teacher-user" }]);
     await expect(disputeAction(form({ disputeId: "dp_1", command: "note", body: "They checked in", back: "/teach/disputes" }))).rejects.toThrow("REDIRECT:/teach/disputes");
     expect(disputeBox.addDisputeNote).toHaveBeenCalledWith("dp_1", "teacher-user", "They checked in");
+  });
+
+  it("keeps a signed-out safety report and sends the writer to sign in", async () => {
+    actorBox.current = null;
+    await expect(ticketAction(form({ category: "safety", subject: "Door stuck", body: "The exit was blocked" }))).rejects.toThrow("REDIRECT:/login?next=%2Fhelp%2Fsafety%2Fresume");
+    expect(JSON.parse(cookieBox.value)).toMatchObject({ category: "safety", subject: "Door stuck", body: "The exit was blocked" });
+    expect(supportBox.openTicket).not.toHaveBeenCalled();
+  });
+
+  it("shows an admin when Stripe does not accept the dispute packet", async () => {
+    actorBox.current = { id: "admin-1", name: "Ada", email: "ada@example.com", image: null, roles: ["admin"], isDemo: false };
+    disputeBox.submitDispute.mockResolvedValueOnce({ ok: false, error: "Stripe is not configured" });
+    await expect(disputeAction(form({ disputeId: "dp_1", command: "submit", back: "/admin/disputes/dp_1" }))).rejects.toThrow("REDIRECT:/admin/disputes/dp_1?error=Stripe%20is%20not%20configured");
+  });
+
+  it("does not treat a bad merge as done", async () => {
+    actorBox.current = { id: "admin-1", name: "Ada", email: "ada@example.com", image: null, roles: ["admin"], isDemo: false };
+    seedTable(schema.tickets, [{ id: "t1", userId: "student-1", status: "open", subject: "Mine" }]);
+    supportBox.mergeTickets.mockResolvedValueOnce({ ok: false });
+    await expect(supportReplyAction(form({ ticketId: "t1", command: "merge", targetId: "missing", back: "/admin/support" }))).rejects.toThrow("REDIRECT:/admin/support?error=Those%20tickets%20can't%20be%20merged.");
   });
 });

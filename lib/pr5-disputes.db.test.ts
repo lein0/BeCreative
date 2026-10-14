@@ -218,6 +218,23 @@ describe("dispute persistence", () => {
     expect(dispute.attendanceConfirmed).toBe(true);
   });
 
+  it("keeps a confirmed check-in and deadline when a later webhook omits them", async () => {
+    const due = new Date("2026-10-20T00:00:00.000Z");
+    seedTable(schema.orders, [{ id: "ord_keep", stripePaymentIntentId: "pi_keep", userId: "student-a", teacherId: "studio-a", kind: "booking", studentPaysCents: 2000, refundedCents: 0 }]);
+    seedTable(schema.user, [{ id: "student-a", name: "Ava", email: "a@example.com" }]);
+    seedTable(schema.classes, [{ id: "class-keep", teacherId: "studio-a", title: "Floor", description: "Move", whatToBring: "", outcomes: "" }]);
+    seedTable(schema.bookings, [{ id: "book-keep", orderId: "ord_keep", classId: "class-keep", userId: "student-a", status: "confirmed" }]);
+    seedTable(schema.bookingSessions, [{ id: "link-keep", bookingId: "book-keep", sessionId: "sess-keep", checkedIn: true }]);
+    seedTable(schema.sessions, [{ id: "sess-keep", startsAt: new Date("2026-10-13T19:00:00.000Z") }]);
+    await recordDispute({ id: "dp_keep", paymentIntentId: "pi_keep", amountCents: 2000, reason: "general", status: "needs_response", dueBy: due });
+    readTable(schema.bookingSessions)[0]!.checkedIn = false;
+    await recordDispute({ id: "dp_keep", paymentIntentId: "pi_keep", amountCents: 2000, reason: "general", status: "under_review", dueBy: null });
+    const dispute = readTable(schema.disputes).find((row) => row.id === "dp_keep")!;
+    expect(dispute.attendanceConfirmed).toBe(true);
+    expect(dispute.dueBy).toEqual(due);
+    expect(dispute.status).toBe("under_review");
+  });
+
   it("files every series date and matches the customer's email regardless of case", async () => {
     seedTable(schema.orders, [{ id: "ord_series", userId: "student-a", teacherId: "studio-a", kind: "series", studentPaysCents: 9000, refundedCents: 0 }]);
     seedTable(schema.user, [{ id: "student-a", name: "Ava", email: "ava@example.com" }]);

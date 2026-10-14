@@ -14,7 +14,8 @@ vi.mock("@/lib/notifications", () => ({
 
 const { readTable, resetFakeDb, seedTable } = await import("@/lib/test/fake-db");
 const schema = await import("@/lib/db/schema");
-const { escalateDueTickets, openTicket, replyToTicket, resolveTicket } = await import("@/lib/support");
+const { escalateDueTickets, mergeTickets, openTicket, replyToTicket, resolveTicket } = await import("@/lib/support");
+const { openSafetyDraft } = await import("@/lib/ticket-draft");
 
 describe("resolved ticket rating link", () => {
   beforeEach(() => {
@@ -83,5 +84,34 @@ describe("resolved ticket rating link", () => {
     const result = await escalateDueTickets(new Date());
     expect(result.count).toBe(1);
     expect(notes.sent.find((note) => note.userId === "admin-1")?.href).toBe("/admin/support/t-sla");
+  });
+
+  it("refuses a merge that would orphan the thread or mix students", async () => {
+    seedTable(schema.tickets, [
+      { id: "src", userId: "student-1", status: "open", subject: "Old" },
+      { id: "dst", userId: "student-2", status: "open", subject: "Other student" },
+    ]);
+    seedTable(schema.ticketMessages, [{ id: "m1", ticketId: "src", body: "Hello", internal: false }]);
+    expect(await mergeTickets("src", "")).toEqual({ ok: false });
+    expect(await mergeTickets("src", "src")).toEqual({ ok: false });
+    expect(await mergeTickets("src", "missing")).toEqual({ ok: false });
+    expect(await mergeTickets("src", "dst")).toEqual({ ok: false });
+    expect(readTable(schema.tickets).find((ticket) => ticket.id === "src")?.status).toBe("open");
+    expect(readTable(schema.ticketMessages)[0]?.ticketId).toBe("src");
+
+    readTable(schema.tickets).find((ticket) => ticket.id === "dst")!.userId = "student-1";
+    expect(await mergeTickets("src", "dst")).toEqual({ ok: true });
+    expect(readTable(schema.ticketMessages)[0]?.ticketId).toBe("dst");
+    expect(readTable(schema.tickets).find((ticket) => ticket.id === "src")?.status).toBe("merged");
+  });
+
+  it("files a saved safety report once the writer is signed in", async () => {
+    seedTable(schema.user, [{ id: "student-1", name: "Sam", email: "sam@example.com" }]);
+    seedTable(schema.userRoles, [{ id: "role-admin", userId: "admin-1", role: "admin" }]);
+    const opened = await openSafetyDraft("student-1", JSON.stringify({ category: "safety", subject: "Door stuck", body: "The exit was blocked" }));
+    expect(opened?.route).toBe("admin");
+    expect(readTable(schema.tickets)[0]).toMatchObject({ userId: "student-1", category: "safety", subject: "Door stuck" });
+    expect(readTable(schema.ticketMessages)[0]?.body).toBe("The exit was blocked");
+    expect(await openSafetyDraft("student-1", JSON.stringify({ category: "class", subject: "Hi", body: "There" }))).toBeNull();
   });
 });

@@ -2,23 +2,41 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { requireActor } from "@/lib/actor";
+import { getActor, requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
 import { bookings, classes, disputes, faqArticles, teachers, tickets } from "@/lib/db/schema";
 import { hitRateLimit } from "@/lib/rate-limit";
+import { errorRedirectPath } from "@/lib/checkout-rules";
 import { addDisputeNote, editDisputeSummary, holdDispute, overrideLiability, submitDispute } from "@/lib/disputes";
 import { assignTicket, mergeTickets, openTicket, recordCsat, replyToTicket, resolveTicket, saveCannedReply } from "@/lib/support";
 import { deleteAccount } from "@/lib/account-data";
 import { canManageRoles, canViewPlatformStats } from "@/lib/permissions";
 import { canAddDisputeNote, ticketCommandAllowed } from "@/lib/support-access";
+import { safetyDraftLoginPath, TICKET_DRAFT_COOKIE, ticketDraftFromFields } from "@/lib/ticket-draft";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
 export async function ticketAction(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await getActor();
+  if (!actor) {
+    const draft = ticketDraftFromFields({
+      category: text(formData, "category"),
+      subject: text(formData, "subject"),
+      body: text(formData, "body"),
+      bookingId: text(formData, "bookingId"),
+      priority: text(formData, "priority"),
+    });
+    if (draft.category === "safety" && draft.subject && draft.body) {
+      const jar = await cookies();
+      jar.set(TICKET_DRAFT_COOKIE, JSON.stringify(draft), { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 30 });
+      redirect(safetyDraftLoginPath());
+    }
+    redirect("/login?next=%2Fhelp");
+  }
   const limit = await hitRateLimit(`support:${actor.id}`, 10, 60 * 60 * 1000);
   if (!limit.ok) redirect("/help?error=Too%20many%20requests.%20Wait%20an%20hour.");
   const bookingId = text(formData, "bookingId");
@@ -61,7 +79,8 @@ export async function supportReplyAction(formData: FormData) {
   if (command === "assign") {
     await assignTicket(ticketId, text(formData, "assignee") || actor.id);
   } else if (command === "merge") {
-    await mergeTickets(ticketId, text(formData, "targetId"));
+    const merged = await mergeTickets(ticketId, text(formData, "targetId"));
+    if (!merged.ok) redirect(errorRedirectPath(text(formData, "back") || "/admin/support", "Those tickets can't be merged."));
   } else if (command === "resolve") {
     await resolveTicket(ticketId);
   } else if (command === "csat") {
@@ -86,7 +105,8 @@ export async function disputeAction(formData: FormData) {
     await holdDispute(id, actor.id);
   } else if (command === "submit") {
     if (!canManageRoles(actor.roles)) return;
-    await submitDispute(id, actor.id);
+    const result = await submitDispute(id, actor.id);
+    if (!result.ok) redirect(errorRedirectPath(text(formData, "back") || "/admin/disputes", result.error || "Stripe did not accept the evidence."));
   } else if (command === "edit") {
     if (!canManageRoles(actor.roles)) return;
     await editDisputeSummary(id, text(formData, "summary"), actor.id);

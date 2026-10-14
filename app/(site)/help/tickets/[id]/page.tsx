@@ -18,7 +18,7 @@ export default function StudentTicketPage({ params }: { params: Promise<{ id: st
 
 async function Body({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const actor = await requireActor();
+  const actor = await requireActor(`/help/tickets/${id}`);
   const [ticket] = await db.select().from(tickets).where(eq(tickets.id, id)).limit(1);
   if (!ticket || ticket.userId !== actor.id) notFound();
   const messages = await db.select().from(ticketMessages).where(eq(ticketMessages.ticketId, id));
