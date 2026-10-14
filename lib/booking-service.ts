@@ -16,6 +16,7 @@ import {
   platformSettings,
   promoCodes,
   promoRedemptions,
+  locations,
   sessions,
   teachers,
   user,
@@ -118,8 +119,9 @@ export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { 
         const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
         if (session.status === "complete" || session.payment_status === "paid") continue;
         if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
-      } catch {
-        // The Checkout session is already closed. Release the seat anyway.
+      } catch (error) {
+        // A missing session cannot be paid. Any other Stripe failure leaves the hold so a paid seat is not dropped.
+        if (!checkoutSessionGone(error)) continue;
       }
     }
     const updated = await db
@@ -140,6 +142,13 @@ export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { 
   }
   if (touchStripe) await expireStripeForReleasedHolds();
   return released;
+}
+
+function checkoutSessionGone(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? error.code : undefined;
+  const statusCode = "statusCode" in error ? error.statusCode : undefined;
+  return code === "resource_missing" || statusCode === 404;
 }
 
 async function expireStripeForReleasedHolds() {
@@ -391,6 +400,9 @@ export async function bookSession(input: {
             .select({ count: sql<number>`count(*)::int` })
             .from(promoRedemptions)
             .where(and(eq(promoRedemptions.promoCodeId, found.id), eq(promoRedemptions.userId, input.userId), eq(promoRedemptions.reversed, false)));
+          const [place] = klass.locationId
+            ? await tx.select({ city: locations.city }).from(locations).where(eq(locations.id, klass.locationId)).limit(1)
+            : [];
           const verdict = validatePromo({
             promo: toRule(found),
             now,
@@ -398,7 +410,7 @@ export async function bookSession(input: {
             totalRedemptions: Number(totals?.count ?? 0),
             customerRedemptions: Number(mine?.count ?? 0),
             isFirstTimeStudent: !(await priorWithTeacher(input.userId, teacher.id)),
-            product: { kind: "class", teacherId: teacher.id, classId: klass.id, categoryId: klass.categoryId, city: "Los Angeles" },
+            product: { kind: "class", teacherId: teacher.id, classId: klass.id, categoryId: klass.categoryId, city: place?.city || "Los Angeles" },
           });
           if (!verdict.ok) promoError = verdict.reason;
           else promoRow = found;
@@ -628,7 +640,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
     const settled = await settleOpenCheckout(order);
     if ("error" in settled) return settled;
     if (settled.paid) {
-      await fulfillPaidCheckout(order.id, settled.paymentIntent, settled.subscriptionId);
+      await fulfillPaidCheckout(order.id, settled.paymentIntent, settled.subscriptionId, { notify: false });
       order = (await db.select().from(orders).where(eq(orders.id, order.id)).limit(1))[0] ?? order;
     }
   }
@@ -638,7 +650,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
   return { ok: true };
 }
 
-export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null) {
+export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null, options?: { notify?: boolean }) {
   const updated = await db
     .update(orders)
     .set({ status: "paid", stripePaymentIntentId: paymentIntent, stripeSubscriptionId: subscriptionId, updatedAt: new Date() })
@@ -658,7 +670,7 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
   }
-  if (paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
+  if (options?.notify !== false && paidCheckoutSendsBookingEmail(order.kind) && order.userId) {
     const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, order.userId)).limit(1);
     const [booking] = await db.select().from(bookings).where(eq(bookings.orderId, order.id)).limit(1);
     const [klass] = booking ? await db.select().from(classes).where(eq(classes.id, booking.classId)).limit(1) : [];

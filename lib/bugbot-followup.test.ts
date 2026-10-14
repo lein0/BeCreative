@@ -5,7 +5,7 @@ config({ path: ".env.local" });
 
 const { refundCreate, checkoutRetrieve, checkoutExpire } = vi.hoisted(() => ({
   refundCreate: vi.fn(async () => ({ id: "re_test" })),
-  checkoutRetrieve: vi.fn(async () => ({ status: "expired", payment_status: "unpaid" })),
+  checkoutRetrieve: vi.fn(async (): Promise<{ status: string; payment_status: string; payment_intent?: string | null }> => ({ status: "expired", payment_status: "unpaid" })),
   checkoutExpire: vi.fn(async () => ({})),
 }));
 
@@ -39,7 +39,7 @@ vi.mock("next/headers", () => ({
 const { eq, inArray } = await import("drizzle-orm");
 const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
-const { bookSession, cancelBooking, confirmedCount, purchaseOffer, renewMembershipFromInvoice } = await import("@/lib/booking-service");
+const { bookSession, cancelBooking, confirmedCount, fulfillPaidCheckout, purchaseOffer, releaseExpiredCheckoutHolds, renewMembershipFromInvoice } = await import("@/lib/booking-service");
 const { sendEmail, sendIndividually } = await import("@/lib/email");
 const { createCheckout } = await import("@/lib/stripe");
 const { classDetail, teacherProfile } = await import("@/lib/queries");
@@ -716,5 +716,201 @@ describe("Bugbot follow-ups", () => {
       await db.update(schema.classes).set({ locationId: null }).where(eq(schema.classes.locationId, first.locationId));
       await db.delete(schema.locations).where(eq(schema.locations.id, first.locationId));
     }
+  });
+
+  it("does not attach sessions to a class the teacher does not own", async () => {
+    const cat = await ensureCategory();
+    const ownerA = await person("own-a");
+    const ownerB = await person("own-b");
+    const teacherA = await studio(ownerA, `${tag}-studio-a`);
+    const teacherB = await studio(ownerB, `${tag}-studio-b`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId: teacherA, categoryId: cat, slug: `${tag}-foreign`, title: "Foreign", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const saved = await saveClass({
+      actorUserId: ownerB,
+      teacherId: teacherB,
+      delegated: false,
+      classId,
+      title: "Hijack",
+      description: "",
+      outcomes: "",
+      prerequisites: "",
+      whatToBring: "",
+      categoryId: cat,
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      virtualLink: "https://example.com/meet",
+      maxSize: 8,
+      durationMinutes: 60,
+      pricePerSessionCents: 2500,
+      pricePerSeriesCents: null,
+      seriesBookingEnabled: false,
+      firstClassFree: false,
+      waitlistEnabled: false,
+      publish: true,
+      schedule: { mode: "once", date: "2027-11-02", time: "18:00" },
+    });
+    expect(saved).toEqual({ error: "Class not found." });
+    const sessions = await db.select().from(schema.sessions).where(eq(schema.sessions.classId, classId));
+    const rules = await db.select().from(schema.recurrences).where(eq(schema.recurrences.classId, classId));
+    expect(sessions).toHaveLength(0);
+    expect(rules).toHaveLength(0);
+    const [klass] = await db.select().from(schema.classes).where(eq(schema.classes.id, classId));
+    expect(klass?.title).toBe("Foreign");
+    expect(klass?.teacherId).toBe(teacherA);
+  });
+
+  it("keeps a stale hold when Stripe cannot be reached", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("outage-owner");
+    const student = await person("outage-student");
+    const teacherId = await studio(owner, `${tag}-outage`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-outage-class`, title: "Outage", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-12-01T18:00:00Z"), endsAt: new Date("2027-12-01T19:00:00Z"), localDate: "2027-12-01", capacity: 8,
+    });
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_outage_${tag}`, createdAt: new Date("2020-01-01T00:00:00Z"),
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockRejectedValue(new Error("stripe down"));
+    const released = await releaseExpiredCheckoutHolds(new Date("2026-10-14T12:00:00Z"));
+    expect(released).toBe(0);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    const [booking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
+    expect(order?.status).toBe("pending");
+    expect(booking?.status).toBe("confirmed");
+    checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
+  });
+
+  it("releases a stale hold when the Checkout session no longer exists", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("gone-owner");
+    const student = await person("gone-student");
+    const teacherId = await studio(owner, `${tag}-gone`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-gone-class`, title: "Gone", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-12-02T18:00:00Z"), endsAt: new Date("2027-12-02T19:00:00Z"), localDate: "2027-12-02", capacity: 8,
+    });
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_gone_${tag}`, createdAt: new Date("2020-01-01T00:00:00Z"),
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockRejectedValue(Object.assign(new Error("No such checkout.session"), { code: "resource_missing", statusCode: 404 }));
+    const released = await releaseExpiredCheckoutHolds(new Date("2026-10-14T12:00:00Z"));
+    expect(released).toBeGreaterThanOrEqual(1);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    const [booking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
+    expect(order?.status).toBe("expired");
+    expect(booking?.status).toBe("cancelled");
+    checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
+  });
+
+  it("accepts a city promo for the class location and rejects it elsewhere", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("city-owner");
+    const student = await person("city-student");
+    const teacherId = await studio(owner, `${tag}-city`);
+    const locationId = crypto.randomUUID();
+    await db.insert(schema.locations).values({
+      id: locationId, name: "Beach room", addressLine1: "1 Ocean Ave", city: "Santa Monica", state: "CA", postalCode: "90401", neighborhood: "Santa Monica", lat: 34.01, lng: -118.49,
+    });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, locationId, slug: `${tag}-city-class`, title: "Beach class", skillLevel: "all", format: "class", delivery: "in_person", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 4000, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-12-03T18:00:00Z"), endsAt: new Date("2027-12-03T19:00:00Z"), localDate: "2027-12-03", capacity: 8,
+    });
+    const code = `${tag}-SM`.toUpperCase();
+    await db.insert(schema.promoCodes).values({
+      id: crypto.randomUUID(), code, discountType: "percent", percentOffBps: 1000, appliesTo: "classes", cities: ["Santa Monica"], active: true,
+    });
+    const [studentRow] = await db.select().from(schema.user).where(eq(schema.user.id, student));
+    const accepted = await bookSession({ userId: student, email: studentRow!.email, name: studentRow!.name, sessionId, code });
+    expect(accepted.error).toMatch(/stripe down/);
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.userId, student));
+    expect(order?.discountCents).toBeGreaterThan(0);
+    expect(order?.promoCodeId).toBeTruthy();
+
+    const otherLocation = crypto.randomUUID();
+    await db.insert(schema.locations).values({
+      id: otherLocation, name: "Hollywood room", addressLine1: "100 Hollywood Blvd", city: "Hollywood", state: "CA", postalCode: "90028", neighborhood: "Hollywood", lat: 34.09, lng: -118.32,
+    });
+    const otherClass = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: otherClass, teacherId, categoryId: cat, locationId: otherLocation, slug: `${tag}-city-other`, title: "Hills class", skillLevel: "all", format: "class", delivery: "in_person", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 4000, status: "published",
+    });
+    const otherSession = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: otherSession, classId: otherClass, startsAt: new Date("2027-12-04T18:00:00Z"), endsAt: new Date("2027-12-04T19:00:00Z"), localDate: "2027-12-04", capacity: 8,
+    });
+    const otherStudent = await person("city-other");
+    const [otherRow] = await db.select().from(schema.user).where(eq(schema.user.id, otherStudent));
+    const rejected = await bookSession({ userId: otherStudent, email: otherRow!.email, name: otherRow!.name, sessionId: otherSession, code });
+    expect(rejected.error).toMatch(/doesn't apply in this city/);
+    await db.update(schema.classes).set({ locationId: null }).where(inArray(schema.classes.locationId, [locationId, otherLocation]));
+    await db.delete(schema.locations).where(inArray(schema.locations.id, [locationId, otherLocation]));
+  });
+
+  it("does not email a booking confirmation when cancelling a checkout that just paid", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("mail-owner");
+    const student = await person("mail-student");
+    const teacherId = await studio(owner, `${tag}-mail`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-mail-class`, title: "Mail class", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-12-05T18:00:00Z"), endsAt: new Date("2027-12-05T19:00:00Z"), localDate: "2027-12-05", capacity: 8,
+    });
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    const paymentIntent = `pi_mail_${tag}`;
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card", stripeCheckoutSessionId: `cs_mail_${tag}`,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    checkoutRetrieve.mockResolvedValue({ status: "complete", payment_status: "paid", payment_intent: paymentIntent });
+    vi.mocked(sendEmail).mockClear();
+    refundCreate.mockClear();
+    const cancelled = await cancelBooking(student, bookingId);
+    expect(cancelled).toEqual({ ok: true });
+    expect(refundCreate).toHaveBeenCalledWith({ payment_intent: paymentIntent });
+    expect(sendEmail).not.toHaveBeenCalled();
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("refunded");
+
+    const paidId = crypto.randomUUID();
+    const paidBooking = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: paidId, userId: student, teacherId, kind: "booking", status: "pending", studentPaysCents: 2500, paymentPath: "card",
+    });
+    await db.insert(schema.bookings).values({ id: paidBooking, orderId: paidId, userId: student, classId, kind: "session", status: "confirmed" });
+    vi.mocked(sendEmail).mockClear();
+    await fulfillPaidCheckout(paidId, `pi_ok_${tag}`, null);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ subject: "You're booked: Mail class" }));
+    checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
   });
 });

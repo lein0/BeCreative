@@ -203,8 +203,9 @@ export async function saveClass(input: {
   if (input.delivery === "virtual" && !input.virtualLink) return { error: "Add a virtual meeting link." };
   if (input.delivery === "in_person" && !input.address) return { error: "In-person classes need an address." };
   const [existingClass] = input.classId
-    ? await db.select({ locationId: classes.locationId }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id))).limit(1)
+    ? await db.select({ id: classes.id, locationId: classes.locationId }).from(classes).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id))).limit(1)
     : [];
+  if (input.classId && !existingClass) return { error: "Class not found." };
   const [existingLocation] = existingClass?.locationId
     ? await db.select().from(locations).where(eq(locations.id, existingClass.locationId)).limit(1)
     : [];
@@ -239,7 +240,8 @@ export async function saveClass(input: {
     updatedAt: new Date(),
   };
   if (input.classId) {
-    await db.update(classes).set(values).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id)));
+    const updated = await db.update(classes).set(values).where(and(eq(classes.id, input.classId), eq(classes.teacherId, teacher.id))).returning({ id: classes.id });
+    if (!updated.length) return { error: "Class not found." };
   } else {
     await db.insert(classes).values({ ...values, id: classId, slug: uniqueSlug(input.title), isDemo: false });
   }
