@@ -14,9 +14,9 @@ export const MATERIAL_CHANGE_MIN_DAYS = 30;
 export const NOTICE_WINDOWS = {
   preRenewal: { targetDays: 30, minDays: 15, maxDays: 45 },
   introLong: { targetDays: 7, minDays: 3, maxDays: 21 },
-  introShort: { targetDays: 3, minDays: 3, maxDays: 21 },
+  introShort: { targetDays: 5, minDays: 3, maxDays: 21 },
   priceChange: { targetDays: 21, minDays: 7, maxDays: 30 },
-  materialChange: { targetDays: 30, minDays: 30, maxDays: 45 },
+  materialChange: { targetDays: 37, minDays: 30, maxDays: 45 },
   annualLateDays: 7,
 } as const;
 
@@ -510,6 +510,11 @@ function windowDecision(kind: NoticeKind, now: Date, eventAt: Date, targetDays: 
   if (daysBefore < minDays) return { kind, action: "missed", eventAt, daysBefore };
   if (daysBefore <= targetDays) return { kind, action: "send", eventAt, daysBefore };
   return { kind, action: "wait", eventAt, daysBefore };
+}
+
+/** Signup time. Renewals rewrite currentPeriodStart, which would slide the annual reminder forward forever. */
+export function membershipStartedAt(subscription: { createdAt: Date; currentPeriodStart: Date }) {
+  return subscription.createdAt;
 }
 
 function nextAnniversary(startedAt: Date, now: Date) {

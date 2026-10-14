@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import { statementDescriptorSuffix } from "@/lib/connect-rules";
 import { appOrigin } from "@/lib/env";
 import { savedCardDetails } from "@/lib/renewal-copy";
+import { openInvoicesToVoid } from "@/lib/stripe-invoice";
 
 export function stripeConfigured() {
   return Boolean(process.env.STRIPE_SECRET_KEY && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
@@ -99,9 +100,27 @@ function feePercent(input: { amountCents: number; applicationFeeCents: number })
   return Math.min(100, Math.round((input.applicationFeeCents / input.amountCents) * 1000) / 10);
 }
 
+async function voidOpenSubscriptionInvoices(stripe: Stripe, subscriptionId: string) {
+  let startingAfter: string | undefined;
+  for (;;) {
+    const page = await stripe.invoices.list({
+      subscription: subscriptionId,
+      status: "open",
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const id of openInvoicesToVoid(page.data)) await stripe.invoices.voidInvoice(id);
+    if (!page.has_more || page.data.length === 0) return;
+    const next = page.data[page.data.length - 1]?.id;
+    if (!next || next === startingAfter) return;
+    startingAfter = next;
+  }
+}
+
 export async function stopSubscriptionRenewal(subscriptionId: string) {
   const stripe = getStripe();
   if (!stripe) return { ok: false as const, reason: "unconfigured" as const };
+  await voidOpenSubscriptionInvoices(stripe, subscriptionId);
   await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
   return { ok: true as const };
 }

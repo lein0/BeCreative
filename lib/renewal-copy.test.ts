@@ -4,6 +4,7 @@ import { maySend } from "@/lib/messaging-rules";
 import {
   BUILTIN_TEMPLATES,
   CONSENT_REQUIRED_ERROR,
+  NOTICE_WINDOWS,
   PRICE_CHANGE_MIN_DAYS_BACKEND,
   PRICE_CHANGE_MIN_DAYS_TEACHER,
   acknowledgmentMail,
@@ -15,6 +16,7 @@ import {
   legalIdentity,
   membershipCheckoutPlan,
   membershipOffer,
+  membershipStartedAt,
   planNotices,
   preservedAcknowledgment,
   priceAfterMemberNotice,
@@ -187,6 +189,14 @@ describe("notice scheduler windows", () => {
       introEndsAt: new Date(base.now.getTime() + 2 * 86_400_000),
     });
     expect(tooLate.find((item) => item.kind === "intro_ending")?.action).toBe("missed");
+    const hourAfterTarget = planNotices({
+      ...base,
+      termMonths: 1,
+      introDays: 14,
+      introEndsAt: new Date(base.now.getTime() + 3 * 86_400_000 + 3_600_000),
+    });
+    expect(hourAfterTarget.find((item) => item.kind === "intro_ending")?.action).toBe("send");
+    expect(NOTICE_WINDOWS.introShort.targetDays).toBeGreaterThan(NOTICE_WINDOWS.introShort.minDays);
   });
 
   it("sends the annual reminder for monthly plans and the price notice only inside 7 to 30 days", () => {
@@ -204,6 +214,35 @@ describe("notice scheduler windows", () => {
       priceChange: { effectiveAt: new Date(base.now.getTime() + 5 * 86_400_000), sent: false },
     });
     expect(missedPrice.find((item) => item.kind === "price_change")?.action).toBe("missed");
+    const material = planNotices({
+      ...base,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 33 * 86_400_000), sent: false },
+    });
+    expect(material.find((item) => item.kind === "material_change")?.action).toBe("send");
+    const materialEarly = planNotices({
+      ...base,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 40 * 86_400_000), sent: false },
+    });
+    expect(materialEarly.find((item) => item.kind === "material_change")?.action).toBe("wait");
+    const materialLate = planNotices({
+      ...base,
+      materialChange: { effectiveAt: new Date(base.now.getTime() + 29 * 86_400_000), sent: false },
+    });
+    expect(materialLate.find((item) => item.kind === "material_change")?.action).toBe("missed");
+    expect(NOTICE_WINDOWS.materialChange.targetDays).toBeGreaterThan(NOTICE_WINDOWS.materialChange.minDays);
+    expect(NOTICE_WINDOWS.materialChange.minDays).toBeGreaterThanOrEqual(30);
+  });
+
+  it("keeps the annual reminder on the original start after a renewal moves the period", () => {
+    const createdAt = noon("2025-06-01");
+    const currentPeriodStart = noon("2026-05-01");
+    const now = noon("2026-06-02");
+    const startedAt = membershipStartedAt({ createdAt, currentPeriodStart });
+    expect(startedAt).toEqual(createdAt);
+    const anchored = planNotices({ ...base, termMonths: 1, startedAt, now });
+    expect(anchored.find((item) => item.kind === "annual")?.action).toBe("send");
+    const slid = planNotices({ ...base, termMonths: 1, startedAt: currentPeriodStart, now });
+    expect(slid.find((item) => item.kind === "annual")?.action).toBe("wait");
   });
 
   it("keeps the old price when the notice was not delivered in the window", () => {
