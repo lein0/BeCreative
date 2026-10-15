@@ -16,6 +16,7 @@ import {
   refundCancelsBooking,
   renewalChargeSplit,
   safeNextPath,
+  replacedCheckoutToAbandon,
   sessionLockOrder,
   studioOwnsResource,
   unattendedRefundCents,
@@ -51,6 +52,15 @@ describe("paid packs receive credits when checkout completes", () => {
     expect(packCreditsOnCreate({ awaitingCardPayment: true, creditCount: 5 })).toBe(0);
     expect(packCreditsOnCreate({ awaitingCardPayment: false, creditCount: 5 })).toBe(5);
     expect(packCreditsOnPayment(5)).toBe(5);
+  });
+});
+
+describe("replaced checkout", () => {
+  it("releases only the student's own pending order", () => {
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "sam")).toBe(true);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "paid" }, "sam")).toBe(false);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "other")).toBe(false);
+    expect(replacedCheckoutToAbandon(null, "sam")).toBe(false);
   });
 });
 

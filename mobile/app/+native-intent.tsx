@@ -1,9 +1,5 @@
-import { systemPathForIncomingUrl } from "../../lib/mobile-client";
+import { nativeIntentPath } from "../../lib/mobile-client";
 
-export function redirectSystemPath({ path }: { path: string; initial: boolean }) {
-  try {
-    return systemPathForIncomingUrl(path);
-  } catch {
-    return initial ? "/explore" : path;
-  }
+export function redirectSystemPath({ path, initial }: { path: string; initial: boolean }) {
+  return nativeIntentPath(path, initial);
 }

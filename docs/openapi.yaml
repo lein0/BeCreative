@@ -428,6 +428,7 @@ paths:
                 payWith: { type: string, description: "cash, pack:<id>, or membership:<id>" }
                 policyAccepted: { type: boolean }
                 paymentSheet: { type: boolean }
+                abandonOrderId: { type: string, description: "Pending checkout to release before this booking holds a new seat." }
       responses:
         "200":
           description: Order, clientSecret, or checkoutUrl
