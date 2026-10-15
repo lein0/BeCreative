@@ -7,6 +7,17 @@ export function safeNextPath(next: string | null | undefined, fallback = "/explo
   return value;
 }
 
+/** A failed cancel stays on the bookings page with the refund error. Success stays put. */
+export function cancelFailureRedirect(error: string | undefined, path = "/bookings") {
+  if (!error) return null;
+  return `${path}?error=${encodeURIComponent(error)}`;
+}
+
+/** A series cancel reports the first date whose refund did not post. */
+export function seriesCancelError(errors: (string | undefined | null)[]) {
+  return errors.find((error) => Boolean(error)) ?? null;
+}
+
 export function errorRedirectPath(back: string | null | undefined, error: string, fallback = "/") {
   const path = safeNextPath(back, fallback);
   const joiner = path.includes("?") ? "&" : "?";

@@ -38,7 +38,7 @@ import {
   type PromoRule,
 } from "@/lib/pricing";
 import { checkoutMustReleaseSeat, collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
-import { studioCanSell } from "@/lib/review-rules";
+import { classBookingSendsDirectEmail, studioCanSell } from "@/lib/review-rules";
 import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { applyStudioCredit, studioCreditLedgerSource } from "@/lib/refund-math";
 import { sendEmail } from "@/lib/email";
@@ -513,13 +513,20 @@ export async function bookVisit(input: {
       status = "pay_at_studio";
       await db.update(orders).set({ status, platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));
     }
-    await sendEmail({
-      to: [input.email],
-      subject: `You're booked: ${created.title}`,
-      text: `Your spot is reserved${status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
-      teacherId: teacher.id,
+    await notifyStudentConfirmed({
+      userId: input.userId,
+      title: created.title,
+      href: `/s/${service.slug}`,
+      note: status === "pay_at_studio" ? "Your spot is reserved. Pay the teacher at the studio." : undefined,
     });
-    await notifyStudentConfirmed({ userId: input.userId, title: created.title, href: `/s/${service.slug}` });
+    if (classBookingSendsDirectEmail()) {
+      await sendEmail({
+        to: [input.email],
+        subject: `You're booked: ${created.title}`,
+        text: `Your spot is reserved${status === "pay_at_studio" ? ". Pay the teacher at the studio." : "."}`,
+        teacherId: teacher.id,
+      });
+    }
     await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: input.email, title: created.title, href: "/teach" });
     return { orderId: created.orderId };
   } catch (error) {

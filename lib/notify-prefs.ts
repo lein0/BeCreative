@@ -90,6 +90,13 @@ export function nextDigestTime(now = new Date(), hourUtc = 15) {
   return candidate;
 }
 
+/** In-app and email run only while the outbox is still pending. A retry after they landed skips them. */
+export function outboxStillNeedsInbox(status: string) {
+  return status === "pending";
+}
+
+export const OUTBOX_INBOX_SENT = "inbox_sent";
+
 /** Other channels can be marked sent while a quiet-hours text is still waiting. */
 export function outboxStatusAfterDelivery(smsDeferred: boolean) {
   return smsDeferred ? "sms_pending" : "sent";

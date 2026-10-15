@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkoutMustReleaseSeat, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
-import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, outboxStatusAfterDelivery, phoneFromForm, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
+import { cancelFailureRedirect, checkoutMustReleaseSeat, seriesCancelError, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
+import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, OUTBOX_INBOX_SENT, outboxStatusAfterDelivery, outboxStillNeedsInbox, phoneFromForm, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
 import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
 import { classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
@@ -303,6 +303,29 @@ describe("full refund restores studio credit", () => {
       closeRemainder: true,
     });
     expect(studioCreditRestoreForPostedRefund({ full: false, orderId: "order-1" })).toBeNull();
+  });
+});
+
+describe("cancel action surfaces refund failures", () => {
+  it("sends the student back to bookings with the refund error", () => {
+    expect(cancelFailureRedirect("Card refund was not sent to Stripe.")).toBe("/bookings?error=Card%20refund%20was%20not%20sent%20to%20Stripe.");
+    expect(cancelFailureRedirect(undefined)).toBeNull();
+  });
+});
+
+describe("series cancel surfaces refund errors", () => {
+  it("returns the first date whose refund failed", () => {
+    expect(seriesCancelError([undefined, "Card refund was not sent to Stripe.", "Stripe refund failed."])).toBe("Card refund was not sent to Stripe.");
+    expect(seriesCancelError([undefined, null])).toBeNull();
+  });
+});
+
+describe("notification retry skips inbox", () => {
+  it("sends in-app and email only while the outbox is pending", () => {
+    expect(outboxStillNeedsInbox("pending")).toBe(true);
+    expect(outboxStillNeedsInbox(OUTBOX_INBOX_SENT)).toBe(false);
+    expect(outboxStillNeedsInbox("sent")).toBe(false);
+    expect(outboxStillNeedsInbox("sms_pending")).toBe(false);
   });
 });
 

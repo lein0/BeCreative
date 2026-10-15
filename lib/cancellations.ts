@@ -1,6 +1,6 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { resolvedPolicy, studentCancelOutcome, teacherRefundChoice, lateCancelFee } from "@/lib/cancel-policy";
-import { sessionBelongsToClass } from "@/lib/checkout-rules";
+import { seriesCancelError, sessionBelongsToClass } from "@/lib/checkout-rules";
 import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, creditLedger, introRedemptions, membershipSubscriptions, orders, packPurchases, platformSettings, refundLedger, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
@@ -183,9 +183,13 @@ async function retryOpenTeacherRefunds(sessionId: string, actorUserId: string) {
 export async function teacherCancelUpcoming(input: { classId: string; actorUserId: string; reason?: string; wantCredit?: boolean }) {
   const upcoming = await db.select().from(sessions).where(and(eq(sessions.classId, input.classId), eq(sessions.status, "scheduled")));
   const future = upcoming.filter((session) => session.startsAt > new Date());
+  const errors: (string | undefined)[] = [];
   for (const session of future) {
-    await teacherCancelSession({ sessionId: session.id, classId: input.classId, actorUserId: input.actorUserId, reason: input.reason, wantCredit: input.wantCredit });
+    const result = await teacherCancelSession({ sessionId: session.id, classId: input.classId, actorUserId: input.actorUserId, reason: input.reason, wantCredit: input.wantCredit });
+    if ("error" in result) errors.push(result.error);
   }
+  const error = seriesCancelError(errors);
+  if (error) return { error, count: future.length };
   return { ok: true, count: future.length };
 }
 

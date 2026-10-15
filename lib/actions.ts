@@ -9,7 +9,7 @@ import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
 import { adminRefundScope, nextAdminRefundKey } from "@/lib/refund-math";
-import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
+import { bookingResultPath, cancelFailureRedirect, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { creditOptInFromForm, phoneFromForm } from "@/lib/notify-prefs";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
@@ -101,7 +101,9 @@ export async function bookAction(formData: FormData): Promise<void> {
 
 export async function cancelBookingAction(formData: FormData) {
   const actor = await requireActor();
-  await cancelBooking(actor.id, text(formData, "bookingId"));
+  const result = await cancelBooking(actor.id, text(formData, "bookingId"));
+  const failure = cancelFailureRedirect("error" in result ? result.error : undefined);
+  if (failure) redirect(failure);
   revalidatePath("/bookings");
 }
 
@@ -625,7 +627,8 @@ export async function teacherCancelAction(formData: FormData) {
   const reason = text(formData, "reason");
   const wantCredit = formData.get("wantCredit") === "1";
   if (formData.get("mass") === "1") {
-    await teacherCancelUpcoming({ classId: text(formData, "classId"), actorUserId: actor.id, reason, wantCredit });
+    const result = await teacherCancelUpcoming({ classId: text(formData, "classId"), actorUserId: actor.id, reason, wantCredit });
+    if ("error" in result && result.error) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
     redirect(`${back}?cancelled=series`);
   }
   const result = await teacherCancelSession({ sessionId: text(formData, "sessionId"), classId, actorUserId: actor.id, reason, wantCredit });

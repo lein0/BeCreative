@@ -279,11 +279,11 @@ describe("wellness bugbot regressions", () => {
       startsAt: open.options[0]!.slots[0]!.startsAt.toISOString(),
     });
     expect(booked).toHaveProperty("orderId");
-    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({
-      to: [`${tag}-mail@example.com`],
-      subject: "You're booked: Email",
-      text: "Your spot is reserved. Pay the teacher at the studio.",
-    }));
+    expect(sendEmail).not.toHaveBeenCalled();
+    const notes = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.userId, student));
+    expect(notes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "booking.confirmed", body: "Your spot is reserved. Pay the teacher at the studio." }),
+    ]));
     vi.mocked(sendEmail).mockClear();
     const orderId = crypto.randomUUID();
     const visitId = crypto.randomUUID();
@@ -308,11 +308,11 @@ describe("wellness bugbot regressions", () => {
       endsAt: open.options[0]!.slots[3]!.endsAt,
     });
     await fulfillPaidCheckout(orderId, "pi_test", null);
-    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({
-      to: [`${tag}-card@example.com`],
-      subject: "You're booked: Email",
-      text: "Your spot is reserved.",
-    }));
+    expect(sendEmail).not.toHaveBeenCalled();
+    const cardNotes = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.userId, cardStudent));
+    expect(cardNotes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "booking.confirmed", title: "You're booked: Email" }),
+    ]));
   });
 
   it("refuses a second booking of the same shared slot", async () => {

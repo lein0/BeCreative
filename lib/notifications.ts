@@ -4,7 +4,7 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { channelsFor, defaultPrefs, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, minutesOfClock, nextDigestTime, nextQuietEnd, notificationPhone, outboxStatusAfterDelivery, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { OUTBOX_INBOX_SENT, channelsFor, defaultPrefs, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, minutesOfClock, nextDigestTime, nextQuietEnd, notificationPhone, outboxStatusAfterDelivery, outboxStillNeedsInbox, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { twilioConfigured, sendSms } from "@/lib/sms";
@@ -64,32 +64,45 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
     webPushEnabled: settings?.webPushEnabled ?? SHIP_DEFAULTS.webPushEnabled,
     smsConfigured: twilioConfigured(),
   });
-  if (channels.inApp) {
-    await db.insert(notifications).values({
-      id: crypto.randomUUID(),
-      userId: row.userId,
-      event: row.event,
-      title: row.title,
-      body: row.body,
-      href: row.href,
-    });
-  }
-  if (channels.email && person?.email) {
-    const token = crypto.randomUUID();
-    await db.insert(unsubscribeTokens).values({ token, userId: person.id });
-    const link = unsubscribeUrl(appOrigin(), token);
-    const oneClick = listUnsubscribeUrl(appOrigin(), token);
-    const address = settings?.mailingAddress ?? SHIP_DEFAULTS.mailingAddress;
-    await sendEmail({
-      to: [person.email],
-      subject: row.title,
-      text: `${row.body}\n\n${address}\nUnsubscribe: ${link}`,
-      html: `<p>${escapeHtml(row.body)}</p><p style="color:#666;font-size:12px">${escapeHtml(address)}<br><a href="${escapeHtml(link)}">Unsubscribe</a></p>`,
-      headers: {
-        "List-Unsubscribe": `<${oneClick}>`,
-        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-      },
-    });
+  if (outboxStillNeedsInbox(row.status)) {
+    const claimed = await db
+      .update(notificationOutbox)
+      .set({ status: OUTBOX_INBOX_SENT })
+      .where(and(eq(notificationOutbox.id, outboxId), eq(notificationOutbox.status, "pending")))
+      .returning({ id: notificationOutbox.id });
+    if (!claimed.length) return;
+    try {
+      if (channels.inApp) {
+        await db.insert(notifications).values({
+          id: crypto.randomUUID(),
+          userId: row.userId,
+          event: row.event,
+          title: row.title,
+          body: row.body,
+          href: row.href,
+        });
+      }
+      if (channels.email && person?.email) {
+        const token = crypto.randomUUID();
+        await db.insert(unsubscribeTokens).values({ token, userId: person.id });
+        const link = unsubscribeUrl(appOrigin(), token);
+        const oneClick = listUnsubscribeUrl(appOrigin(), token);
+        const address = settings?.mailingAddress ?? SHIP_DEFAULTS.mailingAddress;
+        await sendEmail({
+          to: [person.email],
+          subject: row.title,
+          text: `${row.body}\n\n${address}\nUnsubscribe: ${link}`,
+          html: `<p>${escapeHtml(row.body)}</p><p style="color:#666;font-size:12px">${escapeHtml(address)}<br><a href="${escapeHtml(link)}">Unsubscribe</a></p>`,
+          headers: {
+            "List-Unsubscribe": `<${oneClick}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          },
+        });
+      }
+    } catch (error) {
+      await db.update(notificationOutbox).set({ status: "pending" }).where(and(eq(notificationOutbox.id, outboxId), eq(notificationOutbox.status, OUTBOX_INBOX_SENT)));
+      throw error;
+    }
   }
   const smsPhone = notificationPhone(phone, person?.phone);
   let smsDeferred = false;
@@ -102,10 +115,10 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
       await enqueueJob("notification.sms", { outboxId, phone: smsPhone }, nextQuietEnd(settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd), `sms:${outboxId}`);
     }
   }
+  await db.update(notificationOutbox).set({ status: outboxStatusAfterDelivery(smsDeferred) }).where(eq(notificationOutbox.id, outboxId));
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
-  await db.update(notificationOutbox).set({ status: outboxStatusAfterDelivery(smsDeferred) }).where(eq(notificationOutbox.id, outboxId));
 }
 
 async function phoneOnFile(passed: string | null | undefined, userId: string | null) {
