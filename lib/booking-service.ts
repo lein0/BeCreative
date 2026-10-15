@@ -578,16 +578,22 @@ export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect,
     .returning({ id: visitBookings.id });
   if (!cancelled.length) return;
   if (visit.packPurchaseId) {
-    const [purchase] = await db.select().from(packPurchases).where(eq(packPurchases.id, visit.packPurchaseId)).limit(1);
+    const [purchase] = await db
+      .update(packPurchases)
+      .set({ creditsRemaining: sql`${packPurchases.creditsRemaining} + 1` })
+      .where(eq(packPurchases.id, visit.packPurchaseId))
+      .returning({ id: packPurchases.id });
     if (purchase) {
-      await db.update(packPurchases).set({ creditsRemaining: purchase.creditsRemaining + 1 }).where(eq(packPurchases.id, purchase.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
     }
   }
   if (visit.membershipSubscriptionId) {
-    const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.id, visit.membershipSubscriptionId)).limit(1);
+    const [sub] = await db
+      .update(membershipSubscriptions)
+      .set({ classesUsedThisPeriod: sql`GREATEST(0, ${membershipSubscriptions.classesUsedThisPeriod} - 1)` })
+      .where(eq(membershipSubscriptions.id, visit.membershipSubscriptionId))
+      .returning({ id: membershipSubscriptions.id });
     if (sub) {
-      await db.update(membershipSubscriptions).set({ classesUsedThisPeriod: Math.max(0, sub.classesUsedThisPeriod - 1) }).where(eq(membershipSubscriptions.id, sub.id));
       await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "membership", sourceId: sub.id, direction: "restore" });
     }
   }

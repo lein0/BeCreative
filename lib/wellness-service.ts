@@ -46,6 +46,7 @@ import {
   canTakeSeat,
   generateOpenSlots,
   needsWaiver,
+  rangesOverlap,
   withinCancellationWindow,
   type BusyRange,
 } from "@/lib/slots";
@@ -166,12 +167,13 @@ export async function openSlotsForService(serviceId: string, from = new Date(), 
     leadTimeHours: service.leadTimeHours,
     busy: [],
   });
-  const taken = new Map<string, number>();
-  for (const visit of visits) taken.set(visit.startsAt.toISOString(), (taken.get(visit.startsAt.toISOString()) ?? 0) + 1);
   return {
     kind: "access" as const,
     slots: slots
-      .map((slot) => ({ ...slot, left: Math.max(0, service.capacity - (taken.get(slot.startsAt.toISOString()) ?? 0)) }))
+      .map((slot) => {
+        const taken = visits.filter((visit) => rangesOverlap(visit.startsAt, visit.endsAt, slot.startsAt, slot.endsAt)).length;
+        return { ...slot, left: Math.max(0, service.capacity - taken) };
+      })
       .filter((slot) => slot.left > 0),
   };
 }
@@ -273,7 +275,7 @@ export async function bookVisit(input: {
           on conflict (service_id, starts_at) do nothing
         `);
         await tx.execute(sql`select id from access_slots where service_id = ${service.id} and starts_at = ${startsAt} for update`);
-        const taken = busyRows.filter((row) => row.startsAt.getTime() === startsAt.getTime()).length;
+        const taken = busyRows.filter((row) => rangesOverlap(row.startsAt, row.endsAt, startsAt, visitEnd)).length;
         if (!canTakeSeat(service.capacity, taken)) throw new Error("That slot is full.");
       }
       const [alreadyVisiting] = await tx
@@ -625,18 +627,27 @@ export async function cancelVisit(userId: string, visitId: string) {
   const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
   if (!service || !withinCancellationWindow(visit.startsAt, now, service.cancellationHours)) return { error: "The cancellation window has closed." };
   const [existing] = visit.orderId ? await db.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1) : [];
-  const order = existing ? await settlePendingCheckout(existing) : undefined;
-  await releaseVisitSeat(visit, now);
-  if (!visit.orderId || !order || order.status === "refunded") return { ok: true };
-  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));
-  if (order.status === "paid" && order.studentPaysCents > 0 && order.stripePaymentIntentId) {
-    const stripe = getStripe();
-    if (stripe) {
-      await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
-      await db.update(orders).set({ status: "refunded" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded")));
-      return { ok: true };
+  if (existing) await settlePendingCheckout(existing);
+  const paymentIntent = await db.transaction(async (tx) => {
+    if (visit.orderId) await tx.execute(sql`select id from orders where id = ${visit.orderId} for update`);
+    await releaseVisitSeat(visit, now);
+    const [order] = visit.orderId ? await tx.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1) : [];
+    if (!visit.orderId || !order || order.status === "refunded" || order.status === "cancelled") return null;
+    await tx.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));
+    if (order.status === "paid" && order.studentPaysCents > 0 && order.stripePaymentIntentId && getStripe()) {
+      const claimed = await tx
+        .update(orders)
+        .set({ status: "refunded" })
+        .where(and(eq(orders.id, order.id), eq(orders.status, "paid")))
+        .returning({ id: orders.id });
+      return claimed.length ? order.stripePaymentIntentId : null;
     }
+    await tx.update(orders).set({ status: "cancelled" }).where(and(eq(orders.id, order.id), ne(orders.status, "refunded"), ne(orders.status, "cancelled")));
+    return null;
+  });
+  if (paymentIntent) {
+    const stripe = getStripe();
+    if (stripe) await stripe.refunds.create({ payment_intent: paymentIntent });
   }
-  await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, order.id));
   return { ok: true };
 }

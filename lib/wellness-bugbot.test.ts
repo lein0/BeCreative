@@ -44,10 +44,10 @@ vi.mock("next/headers", () => ({
 }));
 
 const { eq, inArray } = await import("drizzle-orm");
-const { db } = await import("@/lib/db");
+const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { sendEmail } = await import("@/lib/email");
-const { fulfillPaidCheckout } = await import("@/lib/booking-service");
+const { fulfillPaidCheckout, releaseVisitSeat } = await import("@/lib/booking-service");
 const { bookVisit, cancelVisit, openSlotsForService, rosterWaiver } = await import("@/lib/wellness-service");
 
 const tag = `bug-${crypto.randomUUID().slice(0, 8)}`;
@@ -561,5 +561,181 @@ describe("wellness bugbot regressions", () => {
     expect(rosterWaiver({ ...visit, waiverSignatureId: "sig-v1" }, [later, earlier])?.version).toBe(1);
     expect(rosterWaiver({ ...visit, createdAt: new Date("2026-08-01T12:00:00Z") }, [later, earlier])).toBeNull();
     expect(rosterWaiver({ ...visit, waiverSignatureId: "missing" }, [later, earlier])).toBeNull();
+  });
+
+  it("does not refund a visit order that a webhook already refunded", async () => {
+    stripe.client = true;
+    const { serviceId, optionId } = await appointment("Refund race", ids.teacher!, ids.category!);
+    const student = await person("refund-race");
+    const orderId = crypto.randomUUID();
+    const visitId = crypto.randomUUID();
+    const startsAt = new Date(Date.now() + 7 * 86_400_000);
+    await db.insert(schema.orders).values({
+      id: orderId,
+      userId: student,
+      teacherId: ids.teacher,
+      kind: "visit",
+      status: "paid",
+      listPriceCents: 9000,
+      studentPaysCents: 9000,
+      paymentPath: "card",
+      stripePaymentIntentId: "pi_stale",
+    });
+    await db.insert(schema.visitBookings).values({
+      id: visitId,
+      orderId,
+      userId: student,
+      serviceId,
+      optionId,
+      offeringKind: "appointment",
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 60 * 60_000),
+    });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT id FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
+      await client.query("UPDATE orders SET status = 'refunded' WHERE id = $1", [orderId]);
+      const pending = cancelVisit(student, visitId);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await client.query("COMMIT");
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    expect(stripe.refund).not.toHaveBeenCalled();
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    const [visit] = await db.select().from(schema.visitBookings).where(eq(schema.visitBookings.id, visitId));
+    expect(order?.status).toBe("refunded");
+    expect(visit?.status).toBe("cancelled");
+  });
+
+  it("treats an access add-on as occupying the next shared slot", async () => {
+    const serviceId = crypto.randomUUID();
+    await db.insert(schema.services).values({
+      id: serviceId,
+      teacherId: ids.teacher!,
+      categoryId: ids.category!,
+      slug: `${tag}-addon-sauna`,
+      title: "Addon sauna",
+      kind: "access",
+      slotMinutes: 30,
+      capacity: 1,
+      priceCents: 2000,
+      leadTimeHours: 0,
+      status: "published",
+    });
+    for (let weekday = 0; weekday < 7; weekday += 1) {
+      await db.insert(schema.availabilityWindows).values({ id: crypto.randomUUID(), serviceId, weekday, startTime: "00:00", endTime: "23:00" });
+    }
+    const addonId = crypto.randomUUID();
+    await db.insert(schema.serviceAddons).values({ id: addonId, serviceId, name: "Extra steam", priceCents: 500, minutes: 30 });
+    const open = await openSlotsForService(serviceId, new Date(), 2);
+    if (open.kind !== "access") throw new Error("expected access");
+    const first = open.slots[0]!;
+    const next = open.slots.find((slot) => slot.startsAt.getTime() === first.startsAt.getTime() + 30 * 60_000);
+    const after = open.slots.find((slot) => slot.startsAt.getTime() === first.startsAt.getTime() + 60 * 60_000);
+    expect(next).toBeTruthy();
+    expect(after).toBeTruthy();
+    const student = await person("steam");
+    const booked = await bookVisit({
+      userId: student,
+      email: "steam@example.com",
+      serviceId,
+      startsAt: first.startsAt.toISOString(),
+      addonIds: [addonId],
+    });
+    expect(booked).toHaveProperty("orderId");
+    const again = await openSlotsForService(serviceId, new Date(), 2);
+    if (again.kind !== "access") throw new Error("expected access");
+    expect(again.slots.some((slot) => slot.startsAt.getTime() === next!.startsAt.getTime())).toBe(false);
+    expect(again.slots.some((slot) => slot.startsAt.getTime() === after!.startsAt.getTime())).toBe(true);
+    const overlap = await bookVisit({
+      userId: await person("steam-next"),
+      email: "steam-next@example.com",
+      serviceId,
+      startsAt: next!.startsAt.toISOString(),
+    });
+    expect(overlap).toEqual({ error: "That slot is full." });
+  });
+
+  it("restores both visit credits when two cancels overlap", async () => {
+    const serviceId = crypto.randomUUID();
+    await db.insert(schema.services).values({
+      id: serviceId,
+      teacherId: ids.teacher!,
+      categoryId: ids.category!,
+      slug: `${tag}-restore`,
+      title: "Restore sauna",
+      kind: "access",
+      slotMinutes: 30,
+      capacity: 4,
+      priceCents: 0,
+      leadTimeHours: 0,
+      status: "published",
+    });
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId: ids.teacher!, slug: `${tag}-two`, name: "Two", creditCount: 2, priceCents: 1000 });
+    const student = await person("restore");
+    const purchaseId = crypto.randomUUID();
+    await db.insert(schema.packPurchases).values({
+      id: purchaseId,
+      userId: student,
+      packId,
+      teacherId: ids.teacher!,
+      creditsTotal: 2,
+      creditsRemaining: 0,
+    });
+    const planId = crypto.randomUUID();
+    await db.insert(schema.memberships).values({
+      id: planId,
+      teacherId: ids.teacher!,
+      slug: `${tag}-restore-plan`,
+      name: "Restore",
+      termMonths: 1,
+      kind: "limited",
+      classesPerPeriod: 4,
+      priceCents: 5000,
+    });
+    const subId = crypto.randomUUID();
+    await db.insert(schema.membershipSubscriptions).values({
+      id: subId,
+      userId: student,
+      membershipId: planId,
+      teacherId: ids.teacher!,
+      status: "active",
+      currentPeriodStart: new Date(),
+      currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000),
+      classesUsedThisPeriod: 2,
+      classesPerPeriod: 4,
+      unlimited: false,
+    });
+    const starts = new Date(Date.now() + 2 * 86_400_000);
+    const visits = [0, 1].map((index) => ({
+      id: crypto.randomUUID(),
+      userId: student,
+      serviceId,
+      offeringKind: "access",
+      startsAt: new Date(starts.getTime() + index * 60 * 60_000),
+      endsAt: new Date(starts.getTime() + index * 60 * 60_000 + 30 * 60_000),
+      packPurchaseId: purchaseId,
+    }));
+    const memberVisits = [2, 3].map((index) => ({
+      id: crypto.randomUUID(),
+      userId: student,
+      serviceId,
+      offeringKind: "access",
+      startsAt: new Date(starts.getTime() + index * 60 * 60_000),
+      endsAt: new Date(starts.getTime() + index * 60 * 60_000 + 30 * 60_000),
+      membershipSubscriptionId: subId,
+    }));
+    await db.insert(schema.visitBookings).values([...visits, ...memberVisits]);
+    const stored = await db.select().from(schema.visitBookings).where(inArray(schema.visitBookings.id, [...visits, ...memberVisits].map((visit) => visit.id)));
+    await Promise.all(stored.map((visit) => releaseVisitSeat(visit, new Date())));
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.id, purchaseId));
+    const [sub] = await db.select().from(schema.membershipSubscriptions).where(eq(schema.membershipSubscriptions.id, subId));
+    expect(purchase?.creditsRemaining).toBe(2);
+    expect(sub?.classesUsedThisPeriod).toBe(0);
   });
 });
