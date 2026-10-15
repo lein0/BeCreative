@@ -4,6 +4,7 @@ const stripeState = vi.hoisted(() => ({
   client: null as null | {
     files: { create: ReturnType<typeof vi.fn> };
     disputes: { update: ReturnType<typeof vi.fn> };
+    refunds?: { create: ReturnType<typeof vi.fn> };
   },
 }));
 
@@ -149,6 +150,71 @@ describe("dispute persistence", () => {
     const upcoming = await handleEarlyFraud({ chargeId: "ch_2", paymentIntentId: "pi_1", amountCents: 3600 });
     expect(upcoming.decision).toBe("refund");
     expect(readTable(schema.refundLedger)).toHaveLength(1);
+  });
+
+  it("surfaces a failed early-fraud refund and does not flag the charge as handled", async () => {
+    stripeState.client = {
+      files: { create: vi.fn() },
+      disputes: { update: vi.fn() },
+      refunds: { create: vi.fn(async () => { throw new Error("Stripe refund failed."); }) },
+    };
+    seedTable(schema.orders, [{
+      id: "ord_fail",
+      stripePaymentIntentId: "pi_fail",
+      studentPaysCents: 3600,
+      platformFeeCents: 360,
+      teacherAmountCents: 3240,
+      refundedCents: 0,
+      status: "paid",
+    }]);
+    await expect(handleEarlyFraud({ chargeId: "ch_fail", paymentIntentId: "pi_fail", amountCents: 3600 })).rejects.toThrow("Stripe refund failed.");
+    expect(readTable(schema.auditLog).some((row) => row.action === "fraud.flag")).toBe(false);
+    expect(readTable(schema.refundLedger)[0]?.status).toBe("failed");
+  });
+
+  it("flags a used pass instead of auto-refunding it", async () => {
+    seedTable(schema.orders, [{
+      id: "ord_pack",
+      stripePaymentIntentId: "pi_pack",
+      studentPaysCents: 8000,
+      platformFeeCents: 800,
+      teacherAmountCents: 7200,
+      refundedCents: 0,
+      status: "paid",
+    }]);
+    seedTable(schema.packPurchases, [{ id: "pack_1", orderId: "ord_pack", creditsTotal: 5, creditsRemaining: 5 }]);
+    const unused = await handleEarlyFraud({ chargeId: "ch_pack_new", paymentIntentId: "pi_pack", amountCents: 8000 });
+    expect(unused.decision).toBe("refund");
+
+    resetFakeDb();
+    seedTable(schema.orders, [{
+      id: "ord_pack",
+      stripePaymentIntentId: "pi_pack",
+      studentPaysCents: 8000,
+      platformFeeCents: 800,
+      teacherAmountCents: 7200,
+      refundedCents: 0,
+      status: "paid",
+    }]);
+    seedTable(schema.packPurchases, [{ id: "pack_1", orderId: "ord_pack", creditsTotal: 5, creditsRemaining: 2 }]);
+    const used = await handleEarlyFraud({ chargeId: "ch_pack_used", paymentIntentId: "pi_pack", amountCents: 8000 });
+    expect(used.decision).toBe("flag");
+    expect(readTable(schema.refundLedger)).toHaveLength(0);
+
+    resetFakeDb();
+    seedTable(schema.orders, [{
+      id: "ord_mem",
+      stripePaymentIntentId: "pi_mem",
+      studentPaysCents: 4000,
+      platformFeeCents: 400,
+      teacherAmountCents: 3600,
+      refundedCents: 0,
+      status: "paid",
+    }]);
+    seedTable(schema.membershipSubscriptions, [{ id: "mem_1", orderId: "ord_mem", classesUsedThisPeriod: 1 }]);
+    const membership = await handleEarlyFraud({ chargeId: "ch_mem", paymentIntentId: "pi_mem", amountCents: 4000 });
+    expect(membership.decision).toBe("flag");
+    expect(readTable(schema.refundLedger)).toHaveLength(0);
   });
 
   it("builds the packet from this customer's studio records only", async () => {

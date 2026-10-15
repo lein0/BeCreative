@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { classHasStarted, disputeLiability, disputeUpdateFromStripe, disputeAcceptsEvidence, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, refreshCheckedInEvidence, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
 import { textPdf } from "@/lib/evidence-pdf";
 import { db } from "@/lib/db";
-import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, orders, platformSettings, policyAcceptances, services, sessions, teachers, user, visitBookings, waiverSignatures } from "@/lib/db/schema";
+import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, membershipSubscriptions, orders, packPurchases, platformSettings, policyAcceptances, services, sessions, teachers, user, visitBookings, waiverSignatures } from "@/lib/db/schema";
 import { ensureQueuedJob } from "@/lib/jobs";
 import { emitNotification } from "@/lib/notifications";
 import { issueRefund } from "@/lib/refunds";
@@ -270,9 +270,15 @@ export async function handleEarlyFraud(input: { chargeId: string; paymentIntentI
     const [visit] = await db.select().from(visitBookings).where(eq(visitBookings.orderId, order.id)).limit(1);
     if (visit) classStarted = classHasStarted([visit.startsAt], new Date());
   }
+  if (order && !classStarted) {
+    const [pack] = await db.select().from(packPurchases).where(eq(packPurchases.orderId, order.id)).limit(1);
+    const [membership] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, order.id)).limit(1);
+    if ((pack && pack.creditsRemaining < pack.creditsTotal) || (membership && membership.classesUsedThisPeriod > 0)) classStarted = true;
+  }
   const decision = earlyFraudDecision({ amountCents: input.amountCents, classStarted, thresholdCents: policy.fraudMax });
   if (decision === "refund" && order) {
-    await issueRefund({ orderId: order.id, reasonCode: "early_fraud", actorUserId: null, scope: input.chargeId });
+    const refund = await issueRefund({ orderId: order.id, reasonCode: "early_fraud", actorUserId: null, scope: input.chargeId });
+    if ("error" in refund && refund.error && refund.error !== "Nothing left to refund.") throw new Error(refund.error);
     return { decision };
   }
   await db.insert(auditLog).values({ id: crypto.randomUUID(), action: "fraud.flag", entityType: "charge", entityId: input.chargeId, summary: `Early fraud warning flagged at ${(input.amountCents / 100).toFixed(2)}` });
