@@ -41,6 +41,13 @@ export function canEditTeacherContent(roles: Role[], isOwnTeacherProfile: boolea
   return hasRole(roles, "teacher") && isOwnTeacherProfile;
 }
 
+/** Staff who open Studio without their own teacher row belong in the manage console, not teacher onboarding. */
+export function studioEntryPath(roles: Role[], hasStudio: boolean) {
+  if (hasStudio) return null;
+  if (hasRole(roles, "admin") || hasRole(roles, "account_manager")) return "/manage";
+  return "/teach/onboarding";
+}
+
 export function canViewTeacherBilling(roles: Role[], isOwnTeacherProfile: boolean): boolean {
   return canEditTeacherContent(roles, isOwnTeacherProfile);
 }

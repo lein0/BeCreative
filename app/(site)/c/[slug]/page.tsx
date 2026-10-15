@@ -2,13 +2,14 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { bookAction } from "@/lib/actions";
+import { BookingQuote } from "@/components/booking-quote";
 import { formatLabel, fromPrice, levelLabel, Money, Panel } from "@/components/bits";
 import { ShareButton } from "@/components/share-button";
 import { getActor } from "@/lib/actor";
 import { quoteCode, trackView } from "@/lib/offers";
 import { classDetail, walletForClass } from "@/lib/queries";
 import { formatDateTimeInZone } from "@/lib/time";
-import { money, one } from "@/lib/utils";
+import { one } from "@/lib/utils";
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
@@ -43,7 +44,11 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
   const actor = await getActor();
   const code = one(sp.code);
   const list = detail.class.pricePerSessionCents ?? 0;
-  const quote = await quoteCode({ code, listPriceCents: list, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city, userId: actor?.id ?? null });
+  const quoteInput = { code, classId: detail.class.id, categoryId: detail.class.categoryId, teacherId: detail.teacher.id, city: detail.location?.city, userId: actor?.id ?? null };
+  const quote = await quoteCode({ ...quoteInput, listPriceCents: list });
+  const seriesQuote = detail.class.seriesBookingEnabled
+    ? await quoteCode({ ...quoteInput, listPriceCents: detail.class.pricePerSeriesCents ?? 0 })
+    : null;
   const wallet = actor ? await walletForClass(actor.id, detail.teacher.id) : null;
   const focus = one(sp.session);
   const sessions = detail.upcoming.filter((session) => session.status === "scheduled" && (!focus || session.localDate === focus || session.id === focus));
@@ -102,14 +107,6 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
           <p className="text-xs uppercase tracking-[0.14em] text-ink/50">Checkout</p>
           <p className="display mt-1 text-4xl">{fromPrice(detail.class.pricePerSessionCents, detail.class.pricePerSeriesCents)}</p>
           {error ? <p className="mt-2 text-sm text-clay">{error}</p> : null}
-          {code ? (
-            <div className="mt-3 space-y-1 text-sm" data-testid="price-breakdown">
-              <Row label="Class" value={money(quote.listPriceCents)} />
-              <Row label={`Code ${code}`} value={quote.discountCents ? `−${money(quote.discountCents)}` : quote.codeError || "Not applied"} />
-              <Row label="You pay" value={money(quote.studentPaysCents)} />
-              <p className="text-xs text-ink/50">Platform fee on this booking is {money(quote.platformFeeCents)}{quote.platformLiabilityCents ? ` · promo liability ${money(quote.platformLiabilityCents)}` : ""}.</p>
-            </div>
-          ) : null}
           <form action={bookAction} className="mt-4 space-y-3">
             <input type="hidden" name="slug" value={detail.class.slug} />
             <input type="hidden" name="classId" value={detail.class.id} />
@@ -139,11 +136,7 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
                 ))}
               </select>
             </label>
-            {detail.class.seriesBookingEnabled ? (
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="series" value="1" /> Book the whole series ({money(detail.class.pricePerSeriesCents ?? list)})
-              </label>
-            ) : null}
+            <BookingQuote code={code} sessionQuote={quote} seriesQuote={seriesQuote} />
             <button className="w-full rounded-full bg-clay py-3 text-sm font-medium text-white" disabled={!actor || !sessions.length}>
               {!actor ? "Sign in to book" : sessions.length ? "Book this session" : "No upcoming sessions"}
             </button>
@@ -162,14 +155,5 @@ async function ClassBody({ params, searchParams }: { params: Promise<{ slug: str
         ) : null}
       </aside>
     </article>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <p className="flex justify-between">
-      <span>{label}</span>
-      <span>{value}</span>
-    </p>
   );
 }

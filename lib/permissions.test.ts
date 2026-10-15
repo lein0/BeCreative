@@ -6,6 +6,7 @@ import {
   canManageRoles,
   canViewPlatformFinances,
   canViewPlatformStats,
+  studioEntryPath,
 } from "@/lib/permissions";
 
 describe("roles", () => {
@@ -24,6 +25,15 @@ describe("roles", () => {
     expect(canEditTeacherContent(["teacher", "student"], true)).toBe(true);
     expect(canEditTeacherContent(["teacher"], false)).toBe(false);
     expect(canEditTeacherContent(["student"], false)).toBe(false);
+  });
+
+  it("sends staff without a studio to manage and teachers to onboarding", () => {
+    expect(studioEntryPath(["admin"], false)).toBe("/manage");
+    expect(studioEntryPath(["account_manager"], false)).toBe("/manage");
+    expect(studioEntryPath(["teacher"], false)).toBe("/teach/onboarding");
+    expect(studioEntryPath(["teacher", "student"], false)).toBe("/teach/onboarding");
+    expect(studioEntryPath(["admin"], true)).toBeNull();
+    expect(studioEntryPath(["teacher"], true)).toBeNull();
   });
 
   it("opens the lead tracker to admins and account managers", () => {

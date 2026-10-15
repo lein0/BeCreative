@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bookingResultPath,
+  checkoutPreviewQuote,
   collectsOnline,
   duplicateSeriesBooking,
   membershipStatusOnAbandon,
@@ -13,6 +14,7 @@ import {
   chargeFullyRefunded,
   membershipRenewalExtendsAccess,
   paidInvoiceRenewal,
+  loginNextPath,
   refundCancelsBooking,
   renewalChargeSplit,
   safeNextPath,
@@ -80,6 +82,16 @@ describe("login next path", () => {
     expect(safeNextPath("/\\evil.example")).toBe("/explore");
     expect(safeNextPath("https://evil.example")).toBe("/explore");
     expect(safeNextPath("")).toBe("/explore");
+    expect(loginNextPath("/t/maya/p/five")).toBe("/login?next=%2Ft%2Fmaya%2Fp%2Ffive");
+    expect(loginNextPath("//evil.example")).toBe("/login?next=%2Fexplore");
+  });
+
+  it("quotes a series promo from the series price and a drop-in from the session price", () => {
+    const session = { studentPaysCents: 2500, listPriceCents: 2500 };
+    const series = { studentPaysCents: 7200, listPriceCents: 8000 };
+    expect(checkoutPreviewQuote({ series: false, session, seriesQuote: series })).toEqual(session);
+    expect(checkoutPreviewQuote({ series: true, session, seriesQuote: series })).toEqual(series);
+    expect(checkoutPreviewQuote({ series: true, session, seriesQuote: null })).toEqual(session);
   });
 });
 

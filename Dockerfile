@@ -32,7 +32,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=migrate --chown=nextjs:nodejs /opt/migrate /opt/migrate
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+  && mkdir -p /app/data/uploads \
+  && chown -R nextjs:nodejs /app/data/uploads
 USER nextjs
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \

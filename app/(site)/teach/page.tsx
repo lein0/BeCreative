@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { ShareButton } from "@/components/share-button";
 import { requireActor } from "@/lib/actor";
+import { studioEntryPath } from "@/lib/permissions";
 import { studioHome, teacherByUser } from "@/lib/queries";
 import { formatDateTimeInZone } from "@/lib/time";
 
@@ -17,7 +18,7 @@ export default function TeachHome() {
 async function Body() {
   const actor = await requireActor();
   const teacher = await teacherByUser(actor.id);
-  if (!teacher) redirect("/teach/onboarding");
+  if (!teacher) redirect(studioEntryPath(actor.roles, false) ?? "/teach/onboarding");
   const home = await studioHome(teacher.id);
   return (
     <div>

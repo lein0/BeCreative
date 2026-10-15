@@ -8,7 +8,7 @@ import { ensureAdminByEmail } from "@/lib/admins";
 import { auth } from "@/lib/auth";
 import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
-import { bookingResultPath, errorRedirectPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
+import { bookingResultPath, errorRedirectPath, loginNextPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
@@ -98,7 +98,9 @@ export async function cancelBookingAction(formData: FormData) {
 }
 
 export async function buyOfferAction(formData: FormData) {
-  const actor = await requireActor();
+  const back = text(formData, "back");
+  const actor = await getActor();
+  if (!actor) redirect(loginNextPath(back));
   const result = await purchaseOffer({
     userId: actor.id,
     email: actor.email,
@@ -106,7 +108,7 @@ export async function buyOfferAction(formData: FormData) {
     id: text(formData, "id"),
     code: text(formData, "code"),
   });
-  if (result.error) redirect(errorRedirectPath(text(formData, "back"), result.error));
+  if (result.error) redirect(errorRedirectPath(back, result.error));
   if (result.checkoutUrl) redirect(result.checkoutUrl);
   redirect("/bookings?offer=1");
 }

@@ -43,6 +43,7 @@ const { bookSession, cancelBooking, confirmedCount, fulfillPaidCheckout, purchas
 const { sendEmail, sendIndividually } = await import("@/lib/email");
 const { createCheckout } = await import("@/lib/stripe");
 const { classDetail, teacherProfile } = await import("@/lib/queries");
+const { mediaUploadAllowed } = await import("@/lib/media-upload");
 const { manualBook, saveClass, setPaused, syncRule } = await import("@/lib/studio-service");
 
 const tag = `bugbot-${crypto.randomUUID().slice(0, 8)}`;
@@ -912,5 +913,25 @@ describe("Bugbot follow-ups", () => {
     await fulfillPaidCheckout(paidId, `pi_ok_${tag}`, null);
     expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ subject: "You're booked: Mail class" }));
     checkoutRetrieve.mockResolvedValue({ status: "expired", payment_status: "unpaid" });
+  });
+
+  it("lets a studio upload class media and refuses a student or another studio", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("upload-owner");
+    const other = await person("upload-other");
+    const student = await person("upload-student");
+    const teacherId = await studio(owner, `${tag}-upload`);
+    const otherTeacher = await studio(other, `${tag}-upload-other`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-upload-class`, title: "Upload", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    expect(await mediaUploadAllowed({ id: student, roles: ["student"] }, { classId })).toEqual({ ok: false, status: 403, error: "You can't upload files for this studio." });
+    expect(await mediaUploadAllowed({ id: other, roles: ["teacher"] }, { classId })).toEqual({ ok: false, status: 403, error: "You can't upload files for this studio." });
+    expect(await mediaUploadAllowed({ id: owner, roles: ["teacher"] }, { classId })).toEqual({ ok: true });
+    expect(await mediaUploadAllowed({ id: student, roles: ["admin"] }, { classId })).toEqual({ ok: true });
+    expect(await mediaUploadAllowed({ id: owner, roles: ["teacher"] }, { teacherId })).toEqual({ ok: true });
+    expect(await mediaUploadAllowed({ id: other, roles: ["teacher"] }, { classId, teacherId: otherTeacher })).toEqual({ ok: false, status: 403, error: "That class belongs to another studio." });
+    expect(await mediaUploadAllowed({ id: owner, roles: ["teacher"] }, {})).toEqual({ ok: false, status: 403, error: "Choose a class to attach this file." });
   });
 });

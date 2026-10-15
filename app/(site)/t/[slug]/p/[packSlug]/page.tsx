@@ -2,24 +2,30 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { buyOfferAction } from "@/lib/actions";
 import { Panel } from "@/components/bits";
+import { OfferPurchase } from "@/components/offer-purchase";
 import { ShareButton } from "@/components/share-button";
+import { getActor } from "@/lib/actor";
 import { teacherProfile } from "@/lib/queries";
 import { studioCanSell } from "@/lib/review-rules";
-import { money } from "@/lib/utils";
+import { money, one } from "@/lib/utils";
 
-export default function PackPage({ params }: { params: Promise<{ slug: string; packSlug: string }> }) {
+type Search = Promise<Record<string, string | string[] | undefined>>;
+
+export default function PackPage({ params, searchParams }: { params: Promise<{ slug: string; packSlug: string }>; searchParams: Search }) {
   return (
     <Suspense fallback={<p className="px-5 py-10">Loading pack…</p>}>
-      <PackBody params={params} />
+      <PackBody params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function PackBody({ params }: { params: Promise<{ slug: string; packSlug: string }> }) {
+async function PackBody({ params, searchParams }: { params: Promise<{ slug: string; packSlug: string }>; searchParams: Search }) {
   const { slug, packSlug } = await params;
   const profile = await teacherProfile(slug);
   const pack = profile?.packs.find((item) => item.slug === packSlug);
   if (!profile || !studioCanSell(profile.teacher.status) || !pack) notFound();
+  const actor = await getActor();
+  const error = one((await searchParams).error);
   return (
     <div className="mx-auto max-w-xl px-5 py-10">
       <Panel>
@@ -32,13 +38,7 @@ async function PackBody({ params }: { params: Promise<{ slug: string; packSlug: 
         </div>
         <p className="mt-3">{pack.description}</p>
         <p className="mt-3 text-lg">{pack.creditCount} classes · {money(pack.priceCents)} · expires in {pack.expiryDays} days</p>
-        <form action={buyOfferAction} className="mt-5 space-y-3">
-          <input type="hidden" name="kind" value="pack" />
-          <input type="hidden" name="id" value={pack.id} />
-          <input type="hidden" name="back" value={`/t/${slug}/p/${pack.slug}`} />
-          <input name="code" placeholder="Promo code" className="w-full rounded-2xl border border-line px-3 py-2 uppercase" />
-          <button className="rounded-full bg-clay px-5 py-3 text-sm text-white">Buy pack</button>
-        </form>
+        <OfferPurchase error={error} signedIn={Boolean(actor)} back={`/t/${slug}/p/${pack.slug}`} kind="pack" offerId={pack.id} action={buyOfferAction} label="Buy pack" />
       </Panel>
     </div>
   );

@@ -13,6 +13,15 @@ export function errorRedirectPath(back: string | null | undefined, error: string
   return `${path}${joiner}error=${encodeURIComponent(error)}`;
 }
 
+export function loginNextPath(back: string | null | undefined) {
+  return `/login?next=${encodeURIComponent(safeNextPath(back))}`;
+}
+
+export function checkoutPreviewQuote<T>(input: { series: boolean; session: T; seriesQuote: T | null }) {
+  if (input.series && input.seriesQuote) return input.seriesQuote;
+  return input.session;
+}
+
 export type AttributionCookie = {
   ref?: string | null;
   utm_source?: string | null;
