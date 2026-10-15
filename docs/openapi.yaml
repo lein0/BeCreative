@@ -219,7 +219,7 @@ paths:
           description: Classes and services
   /classes/{slug}:
     get:
-      summary: Class detail and upcoming slots
+      summary: Class detail and scheduled upcoming slots
       parameters:
         - in: path
           name: slug
@@ -235,7 +235,7 @@ paths:
           description: Not found
   /classes/slots:
     get:
-      summary: Upcoming slots for a class slug
+      summary: Scheduled upcoming slots for a class slug
       security: [{ bearer: [] }]
       parameters:
         - in: query

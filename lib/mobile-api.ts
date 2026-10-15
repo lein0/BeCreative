@@ -225,7 +225,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
     return json({
       class: publicClass(detail),
       description: detail.class.description,
-      slots: detail.upcoming.map((session) => ({ id: session.id, startsAt: session.startsAt, spots: session.spots })),
+      slots: bookableSlots(detail.upcoming),
       teacher: { slug: detail.teacher.slug, name: detail.teacher.studioName || detail.teacher.slug },
     });
   }
@@ -425,7 +425,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
 
   if (method === "GET" && root === "classes" && second === "slots") {
     const detail = await classDetail(url.searchParams.get("slug") || "");
-    return json({ slots: detail?.upcoming.map((session) => ({ id: session.id, startsAt: session.startsAt, spots: session.spots })) ?? [] });
+    return json({ slots: detail ? bookableSlots(detail.upcoming) : [] });
   }
 
   return json({ error: "Not found." }, 404);
@@ -434,6 +434,10 @@ export async function handleMobileApi(request: Request, path: string[]) {
 async function visibleHelpArticles() {
   const articles = await db.select().from(faqArticles).where(eq(faqArticles.published, true));
   return articles.length ? articles : FAQ_ARTICLES;
+}
+
+function bookableSlots(upcoming: { id: string; startsAt: Date; spots: number; status: string }[]) {
+  return upcoming.filter((session) => session.status === "scheduled").map(({ id, startsAt, spots }) => ({ id, startsAt, spots }));
 }
 
 function publicClass(row: { class: { id: string; slug: string; title: string; pricePerSessionCents: number | null; delivery: string }; teacher: { slug: string; studioName: string | null }; category?: { slug: string; vertical: string; name: string }; next?: { startsAt: Date } | null; price?: number; spots?: number | null }) {

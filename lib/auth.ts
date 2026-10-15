@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
-import { sessionAllowedForUser } from "@/lib/account-data";
+import { revokeApiTokens, sessionAllowedForUser } from "@/lib/account-data";
 import { ensureAdminByEmail, grantAdminRole } from "@/lib/admins";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
@@ -49,10 +49,14 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: emailVerificationRequired(),
+    revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user, url }) => {
       if (!(await authTriggerOn("auth.reset"))) return;
       const rendered = await renderEmail("auth.reset", { name: user.name, href: url, title: "password" });
       await sendEmail({ to: [user.email], subject: rendered.subject, text: `${rendered.text}\n${url}`, html: rendered.html });
+    },
+    onPasswordReset: async ({ user }) => {
+      await revokeApiTokens(user.id);
     },
   },
   emailVerification: {

@@ -1,6 +1,10 @@
+import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { experimentSubject } from "@/lib/anon";
+import { capture, stitchFromCookies } from "@/lib/analytics";
+import { db } from "@/lib/db";
+import { analyticsEvents } from "@/lib/db/schema";
 import { subjectFromCookies } from "@/lib/experiments";
 import { proxy } from "@/proxy";
 
@@ -35,6 +39,40 @@ describe("first-visit experiment subject", () => {
     const cookie = response.cookies.get("bc_anon")?.value;
     expect(cookie).toMatch(/^[0-9a-f-]{36}$/);
     expect(response.headers.get("x-middleware-request-x-bc-anon")).toBe(cookie);
+  });
+
+  it("stores the minted anonymous id when the first-visit cookie is not on the request yet", async () => {
+    state.cookie = undefined;
+    state.header = "minted-for-capture";
+    const saved = await capture({ name: "page_view" });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    const [row] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
+    expect(row?.anonymousId).toBe("minted-for-capture");
+    expect(row?.userId).toBeNull();
+    state.header = "anonymous";
+    const dropped = await capture({ name: "page_view" });
+    expect(dropped.ok).toBe(true);
+    if (dropped.ok) {
+      const [blank] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, dropped.id));
+      expect(blank?.anonymousId).toBeNull();
+      await db.delete(analyticsEvents).where(eq(analyticsEvents.id, dropped.id));
+    }
+    state.cookie = "cookie-anon";
+    state.header = "minted-for-capture";
+    const preferred = await capture({ name: "class_viewed" });
+    expect(preferred.ok).toBe(true);
+    if (preferred.ok) {
+      const [cookieRow] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, preferred.id));
+      expect(cookieRow?.anonymousId).toBe("cookie-anon");
+      await db.delete(analyticsEvents).where(eq(analyticsEvents.id, preferred.id));
+    }
+    state.cookie = undefined;
+    state.header = "minted-for-capture";
+    await stitchFromCookies("stitched-user");
+    const [stitched] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
+    expect(stitched?.userId).toBe("stitched-user");
+    await db.delete(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
   });
 
   it("keeps an anonymous id that is already on the request", () => {

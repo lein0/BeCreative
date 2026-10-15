@@ -29,9 +29,11 @@ describe("deleted accounts", () => {
     seedTable(schema.user, [{ id: "u1", name: "Sam", email: "sam@example.com", deletedAt: null }]);
     seedTable(schema.account, [{ id: "a1", userId: "u1", providerId: "google", accountId: "google-1" }]);
     seedTable(schema.session, [{ id: "s1", userId: "u1", token: "tok" }]);
+    seedTable(schema.apiTokens, [{ id: "t1", userId: "u1", tokenHash: "hash", expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null }]);
     await deleteAccount("u1");
     expect(readTable(schema.account)).toHaveLength(0);
     expect(readTable(schema.session)).toHaveLength(0);
+    expect(readTable(schema.apiTokens)[0]?.revokedAt).toBeInstanceOf(Date);
     expect(readTable(schema.user)[0]?.email).toBe("deleted+u1@users.invalid");
     expect(readTable(schema.user)[0]?.deletedAt).toBeInstanceOf(Date);
     sessionBox.current = { user: { id: "u1", name: "Deleted account", email: "deleted+u1@users.invalid", image: null, isDemo: false } };

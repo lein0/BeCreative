@@ -412,6 +412,51 @@ describe("PR 7 weekday Bugbot sweep", () => {
     if (order) orderIds.push(order.id);
   });
 
+  it("lists only scheduled sessions as open slots", async () => {
+    const categoryId = crypto.randomUUID();
+    categoryIds.push(categoryId);
+    await db.insert(schema.categories).values({ id: categoryId, name: "Acting", slug: `${tag}-slots` });
+    const owner = await person("slot-owner");
+    const student = await person("slot-student");
+    const raw = await tokenFor(student);
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-slot-studio`, studioName: tag, status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    const slug = `${tag}-slot-class`;
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug,
+      title: "Open slots",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 8,
+      durationMinutes: 60,
+      pricePerSessionCents: 0,
+      status: "published",
+    });
+    const openId = crypto.randomUUID();
+    await db.insert(schema.sessions).values([
+      { id: openId, classId, startsAt: new Date("2027-06-01T18:00:00Z"), endsAt: new Date("2027-06-01T19:00:00Z"), localDate: "2027-06-01", capacity: 8, status: "scheduled" },
+      { id: crypto.randomUUID(), classId, startsAt: new Date("2027-06-02T18:00:00Z"), endsAt: new Date("2027-06-02T19:00:00Z"), localDate: "2027-06-02", capacity: 8, status: "cancelled" },
+      { id: crypto.randomUUID(), classId, startsAt: new Date("2027-06-03T18:00:00Z"), endsAt: new Date("2027-06-03T19:00:00Z"), localDate: "2027-06-03", capacity: 8, status: "paused" },
+      { id: crypto.randomUUID(), classId, startsAt: new Date("2027-06-04T18:00:00Z"), endsAt: new Date("2027-06-04T19:00:00Z"), localDate: "2027-06-04", capacity: 8, status: "completed" },
+    ]);
+    const detail = await handleMobileApi(new Request(`http://localhost/api/v1/classes/${slug}`), ["classes", slug]);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { slots: { id: string }[] };
+    expect(detailBody.slots.map((slot) => slot.id)).toEqual([openId]);
+    const slots = await handleMobileApi(new Request(`http://localhost/api/v1/classes/slots?slug=${encodeURIComponent(slug)}`, {
+      headers: { authorization: `Bearer ${raw}` },
+    }), ["classes", "slots"]);
+    expect(slots.status).toBe(200);
+    const slotsBody = await slots.json() as { slots: { id: string }[] };
+    expect(slotsBody.slots.map((slot) => slot.id)).toEqual([openId]);
+  });
+
   it("keeps tracking redirects on this site when the target has a backslash", async () => {
     const bad = await GET(new Request(`http://localhost:3000/api/r?to=${encodeURIComponent("/\\evil.example")}`));
     expect(bad.status).toBe(302);

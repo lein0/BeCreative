@@ -82,6 +82,12 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `SES_WEBHOOK_SECRET` | with SES feedback | Bearer token, or `?token=`, for `POST /api/webhooks/ses` |
 | `VAPID_PUBLIC_KEY` | no | Web push stays off until both VAPID keys are set and the admin flag is on |
 | `VAPID_PRIVATE_KEY` | no | Pair to the public key |
+| `FCM_SERVER_KEY` | no | Legacy FCM server key. FCM device tokens are stored either way and are sent only when this is set |
+| `APNS_KEY_ID` | no | APNs auth key id. All four APNs values are required before native Apple tokens are sent |
+| `APNS_TEAM_ID` | no | Apple team id for the APNs JWT |
+| `APNS_BUNDLE_ID` | no | `apns-topic` for the app |
+| `APNS_PRIVATE_KEY` | no | ES256 `.p8` private key. Newlines may be written as `\n` |
+| `APNS_PRODUCTION` | no | `true` uses `api.push.apple.com`. Otherwise the sandbox host is used |
 | `POSTHOG_KEY` | no | First-party events always stay in Postgres. PostHog gets a copy only when this is set and the visitor accepted cookies |
 | `POSTHOG_HOST` | no | PostHog capture host. Defaults to `https://us.i.posthog.com` |
 

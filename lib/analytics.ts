@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { ANON_COOKIE, ANON_HEADER, experimentSubject } from "@/lib/anon";
 import { db } from "@/lib/db";
 import { analyticsEvents } from "@/lib/db/schema";
 import { isCatalogEvent, platformName, type AnalyticsEventName, type PlatformName } from "@/lib/analytics-events";
@@ -34,6 +35,20 @@ async function cookieValue(name: string) {
   }
 }
 
+async function headerValue(name: string) {
+  try {
+    const list = await headers();
+    return list.get(name);
+  } catch {
+    return null;
+  }
+}
+
+/** Cookie when the browser already has one, otherwise the id the proxy minted on this request. */
+async function requestAnonymousId() {
+  return experimentSubject({ cookie: await cookieValue(ANON_COOKIE), header: await headerValue(ANON_HEADER) });
+}
+
 export function posthogConfigured() {
   return Boolean(process.env.POSTHOG_KEY);
 }
@@ -57,7 +72,7 @@ export async function forwardPostHog(input: { name: string; distinctId: string; 
 
 export async function capture(input: TrackInput) {
   if (!isCatalogEvent(input.name)) return { ok: false as const };
-  const anonymousId = input.anonymousId ?? (await cookieValue("bc_anon"));
+  const anonymousId = input.anonymousId ?? (await requestAnonymousId());
   const consent = input.consent ?? (await cookieValue("bc_cookie")) === "1";
   const id = crypto.randomUUID();
   const platform: PlatformName = platformName(input.platform);
@@ -96,5 +111,5 @@ export async function stitchAnonymous(userId: string, anonymousId: string | null
 }
 
 export async function stitchFromCookies(userId: string) {
-  await stitchAnonymous(userId, await cookieValue("bc_anon"));
+  await stitchAnonymous(userId, await requestAnonymousId());
 }
