@@ -54,6 +54,7 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   refundCancelsBooking,
+  replacedCheckoutToAbandon,
   sessionLockOrder,
 } from "@/lib/checkout-rules";
 import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
@@ -171,25 +172,38 @@ export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { 
   const stripe = touchStripe ? getStripe() : null;
   let released = 0;
   for (const order of stale) {
-    if (stripe && !(await stripeHoldCanRelease(stripe, order))) continue;
-    const updated = await db
-      .update(orders)
-      .set({ status: "expired", updatedAt: now })
-      .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
-      .returning({ id: orders.id });
-    if (!updated.length) continue;
-    const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
-    const seatLinks = linked.length
-      ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
-      : [];
-    await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
-    await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
-    await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
-    await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
-    released += 1;
+    if (await releaseOnePendingHold(order, now, stripe)) released += 1;
   }
   if (touchStripe) await expireStripeForReleasedHolds();
+  return released;
+}
+
+async function releaseOnePendingHold(order: typeof orders.$inferSelect, now: Date, stripe: ReturnType<typeof getStripe>) {
+  if (stripe && !(await stripeHoldCanRelease(stripe, order))) return false;
+  const updated = await db
+    .update(orders)
+    .set({ status: "expired", updatedAt: now })
+    .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+    .returning({ id: orders.id });
+  if (!updated.length) return false;
+  const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+  const seatLinks = linked.length
+    ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
+    : [];
+  await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+  await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
+  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+  await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+  await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
+  return true;
+}
+
+/** Drop the unpaid seat from a checkout the student replaced. Paid or in-flight Stripe charges stay. */
+export async function releaseReplacedCheckout(orderId: string, userId: string) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order || !replacedCheckoutToAbandon(order, userId)) return false;
+  const released = await releaseOnePendingHold(order, new Date(), getStripe());
+  if (released) await expireStripeForReleasedHolds();
   return released;
 }
 
@@ -301,6 +315,7 @@ export async function bookSession(input: {
   paymentSheet?: boolean;
   platform?: string;
   returnToApp?: boolean;
+  abandonOrderId?: string;
 }): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
   const attr = await attribution();
   const codeInput = checkoutPromoCode(input.code, attr.code);
@@ -308,6 +323,7 @@ export async function bookSession(input: {
   const fee = await fees();
   const now = new Date();
   await releaseExpiredCheckoutHolds(now);
+  if (input.abandonOrderId) await releaseReplacedCheckout(input.abandonOrderId, input.userId);
 
   try {
     const created = await db.transaction(async (tx) => {

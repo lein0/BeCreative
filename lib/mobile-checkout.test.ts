@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, nativeIntentPath, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, nativeIntentPath, orderToAbandon, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl, unpaidCheckoutOrder } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -23,6 +23,12 @@ describe("live mobile checkout", () => {
       { id: "spent", remaining: 0, classIds: ["class-scene"], categoryIds: [] as string[], teacherId: "maya" },
     ];
     expect(packsForClass(packs, "class-scene", "acting", "maya").map((pack) => pack.id)).toEqual(["scene"]);
+    const now = new Date("2026-10-15T12:00:00.000Z");
+    const dated = [
+      { id: "live", remaining: 2, expiresAt: "2026-12-01T00:00:00.000Z", classIds: ["class-scene"], categoryIds: [] as string[], teacherId: "maya" },
+      { id: "expired", remaining: 2, expiresAt: "2026-10-01T00:00:00.000Z", classIds: ["class-scene"], categoryIds: [] as string[], teacherId: "maya" },
+    ];
+    expect(packsForClass(dated, "class-scene", "acting", "maya", now).map((pack) => pack.id)).toEqual(["live"]);
   });
 
   it("does not capitalize password fields", () => {
@@ -106,5 +112,12 @@ describe("live mobile checkout", () => {
     expect(nativeIntentPath("/bookings", true, explode)).toBe("/explore");
     expect(nativeIntentPath("/bookings", false, explode)).toBe("/bookings");
     expect(nativeIntentPath("becreative://stripe-return", true)).toBeNull();
+  });
+
+  it("releases the previous unpaid checkout when the date changes", () => {
+    expect(unpaidCheckoutOrder({ orderId: "ord-1", clientSecret: "pi_secret" })).toBe("ord-1");
+    expect(unpaidCheckoutOrder({ orderId: "ord-free" })).toBeNull();
+    expect(orderToAbandon({ reopenCheckout: true, orderId: "ord-1" })).toBeNull();
+    expect(orderToAbandon({ reopenCheckout: false, orderId: "ord-1" })).toBe("ord-1");
   });
 });

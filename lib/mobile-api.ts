@@ -241,7 +241,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
   }
 
   if (method === "POST" && root === "bookings" && !second) {
-    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean };
+    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean; abandonOrderId?: string };
     const result = await bookSession({
       userId: actor.id,
       email: actor.email,
@@ -255,6 +255,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       paymentSheet: body.paymentSheet,
       platform,
       returnToApp: true,
+      abandonOrderId: body.abandonOrderId,
       ip: request.headers.get("x-forwarded-for"),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
@@ -277,7 +278,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(eq(membershipSubscriptions.userId, actor.id)),
     ]);
     return json({
-      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
+      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, expiresAt: row.purchase.expiresAt ? new Date(row.purchase.expiresAt).toISOString() : null, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
       memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd, classIds: row.plan.classIds, categoryIds: row.plan.categoryIds, teacherId: row.plan.teacherId })),
     });
   }

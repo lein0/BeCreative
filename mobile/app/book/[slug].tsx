@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, resumeBookingPath } from "../../../lib/mobile-client";
+import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, orderToAbandon, resumeBookingPath, unpaidCheckoutOrder } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -33,6 +33,7 @@ export default function BookScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reopenCheckout, setReopenCheckout] = useState(false);
+  const [checkoutOrderId, setCheckoutOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.name) setSignedName((current) => current || user.name);
@@ -79,6 +80,7 @@ export default function BookScreen() {
       return;
     }
     if (plan.action !== "book") return;
+    const abandonOrderId = orderToAbandon({ reopenCheckout, orderId: checkoutOrderId }) ?? undefined;
     setBusy(true);
     setError(null);
     let openedCheckout = false;
@@ -106,6 +108,7 @@ export default function BookScreen() {
         }),
         policyAccepted: true,
         paymentSheet: Platform.OS !== "web",
+        abandonOrderId,
       });
       if (checkoutFollowsBooking(result) === "bookings") {
         setError("You already have this series booked.");
@@ -115,6 +118,7 @@ export default function BookScreen() {
       if (result.codeApplied) await track("promo_applied", { code: result.codeApplied });
       await track("checkout_started", { orderId: result.orderId ?? "" });
       setCheckoutDraft(draftFromResult(detail.class.title, result));
+      setCheckoutOrderId(unpaidCheckoutOrder(result));
       router.push("/checkout");
       openedCheckout = true;
     } catch (err) {

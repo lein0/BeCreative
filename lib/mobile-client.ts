@@ -32,17 +32,31 @@ export function bookDisplayCents(input: { series: boolean; sessionPriceCents: nu
   return input.sessionPriceCents;
 }
 
-export function packsForClass<T extends { remaining: number; classIds?: string[]; categoryIds?: string[]; teacherId?: string }>(
+export function packsForClass<T extends { remaining: number; expiresAt?: string | null; classIds?: string[]; categoryIds?: string[]; teacherId?: string }>(
   packs: T[],
   classId: string,
   categoryId: string,
   teacherId?: string,
+  now = new Date(),
 ) {
   return packs.filter((pack) => {
     if (pack.remaining <= 0) return false;
+    if (pack.expiresAt && new Date(pack.expiresAt).getTime() < now.getTime()) return false;
     if (teacherId && pack.teacherId && pack.teacherId !== teacherId) return false;
     return offerCoversClass({ classIds: pack.classIds ?? [], categoryIds: pack.categoryIds ?? [] }, classId, categoryId);
   });
+}
+
+export function unpaidCheckoutOrder(result: { orderId?: string | null; checkoutUrl?: string | null; clientSecret?: string | null }) {
+  if (!result.orderId) return null;
+  if (!result.checkoutUrl && !result.clientSecret) return null;
+  return result.orderId;
+}
+
+/** A changed date rebooks only after the previous unpaid checkout is released. */
+export function orderToAbandon(input: { reopenCheckout: boolean; orderId?: string | null }) {
+  if (input.reopenCheckout || !input.orderId) return null;
+  return input.orderId;
 }
 
 export function membershipsForClass<T extends { status: string; periodEnd?: string | null; classIds?: string[]; categoryIds?: string[]; teacherId?: string }>(
