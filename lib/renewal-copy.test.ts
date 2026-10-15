@@ -14,9 +14,13 @@ import {
   dunningBody,
   failedRenewalNotice,
   legalIdentity,
+  materialPriceStays,
   membershipCheckoutPlan,
   membershipOffer,
   membershipStartedAt,
+  membershipTermPhrase,
+  noticeMail,
+  noticeSendClaimed,
   planNotices,
   preservedAcknowledgment,
   priceAfterMemberNotice,
@@ -24,6 +28,9 @@ import {
   priceChangeDateError,
   priceNoticeSentAt,
   purchaseButtonLabel,
+  relatedPriceChange,
+  renewalNoticeEligible,
+  replacementCard,
   savedCardDetails,
   shouldRetryRenewal,
 } from "@/lib/renewal-copy";
@@ -431,5 +438,62 @@ describe("cancellation and dunning", () => {
     expect(savedCardDetails({ brand: "card", last4: "••••" })).toBeNull();
     expect(savedCardDetails({ brand: "visa", last4: "••••" })).toBeNull();
     expect(savedCardDetails(null)).toBeNull();
+  });
+
+  it("sends renewal notices only for live recurring memberships", () => {
+    expect(renewalNoticeEligible({ status: "active", cancelAtPeriodEnd: false, recurring: true })).toBe(true);
+    expect(renewalNoticeEligible({ status: "past_due", cancelAtPeriodEnd: false, recurring: true })).toBe(true);
+    expect(renewalNoticeEligible({ status: "pending", cancelAtPeriodEnd: false, recurring: true })).toBe(false);
+    expect(renewalNoticeEligible({ status: "active", cancelAtPeriodEnd: false, recurring: false })).toBe(false);
+    expect(renewalNoticeEligible({ status: "active", cancelAtPeriodEnd: true, recurring: true })).toBe(false);
+    expect(renewalNoticeEligible({ status: "cancelled", cancelAtPeriodEnd: false, recurring: true })).toBe(false);
+    const end = noon("2026-11-09");
+    expect(membershipTermPhrase({ recurring: true, status: "active", cancelAtPeriodEnd: false, periodEnd: end })).toBe("Renews November 9, 2026");
+    expect(membershipTermPhrase({ recurring: false, status: "active", cancelAtPeriodEnd: false, periodEnd: end })).toBe("Ends November 9, 2026");
+    expect(membershipTermPhrase({ recurring: true, status: "pending", cancelAtPeriodEnd: false, periodEnd: end })).toBe("Payment pending");
+    expect(membershipTermPhrase({ recurring: true, status: "active", cancelAtPeriodEnd: true, periodEnd: end })).toBe("Ends November 9, 2026");
+  });
+
+  it("keeps an unrelated price off a material-change notice", () => {
+    const older = { effectiveAt: noon("2026-06-01"), oldPriceCents: 10000, newPriceCents: 15000 };
+    const sameDay = { effectiveAt: noon("2026-12-01"), oldPriceCents: 12000, newPriceCents: 15000 };
+    const eventAt = noon("2026-12-01");
+    expect(relatedPriceChange({ kind: "material_change", eventAt, price: older })).toBeNull();
+    expect(materialPriceStays("material_change", null)).toBe(true);
+    expect(relatedPriceChange({ kind: "material_change", eventAt, price: sameDay })).toEqual(sameDay);
+    expect(materialPriceStays("material_change", sameDay)).toBe(false);
+    const facts = {
+      kind: "material_change" as const,
+      firstName: "Lila",
+      membershipName: "Monthly studio",
+      teacherName: "Maya Alvarez Studio",
+      benefits: "Weekly class",
+      termMonths: 1,
+      renewalPriceCents: 12000,
+      oldPriceCents: 12000,
+      newPriceCents: 15000,
+      cardBrand: "visa",
+      last4: "4242",
+      eventAt,
+      nextRenewal: eventAt,
+      startedAt: noon("2025-12-01"),
+      cancelUrl: "https://northwind.test/account/memberships/sub/cancel",
+      changeSummary: "Class moves to Tuesday",
+    };
+    expect(noticeMail({ ...facts, priceStays: true }, BUILTIN_TEMPLATES, legal).text).toContain("Your price stays $120.00");
+    expect(noticeMail({ ...facts, priceStays: true }, BUILTIN_TEMPLATES, legal).text).not.toContain("changes to $150.00");
+    expect(noticeMail({ ...facts, priceStays: false }, BUILTIN_TEMPLATES, legal).text).toContain("Your price changes to $150.00");
+  });
+
+  it("sends a renewal notice only from the tick that claimed the row", () => {
+    expect(noticeSendClaimed(1)).toBe(true);
+    expect(noticeSendClaimed(0)).toBe(false);
+  });
+
+  it("replaces a stored card when Stripe has a different one", () => {
+    expect(replacementCard({ cardBrand: "card", cardLast4: "••••" }, { cardBrand: "visa", cardLast4: "4242" })).toEqual({ cardBrand: "visa", cardLast4: "4242" });
+    expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, { cardBrand: "mastercard", cardLast4: "4444" })).toEqual({ cardBrand: "mastercard", cardLast4: "4444" });
+    expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, { cardBrand: "visa", cardLast4: "4242" })).toBeNull();
+    expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, null)).toBeNull();
   });
 });

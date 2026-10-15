@@ -632,6 +632,45 @@ export function savedCardDetails(card: { brand?: string | null; last4?: string |
   return { cardBrand: brand.toLowerCase(), cardLast4: last4 };
 }
 
+/** Auto-renewal mail is only for a live recurring membership that has not been cancelled. */
+export function renewalNoticeEligible(input: { status: string; cancelAtPeriodEnd: boolean; recurring: boolean }) {
+  if (!input.recurring || input.cancelAtPeriodEnd) return false;
+  return input.status === "active" || input.status === "past_due";
+}
+
+export function membershipTermPhrase(input: { recurring: boolean; status: string; cancelAtPeriodEnd: boolean; periodEnd: Date }) {
+  if (input.status === "pending") return "Payment pending";
+  const date = formatRenewalDate(input.periodEnd);
+  if (!input.recurring || input.cancelAtPeriodEnd) return `Ends ${date}`;
+  return `Renews ${date}`;
+}
+
+/** A material notice quotes a new price only when that price change lands on the same day. */
+export function relatedPriceChange<T extends { effectiveAt: Date }>(input: { kind: string; eventAt: Date; price: T | null }) {
+  if (!input.price) return null;
+  if (input.kind === "price_change") return input.price;
+  if (input.kind === "material_change" && isoDate(input.price.effectiveAt) === isoDate(input.eventAt)) return input.price;
+  return null;
+}
+
+export function materialPriceStays(kind: string, relatedPrice: unknown) {
+  return !(kind === "material_change" && relatedPrice);
+}
+
+/** The cron tick that inserts the notice row is the only one allowed to email it. */
+export function noticeSendClaimed(insertedRows: number) {
+  return insertedRows > 0;
+}
+
+export function replacementCard(
+  current: { cardBrand?: string | null; cardLast4?: string | null },
+  next: { cardBrand: string; cardLast4: string } | null,
+) {
+  if (!next) return null;
+  if (current.cardBrand === next.cardBrand && current.cardLast4 === next.cardLast4) return null;
+  return next;
+}
+
 export function failedRenewalNotice(input: { subscriptionId: string; membershipName: string; origin: string }) {
   const origin = input.origin.replace(/\/$/, "");
   const cancelUrl = `${origin}/account/memberships/${input.subscriptionId}/cancel`;

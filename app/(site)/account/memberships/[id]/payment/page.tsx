@@ -6,6 +6,7 @@ import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
 import { membershipSubscriptions, memberships } from "@/lib/db/schema";
 import { updatePaymentAction } from "@/lib/renewal-actions";
+import { refreshStoredSubscriptionCard } from "@/lib/renewal";
 
 export default function UpdatePaymentPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   return (
@@ -27,6 +28,7 @@ async function Body({ params, searchParams }: { params: Promise<{ id: string }>;
     .limit(1);
   if (!row || row.sub.userId !== actor.id) notFound();
   const ended = row.sub.cancelAtPeriodEnd || row.sub.status === "cancelled";
+  if (!ended) await refreshStoredSubscriptionCard(row.sub.id, actor.id);
   return (
     <div className="mx-auto max-w-xl px-5 py-10">
       <p className="text-sm"><Link href="/account">Account</Link> › <Link href="/account/memberships">Memberships</Link> › Update payment</p>

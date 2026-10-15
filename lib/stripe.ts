@@ -159,6 +159,47 @@ export async function subscriptionCard(input: { paymentIntentId?: string | null;
   return null;
 }
 
+/** Card update only. Subscription cancel stays on Account › Memberships so the local cancel record is written. */
+export function paymentPortalFeatures() {
+  return {
+    customer_update: { enabled: false },
+    invoice_history: { enabled: false },
+    payment_method_update: { enabled: true },
+    subscription_cancel: { enabled: false },
+    subscription_update: { enabled: false },
+  };
+}
+
+export function paymentPortalSessionParams(customer: string, returnUrl: string, configuration?: string) {
+  return {
+    customer,
+    return_url: returnUrl,
+    ...(configuration ? { configuration } : {}),
+    flow_data: {
+      type: "payment_method_update" as const,
+      after_completion: {
+        type: "redirect" as const,
+        redirect: { return_url: returnUrl },
+      },
+    },
+  };
+}
+
+let cardUpdatePortalConfig: Promise<string | null> | null = null;
+
+function cardUpdatePortalConfiguration(stripe: Stripe) {
+  if (!cardUpdatePortalConfig) {
+    cardUpdatePortalConfig = stripe.billingPortal.configurations.create({
+      name: "BeCreative card update",
+      features: paymentPortalFeatures(),
+    }).then((config) => config.id).catch(() => {
+      cardUpdatePortalConfig = null;
+      return null;
+    });
+  }
+  return cardUpdatePortalConfig;
+}
+
 export async function paymentMethodPortalUrl(stripeSubscriptionId: string, returnPath: string) {
   const stripe = getStripe();
   if (!stripe) return { error: "Card update is not available right now." };
@@ -166,10 +207,9 @@ export async function paymentMethodPortalUrl(stripeSubscriptionId: string, retur
     const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
     const customer = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
     if (!customer) return { error: "This membership has no card on file to update." };
-    const session = await stripe.billingPortal.sessions.create({
-      customer,
-      return_url: `${appOrigin()}${returnPath}`,
-    });
+    const returnUrl = `${appOrigin()}${returnPath}`;
+    const configuration = await cardUpdatePortalConfiguration(stripe);
+    const session = await stripe.billingPortal.sessions.create(paymentPortalSessionParams(customer, returnUrl, configuration ?? undefined));
     if (!session.url) return { error: "Card update is not available right now." };
     return { url: session.url };
   } catch {

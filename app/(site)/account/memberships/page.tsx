@@ -5,7 +5,7 @@ import { Panel } from "@/components/bits";
 import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
 import { membershipSubscriptions, memberships, teachers } from "@/lib/db/schema";
-import { formatRenewalDate } from "@/lib/renewal-copy";
+import { membershipTermPhrase } from "@/lib/renewal-copy";
 import { money } from "@/lib/utils";
 
 export default function MembershipsPage() {
@@ -32,7 +32,7 @@ async function List() {
         {rows.length ? rows.map((row) => (
           <Panel key={row.sub.id}>
             <h2 className="text-xl font-semibold">{row.plan.name}</h2>
-            <p className="mt-1 text-base">{row.teacher.studioName} · {money(row.sub.renewalPriceCents || row.plan.priceCents)} · {row.sub.cancelAtPeriodEnd ? `Ends ${formatRenewalDate(row.sub.currentPeriodEnd)}` : `Renews ${formatRenewalDate(row.sub.currentPeriodEnd)}`}</p>
+            <p className="mt-1 text-base">{row.teacher.studioName} · {money(row.sub.renewalPriceCents || row.plan.priceCents)} · {membershipTermPhrase({ recurring: row.plan.recurring, status: row.sub.status, cancelAtPeriodEnd: row.sub.cancelAtPeriodEnd, periodEnd: row.sub.currentPeriodEnd })}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <Link href={`/account/memberships/${row.sub.id}/terms`} className="underline">Membership terms</Link>
               {row.sub.status === "past_due" ? <Link href={`/account/memberships/${row.sub.id}/payment`} className="underline">Update payment</Link> : null}
