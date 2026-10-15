@@ -30,7 +30,7 @@ export default function TeacherScreen() {
 
   async function buyPack(offer: PackOffer) {
     if (!user) {
-      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "" }) } });
+      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "", packSlug: offer.slug }) } });
       return;
     }
     setBusyId(offer.id);
@@ -56,7 +56,7 @@ export default function TeacherScreen() {
 
   async function buyMembership(offer: MembershipOffer) {
     if (!user) {
-      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "" }) } });
+      router.push({ pathname: "/login", params: { next: resumePurchasePath({ teacherSlug: slug ?? "", membershipSlug: offer.slug }) } });
       return;
     }
     setBusyId(offer.id);

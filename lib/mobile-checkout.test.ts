@@ -49,6 +49,8 @@ describe("live mobile checkout", () => {
     expect(resumePurchasePath({ teacherSlug: "maya chen", packSlug: "scene-10" })).toBe("/t/maya%20chen/p/scene-10");
     expect(resumePurchasePath({ teacherSlug: "maya", membershipSlug: "bewell" })).toBe("/t/maya/m/bewell");
     expect(postLoginPath(resumePurchasePath({ teacherSlug: "maya" }))).toBe("/t/maya");
+    expect(resumePurchasePath({ teacherSlug: "maya", packSlug: "scene-10" })).toBe("/t/maya/p/scene-10");
+    expect(resumePurchasePath({ teacherSlug: "maya", membershipSlug: "bewell" })).toBe("/t/maya/m/bewell");
   });
 
   it("keeps the waiver name field and the signature step on the same loaded waiver", () => {
