@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: becreative
+      POSTGRES_PASSWORD: becreative
+      POSTGRES_DB: becreative
+    ports:
+      - "5432:5432"
+    volumes:
+      - becreative_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U becreative -d becreative"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Optional S3-compatible storage. Start with: docker compose --profile minio up -d
+  minio:
+    profiles: ["minio"]
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: becreative
+      MINIO_ROOT_PASSWORD: becreative-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - becreative_minio:/data
+
+volumes:
+  becreative_pg:
+  becreative_minio:
