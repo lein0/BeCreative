@@ -22,6 +22,18 @@ export function authSessionRedirect(platform: string, apiBase: string, nativeUrl
   return platform === "web" ? `${api}/mobile/return` : nativeUrl;
 }
 
+/** Web checkout must stay on the HTTPS return URL so the auth session can finish. Native opens the app. */
+export function mobileReturnTarget(input: { flow: string; cancelled: boolean; web: boolean }) {
+  if (input.web) return null;
+  const flag = input.cancelled ? "cancelled=1" : "paid=1";
+  return `becreative://bookings?flow=${encodeURIComponent(input.flow)}&${flag}`;
+}
+
+/** Promo, pack, and membership edits keep the open checkout. Only a different seat releases it. */
+export function keepCheckoutOpen(change: "seat" | "details", open: boolean) {
+  return change === "seat" ? false : open;
+}
+
 export function fieldAutoCapitalize(keyboard: "default" | "email-address" | "phone-pad" = "default", secure = false) {
   if (secure || keyboard === "email-address" || keyboard === "phone-pad") return "none" as const;
   return "sentences" as const;

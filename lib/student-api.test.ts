@@ -5,6 +5,7 @@ import {
   APP_PASSWORD_RESET_PATH,
   bookingTimezone,
   classNeedsSignature,
+  classPlace,
   pickBookingSession,
   placeFields,
   reauthMethod,
@@ -20,13 +21,11 @@ describe("student API contract helpers", () => {
 
   it("maps a place and leaves virtual classes without coordinates", () => {
     expect(placeFields(null)).toBeNull();
-    expect(placeFields({ lat: 34.05, lng: -118.24, neighborhood: "Echo Park", name: "Studio", city: "Los Angeles" })).toEqual({
-      lat: 34.05,
-      lng: -118.24,
-      neighborhood: "Echo Park",
-      name: "Studio",
-      city: "Los Angeles",
-    });
+    const studio = { lat: 34.05, lng: -118.24, neighborhood: "Echo Park", name: "Studio", city: "Los Angeles" };
+    expect(placeFields(studio)).toEqual(studio);
+    expect(classPlace("in_person", studio)).toEqual(studio);
+    expect(classPlace("virtual", studio)).toBeNull();
+    expect(classPlace("in_person", null)).toBeNull();
   });
 
   it("asks for a signature only when the teacher published waiver text", () => {

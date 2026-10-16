@@ -2,15 +2,25 @@
 
 import { Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
+import { mobileReturnTarget } from "@/lib/mobile-client";
 
 function ReturnInner() {
   const params = useSearchParams();
   const flow = params.get("flow") || "booking";
   const cancelled = params.get("cancelled") === "1";
-  const target = `becreative://bookings?flow=${encodeURIComponent(flow)}${cancelled ? "&cancelled=1" : "&paid=1"}`;
+  const web = params.get("web") === "1";
+  const target = mobileReturnTarget({ flow, cancelled, web });
   useEffect(() => {
-    window.location.replace(target);
+    if (target) window.location.replace(target);
   }, [target]);
+  if (!target) {
+    return (
+      <main className="mx-auto max-w-md px-6 py-16">
+        <h1 className="font-serif text-3xl">{cancelled ? "Checkout cancelled" : "Payment updated"}</h1>
+        <p className="mt-3 text-ink/80">You can close this page and return to BeCreative.</p>
+      </main>
+    );
+  }
   return (
     <main className="mx-auto max-w-md px-6 py-16">
       <h1 className="font-serif text-3xl">Returning to BeCreative</h1>
