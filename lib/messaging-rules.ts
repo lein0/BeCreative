@@ -48,9 +48,11 @@ export function withinMonthlyCap(spentCents: number, nextCostCents: number, capC
   return spentCents + nextCostCents <= capCents;
 }
 
-/** A paid-class receipt still goes out after unsubscribe. Other email does not. */
+/** Receipts and membership auto-renewal mail still go out after a marketing unsubscribe. */
 export function unsubscribeBlocksEmail(event?: string) {
-  return event !== "receipt.sent";
+  if (!event) return true;
+  if (event === "receipt.sent" || event.startsWith("membership.")) return false;
+  return true;
 }
 
 export function maySend(input: {

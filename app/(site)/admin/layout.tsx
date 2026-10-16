@@ -17,7 +17,7 @@ async function Guard({ children }: { children: React.ReactNode }) {
   const actor = await requireActor();
   if (!canViewPlatformStats(actor.roles)) redirect("/");
   const unread = await adminInboxUnreadCount();
-  const links = [["Overview", "/admin"], ["Analytics", "/admin/analytics"], ["Teachers", "/admin/teachers"], ["Classes", "/admin/classes"], ["Users", "/admin/users"], ["Promos", "/admin/promos"], ["Refunds", "/admin/refunds"], ["Disputes", "/admin/disputes"], ["Support", "/admin/support"], ["Help", "/admin/help"], ["Triggers", "/admin/triggers"], ["Settings", "/admin/settings"], [`Feedback${unread ? ` (${unread})` : ""}`, "/admin/feedback"]];
+  const links = [["Overview", "/admin"], ["Analytics", "/admin/analytics"], ["Teachers", "/admin/teachers"], ["Classes", "/admin/classes"], ["Users", "/admin/users"], ["Promos", "/admin/promos"], ["Refunds", "/admin/refunds"], ["Renewals", "/admin/renewals"], ["Disputes", "/admin/disputes"], ["Support", "/admin/support"], ["Help", "/admin/help"], ["Triggers", "/admin/triggers"], ["Settings", "/admin/settings"], [`Feedback${unread ? ` (${unread})` : ""}`, "/admin/feedback"]];
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
       <nav className="mb-6 flex flex-wrap gap-2 text-sm">

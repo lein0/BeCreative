@@ -217,6 +217,8 @@ export const memberships = pgTable("memberships", {
   priceCents: integer("price_cents").notNull(),
   recurring: boolean("recurring").notNull().default(true),
   pauseCancelPolicy: text("pause_cancel_policy").notNull().default(""),
+  introDays: integer("intro_days"),
+  introPriceCents: integer("intro_price_cents"),
   classIds: text("class_ids").array().notNull().default(sql`ARRAY[]::text[]`),
   categoryIds: text("category_ids").array().notNull().default(sql`ARRAY[]::text[]`),
   active: boolean("active").notNull().default(true),
@@ -334,6 +336,12 @@ export const membershipSubscriptions = pgTable("membership_subscriptions", {
   classesUsedThisPeriod: integer("classes_used_this_period").notNull().default(0),
   classesPerPeriod: integer("classes_per_period"),
   unlimited: boolean("unlimited").notNull().default(false),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  cancelledAt: ts("cancelled_at"),
+  renewalPriceCents: integer("renewal_price_cents").notNull().default(0),
+  introEndsAt: ts("intro_ends_at"),
+  cardBrand: text("card_brand"),
+  cardLast4: text("card_last4"),
   isDemo: boolean("is_demo").notNull().default(false),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
@@ -415,6 +423,7 @@ export const platformSettings = pgTable("platform_settings", {
   smsMonthlyCapCents: integer("sms_monthly_cap_cents").notNull().default(5000),
   smsSegmentCostCents: integer("sms_segment_cost_cents").notNull().default(1),
   imessageEnabled: boolean("imessage_enabled").notNull().default(false),
+  renewalSaveOffer: boolean("renewal_save_offer").notNull().default(false),
   updatedAt: ts("updated_at").notNull().defaultNow(),
   updatedBy: text("updated_by"),
 });
@@ -1033,6 +1042,101 @@ export const credentials = pgTable("credentials", {
   verifiedAt: ts("verified_at"),
   verifiedBy: text("verified_by"),
   isDemo: boolean("is_demo").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+/** Consent, notice, and cancellation rows are not foreign-keyed to users, so account deletion cannot cascade them away. */
+export const renewalTemplates = pgTable("renewal_templates", {
+  id: text("id").primaryKey(),
+  version: text("version").notNull().unique(),
+  active: boolean("active").notNull().default(false),
+  legalSignoff: text("legal_signoff").notNull(),
+  createdBy: text("created_by"),
+  body: jsonb("body").$type<Record<string, string>>().notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const renewalConsents = pgTable("renewal_consents", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  membershipId: text("membership_id").notNull(),
+  teacherId: text("teacher_id").notNull(),
+  subscriptionId: text("subscription_id"),
+  orderId: text("order_id"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  platform: text("platform").notNull().default("web"),
+  appVersion: text("app_version"),
+  disclosureText: text("disclosure_text").notNull(),
+  disclosureVersion: text("disclosure_version").notNull(),
+  templateVersion: text("template_version").notNull(),
+  checkboxAccepted: boolean("checkbox_accepted").notNull(),
+  priceCents: integer("price_cents").notNull(),
+  renewalPriceCents: integer("renewal_price_cents").notNull(),
+  termMonths: integer("term_months").notNull(),
+  ackEmailId: text("ack_email_id"),
+  ackDeliveryStatus: text("ack_delivery_status").notNull().default("pending"),
+});
+
+export const renewalNotices = pgTable(
+  "renewal_notices",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    membershipId: text("membership_id").notNull(),
+    teacherId: text("teacher_id").notNull(),
+    subscriptionId: text("subscription_id").notNull(),
+    kind: text("kind").notNull(),
+    eventOn: text("event_on").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    sentAt: ts("sent_at"),
+    status: text("status").notNull(),
+    emailId: text("email_id"),
+    deliveryStatus: text("delivery_status"),
+    subject: text("subject").notNull().default(""),
+    body: text("body").notNull().default(""),
+    platform: text("platform").notNull().default("email"),
+    detail: text("detail"),
+  },
+  (table) => [uniqueIndex("renewal_notice_once").on(table.subscriptionId, table.kind, table.eventOn)],
+);
+
+export const renewalCancellations = pgTable("renewal_cancellations", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  membershipId: text("membership_id").notNull(),
+  teacherId: text("teacher_id").notNull(),
+  subscriptionId: text("subscription_id").notNull(),
+  actorUserId: text("actor_user_id").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  source: text("source").notNull(),
+  platform: text("platform").notNull().default("web"),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  termEnd: ts("term_end").notNull(),
+  emailId: text("email_id"),
+  deliveryStatus: text("delivery_status"),
+});
+
+export const membershipPriceChanges = pgTable("membership_price_changes", {
+  id: text("id").primaryKey(),
+  membershipId: text("membership_id").notNull().references(() => memberships.id, { onDelete: "cascade" }),
+  oldPriceCents: integer("old_price_cents").notNull(),
+  newPriceCents: integer("new_price_cents").notNull(),
+  effectiveAt: ts("effective_at").notNull(),
+  noticeSentAt: ts("notice_sent_at"),
+  createdBy: text("created_by"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+});
+
+export const membershipMaterialChanges = pgTable("membership_material_changes", {
+  id: text("id").primaryKey(),
+  membershipId: text("membership_id").notNull().references(() => memberships.id, { onDelete: "cascade" }),
+  summary: text("summary").notNull(),
+  effectiveAt: ts("effective_at").notNull(),
+  noticeSentAt: ts("notice_sent_at"),
+  createdBy: text("created_by"),
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
