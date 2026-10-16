@@ -106,6 +106,11 @@ export function deferredSmsStillPending(status: string) {
   return status === "sms_pending";
 }
 
+/** A Twilio error returns `{ ok: false }` without throwing. A skipped send (no credentials) is not a retry. */
+export function smsSendKeepsOutboxPending(result: { ok: boolean; skipped?: boolean }) {
+  return !result.ok && !result.skipped;
+}
+
 /** Event saves must not clear the phone. Only the contact form writes it. */
 export function phoneFromForm(input: { savePhone: boolean; phone: string }) {
   if (!input.savePhone) return null;

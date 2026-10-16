@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, creditLedger, introRedemptions, membershipSubscriptions, orders, packPurchases, platformSettings, refundLedger, services, sessions, teacherPolicies, teachers, user, visitBookings } from "@/lib/db/schema";
 import { emitNotification } from "@/lib/notifications";
 import { shouldRestoreEntitlement } from "@/lib/pricing";
-import { entitlementRestoreKey, introRestoresWhenBookingCloses, packCreditsToRestore, refundFailureKeepsSeat, refundLedgerMatchesSession, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
+import { entitlementRestoreKey, introRestoresWhenBookingCloses, packCreditsToRestore, refundFailureKeepsSeat, refundLedgerMatchesSession, seriesBookingCloses, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund, restorePackCredits } from "@/lib/refunds";
 import { releaseVisitSeat, restoreStudioCreditForOrder } from "@/lib/booking-service";
 
@@ -68,7 +68,15 @@ export async function teacherCancelSession(input: { sessionId: string; classId?:
       if (applied > 0) await grantStudioCredit(person.id, klass.teacherId, applied);
     }
     const remainingDates = mates.filter((mate) => mate.sessionId !== session.id);
-    const closesBooking = remainingDates.length === 0 || booking.kind === "session";
+    const remainingIds = remainingDates.map((mate) => mate.sessionId);
+    const remainingRows = remainingIds.length
+      ? await db.select({ status: sessions.status }).from(sessions).where(inArray(sessions.id, remainingIds))
+      : [];
+    const closesBooking = seriesBookingCloses({
+      kind: booking.kind,
+      remainingStatuses: remainingRows.map((row) => row.status),
+      linkedRemaining: remainingIds.length,
+    });
     if (order) {
       await restoreStudioCreditForOrder(order.id, {
         scope: closesBooking ? `booking-${booking.id}` : `session-${session.id}`,

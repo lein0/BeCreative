@@ -61,7 +61,7 @@ import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
 import { emitNotification } from "@/lib/notifications";
-import { applyStudioCredit, entitlementRestoreKey, parseStudioCreditLedgerSource, refundFailureKeepsSeat, seriesProrate, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
+import { applyStudioCredit, entitlementRestoreKey, expiredHoldStudioCreditRestore, parseStudioCreditLedgerSource, refundFailureKeepsSeat, seriesProrate, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
 import { chargeRefundReleasesSeats } from "@/lib/webhook-idempotency";
 import { policySummary, SHIP_DEFAULTS, waitlistEventForAudience } from "@/lib/ship-defaults";
@@ -149,6 +149,7 @@ export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { 
     await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
     await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
     await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+    await restoreStudioCreditForOrder(order.id, expiredHoldStudioCreditRestore());
     await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
     released += 1;
   }
@@ -986,7 +987,11 @@ export async function refundOrderByPaymentIntent(intent: string, fullyRefunded =
       or(ne(orders.status, "refunded"), sql`${orders.refundedCents} < ${orders.studentPaysCents}`),
     ));
   const targets = await db.select().from(orders).where(and(eq(orders.stripePaymentIntentId, intent), eq(orders.status, "refunded")));
-  for (const order of targets) await releaseSeatsForRefundedOrder(order.id, now);
+  for (const order of targets) {
+    await releaseSeatsForRefundedOrder(order.id, now);
+    const credit = studioCreditRestoreForPostedRefund({ full: true, orderId: order.id });
+    if (credit) await restoreStudioCreditForOrder(order.id, credit);
+  }
 }
 
 async function lockPromo(

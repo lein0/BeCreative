@@ -4,7 +4,7 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { appOrigin } from "@/lib/env";
 import { enqueueJob } from "@/lib/jobs";
-import { OUTBOX_INBOX_SENT, channelsFor, defaultPrefs, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, minutesOfClock, nextDigestTime, nextQuietEnd, notificationPhone, outboxStatusAfterDelivery, outboxStillNeedsInbox, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
+import { OUTBOX_INBOX_SENT, channelsFor, defaultPrefs, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, minutesOfClock, nextDigestTime, nextQuietEnd, notificationPhone, outboxStatusAfterDelivery, outboxStillNeedsInbox, smsAllowedNow, smsSendKeepsOutboxPending, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, type NotificationEvent } from "@/lib/ship-defaults";
 import { twilioConfigured, sendSms } from "@/lib/sms";
@@ -48,7 +48,10 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   if (!row || !row.userId || row.status === "sent") return;
   if (mode === "sms" || deferredSmsStillPending(row.status)) {
     const destination = await phoneOnFile(phone, row.userId);
-    if (destination) await sendSms(destination, `${row.title}. ${row.body}`.slice(0, 320));
+    if (destination) {
+      const text = await sendSms(destination, `${row.title}. ${row.body}`.slice(0, 320));
+      if (smsSendKeepsOutboxPending(text)) throw new Error("error" in text ? text.error : "Text failed.");
+    }
     await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
     return;
   }
@@ -109,7 +112,8 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   if (channels.sms && smsPhone) {
     const localMinutes = minutesOfClock(new Intl.DateTimeFormat("en-GB", { timeZone: SHIP_DEFAULTS.quietHoursZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()));
     if (smsAllowedNow(localMinutes, settings?.quietHoursStart ?? SHIP_DEFAULTS.quietHoursStart, settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd)) {
-      await sendSms(smsPhone, `${row.title}. ${row.body}`.slice(0, 320));
+      const text = await sendSms(smsPhone, `${row.title}. ${row.body}`.slice(0, 320));
+      if (smsSendKeepsOutboxPending(text)) throw new Error("error" in text ? text.error : "Text failed.");
     } else {
       smsDeferred = true;
       await enqueueJob("notification.sms", { outboxId, phone: smsPhone }, nextQuietEnd(settings?.quietHoursEnd ?? SHIP_DEFAULTS.quietHoursEnd), `sms:${outboxId}`);

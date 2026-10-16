@@ -57,6 +57,12 @@ export function paidCheckoutSendsBookingEmail(kind: string) {
   return kind === "booking" || kind === "visit";
 }
 
+/** Teacher alerts name the student. An email is only the fallback when no name is on the account. */
+export function bookingStudentName(name: string | null | undefined, email: string) {
+  const trimmed = name?.trim() ?? "";
+  return trimmed || email;
+}
+
 /** Confirmation mail goes through the notification outbox so unsubscribe and channel prefs apply. */
 export function classBookingSendsDirectEmail() {
   return false;

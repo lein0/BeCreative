@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { cancelFailureRedirect, checkoutMustReleaseSeat, seriesCancelError, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
-import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, OUTBOX_INBOX_SENT, outboxStatusAfterDelivery, outboxStillNeedsInbox, phoneFromForm, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
+import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, OUTBOX_INBOX_SENT, outboxStatusAfterDelivery, outboxStillNeedsInbox, phoneFromForm, smsSendKeepsOutboxPending, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
-import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
-import { classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
+import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, expiredHoldStudioCreditRestore, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, seriesBookingCloses, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
+import { bookingStudentName, classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
 import { statementDescriptor, statementDescriptorSuffix } from "@/lib/connect-rules";
 import { nextQuietEnd } from "@/lib/notify-prefs";
 import { crashedJobShouldStop, jobIsClaimable, jobOutcomeAfterError, jobRetryDelayMs } from "@/lib/job-rules";
@@ -333,5 +333,61 @@ describe("student waitlist event", () => {
   it("uses the student catalog event", () => {
     expect(waitlistEventForAudience("student")).toBe("waitlist.spot_open");
     expect(waitlistEventForAudience("teacher")).toBe("waitlist.joined");
+  });
+});
+
+describe("expired holds restore studio credit", () => {
+  it("returns the whole spend the same way an abandoned checkout does", () => {
+    expect(expiredHoldStudioCreditRestore()).toEqual({
+      scope: "expired",
+      sessionCount: 1,
+      cancelledCount: 1,
+      closeRemainder: true,
+    });
+    const restore = expiredHoldStudioCreditRestore();
+    expect(studioCreditRestoreCents({
+      appliedCents: 4000,
+      sessionCount: restore.sessionCount,
+      cancelledCount: restore.cancelledCount,
+      alreadyRestoredCents: 0,
+      closeRemainder: restore.closeRemainder,
+    })).toBe(4000);
+  });
+});
+
+describe("webhook refunds restore studio credit", () => {
+  it("uses the same full-refund restore as an in-app refund", () => {
+    expect(studioCreditRestoreForPostedRefund({ full: true, orderId: "order-9" })).toEqual({
+      scope: "refund-order-9",
+      sessionCount: 1,
+      cancelledCount: 1,
+      closeRemainder: true,
+    });
+  });
+});
+
+describe("series cancel closes the booking", () => {
+  it("stays confirmed while another date is still scheduled", () => {
+    expect(seriesBookingCloses({ kind: "series", remainingStatuses: ["scheduled", "cancelled"], linkedRemaining: 2 })).toBe(false);
+    expect(seriesBookingCloses({ kind: "series", remainingStatuses: ["cancelled", "cancelled"], linkedRemaining: 2 })).toBe(true);
+    expect(seriesBookingCloses({ kind: "series", remainingStatuses: [], linkedRemaining: 0 })).toBe(true);
+    expect(seriesBookingCloses({ kind: "series", remainingStatuses: ["cancelled"], linkedRemaining: 2 })).toBe(false);
+    expect(seriesBookingCloses({ kind: "session", remainingStatuses: ["scheduled"], linkedRemaining: 1 })).toBe(true);
+  });
+});
+
+describe("failed texts stay pending", () => {
+  it("retries a Twilio error and accepts a skipped send", () => {
+    expect(smsSendKeepsOutboxPending({ ok: false, skipped: false })).toBe(true);
+    expect(smsSendKeepsOutboxPending({ ok: false, skipped: true })).toBe(false);
+    expect(smsSendKeepsOutboxPending({ ok: true })).toBe(false);
+  });
+});
+
+describe("visit booking names the student", () => {
+  it("uses the account name and falls back to email", () => {
+    expect(bookingStudentName("Ada Lovelace", "ada@example.com")).toBe("Ada Lovelace");
+    expect(bookingStudentName("  ", "ada@example.com")).toBe("ada@example.com");
+    expect(bookingStudentName(null, "ada@example.com")).toBe("ada@example.com");
   });
 });

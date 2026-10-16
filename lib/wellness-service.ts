@@ -38,7 +38,7 @@ import {
   type PromoRule,
 } from "@/lib/pricing";
 import { checkoutMustReleaseSeat, collectsOnline, orderMoney, parseAttributionCookie } from "@/lib/checkout-rules";
-import { classBookingSendsDirectEmail, studioCanSell } from "@/lib/review-rules";
+import { bookingStudentName, classBookingSendsDirectEmail, studioCanSell } from "@/lib/review-rules";
 import { abandonFailedCheckout, priorWithTeacher, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { applyStudioCredit, studioCreditLedgerSource } from "@/lib/refund-math";
 import { sendEmail } from "@/lib/email";
@@ -527,7 +527,8 @@ export async function bookVisit(input: {
         teacherId: teacher.id,
       });
     }
-    await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: input.email, title: created.title, href: "/teach" });
+    const [student] = await db.select({ name: user.name }).from(user).where(eq(user.id, input.userId)).limit(1);
+    await notifyTeacherOfBooking({ teacherUserId: teacher.userId, studentName: bookingStudentName(student?.name, input.email), title: created.title, href: "/teach" });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };

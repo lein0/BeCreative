@@ -72,6 +72,18 @@ export function studioCreditRestoreForPostedRefund(input: { full: boolean; order
   return { scope: `refund-${input.orderId}`, sessionCount: 1, cancelledCount: 1, closeRemainder: true as const };
 }
 
+/** An unpaid hold that times out never charged the card, so the spend comes back the same way an abandoned checkout does. */
+export function expiredHoldStudioCreditRestore() {
+  return { scope: "expired", sessionCount: 1, cancelledCount: 1, closeRemainder: true as const };
+}
+
+/** A series stays confirmed while any linked date is still scheduled. */
+export function seriesBookingCloses(input: { kind: string; remainingStatuses: string[]; linkedRemaining: number }) {
+  if (input.kind === "session") return true;
+  if (input.remainingStatuses.length < input.linkedRemaining) return false;
+  return input.remainingStatuses.every((status) => status === "cancelled");
+}
+
 /** A successful submit clears the key. An error redirect keeps it so the retry is the same refund. */
 export function nextAdminRefundKey(input: { stored: string | null; succeeded: boolean; minted: string }) {
   if (input.succeeded || !input.stored?.trim()) return input.minted;
