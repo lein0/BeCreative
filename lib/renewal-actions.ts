@@ -7,7 +7,7 @@ import { requireActor } from "@/lib/actor";
 import { db } from "@/lib/db";
 import { memberships, teachers } from "@/lib/db/schema";
 import { canViewPlatformStats } from "@/lib/permissions";
-import { PRICE_CHANGE_MIN_DAYS_TEACHER, type RenewalTemplates } from "@/lib/renewal-copy";
+import { PRICE_CHANGE_MIN_DAYS_TEACHER, renewalEffectiveAt, type RenewalTemplates } from "@/lib/renewal-copy";
 import { cancelMembership, paymentUpdateUrl, saveRenewalTemplate, scheduleMaterialChange, scheduleMembershipPriceChange, setRenewalSaveOffer } from "@/lib/renewal";
 
 function text(formData: FormData, key: string) {
@@ -72,7 +72,7 @@ export async function schedulePriceChangeAction(formData: FormData) {
   const membershipId = text(formData, "membershipId");
   const [plan] = await db.select().from(memberships).where(eq(memberships.id, membershipId)).limit(1);
   if (!plan || plan.teacherId !== teacher.id) redirect("/teach/pricing?error=Membership+not+found.");
-  const effective = new Date(`${text(formData, "effective")}T15:00:00`);
+  const effective = renewalEffectiveAt(text(formData, "effective"));
   const result = await scheduleMembershipPriceChange({
     membershipId,
     newPriceCents: Math.round(Number(text(formData, "price") || 0) * 100),
@@ -95,7 +95,7 @@ export async function scheduleMaterialChangeAction(formData: FormData) {
   const result = await scheduleMaterialChange({
     membershipId,
     summary: text(formData, "summary"),
-    effectiveAt: new Date(`${text(formData, "effective")}T15:00:00`),
+    effectiveAt: renewalEffectiveAt(text(formData, "effective")),
     actorUserId: actor.id,
   });
   if ("error" in result && result.error) redirect(`/teach/pricing?error=${encodeURIComponent(result.error)}`);

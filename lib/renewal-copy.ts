@@ -177,26 +177,90 @@ export function introLengthLabel(days: number) {
   return `${days}-day`;
 }
 
+const RENEWAL_TIME_ZONE = "America/Los_Angeles";
+
+export const MEMBERSHIP_POLICY_ANCHOR = "cancellation-policy";
+
 export function formatRenewalDate(date: Date) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "long", day: "numeric", year: "numeric" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { timeZone: RENEWAL_TIME_ZONE, month: "long", day: "numeric", year: "numeric" }).format(date);
 }
 
+function renewalParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: RENEWAL_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const num = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  const hour = num("hour");
+  return { year: num("year"), month: num("month"), day: num("day"), hour: hour === 24 ? 0 : hour, minute: num("minute"), second: num("second") };
+}
+
+function renewalZoneOffsetMs(instant: Date) {
+  const parts = renewalParts(instant);
+  const wallAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return wallAsUtc - instant.getTime();
+}
+
+export function dateInRenewalZone(year: number, month: number, day: number, hour = 0, minute = 0, second = 0) {
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  let instant = new Date(wallAsUtc);
+  for (let pass = 0; pass < 2; pass += 1) instant = new Date(wallAsUtc - renewalZoneOffsetMs(instant));
+  return instant;
+}
+
+/** Month arithmetic on the California calendar, so the server timezone cannot move the disclosed day. */
 export function addLocalMonths(date: Date, months: number) {
-  const next = new Date(date.getTime());
-  next.setMonth(next.getMonth() + months);
-  return next;
+  const parts = renewalParts(date);
+  const index = parts.month - 1 + months;
+  const year = parts.year + Math.floor(index / 12);
+  const month = ((index % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const day = Math.min(parts.day, lastDay);
+  return dateInRenewalZone(year, month + 1, day, parts.hour, parts.minute, parts.second);
 }
 
 export function daysBetween(from: Date, to: Date) {
   return (to.getTime() - from.getTime()) / 86_400_000;
 }
 
+export function calendarDaysBetween(from: Date, to: Date) {
+  const start = renewalParts(from);
+  const end = renewalParts(to);
+  const startUtc = Date.UTC(start.year, start.month - 1, start.day);
+  const endUtc = Date.UTC(end.year, end.month - 1, end.day);
+  return Math.round((endUtc - startUtc) / 86_400_000);
+}
+
+/** Notice keys use the same California calendar day as the date in the email. */
 export function isoDate(date: Date) {
-  return date.toISOString().slice(0, 10);
+  const { year, month, day } = renewalParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Teacher date pickers are a calendar day. Store 3pm Pacific so the day does not depend on the server clock. */
+export function renewalEffectiveAt(isoDay: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDay);
+  if (!match) return new Date(NaN);
+  return dateInRenewalZone(Number(match[1]), Number(match[2]), Number(match[3]), 15, 0, 0);
 }
 
 export function refundLine(teacherName: string) {
   return `Payments already made are not refunded, except as described in ${teacherName}'s cancellation policy or required by law.`;
+}
+
+export function membershipPolicyUrl(siteUrl: string, teacherSlug: string, membershipSlug: string) {
+  return `${siteUrl.replace(/\/$/, "")}/t/${teacherSlug}/m/${membershipSlug}#${MEMBERSHIP_POLICY_ANCHOR}`;
+}
+
+export function membershipPolicyText(policyText: string, teacherName: string) {
+  const text = policyText.trim();
+  return text || refundLine(teacherName);
 }
 
 export function minimumCommitmentLine() {
@@ -330,7 +394,7 @@ export function buildDisclosure(facts: DisclosureFacts, templates: RenewalTempla
   const todayCents = facts.priceCents;
   const renewal = moneyLabel(facts.renewalPriceCents);
   const end = formatRenewalDate(facts.periodEnd);
-  const policyUrl = `${legal.siteUrl}/t/${facts.teacherSlug}/m/${facts.membershipSlug}`;
+  const policyUrl = membershipPolicyUrl(legal.siteUrl, facts.teacherSlug, facts.membershipSlug);
   const introPhrase = facts.intro ? (facts.intro.priceCents === 0 ? "is free" : `costs ${moneyLabel(facts.intro.priceCents)}`) : "";
   const vars: Record<string, string> = {
     membership_name: facts.membershipName,
@@ -356,6 +420,8 @@ export function buildDisclosure(facts: DisclosureFacts, templates: RenewalTempla
   lines.push(line(true, fillTemplate(templates.disclosureCharge, vars, legal)));
   const cancelText = fillTemplate(templates.disclosureCancel, vars, legal);
   lines.push(line(false, cancelText, { label: "cancellation policy", href: policyUrl }));
+  const teacherPolicy = facts.policyText.trim();
+  if (teacherPolicy) lines.push(line(false, teacherPolicy));
   lines.push(line(false, fillTemplate(templates.disclosureCommitment, vars, legal)));
   lines.push(line(false, fillTemplate(templates.disclosurePrice, vars, legal)));
   const checkbox = fillTemplate(templates.checkbox, vars, legal);
@@ -566,8 +632,19 @@ export function planNotices(input: NoticePlanInput): NoticeDecision[] {
 
 export function priceChangeDateError(now: Date, effectiveAt: Date, minDays = PRICE_CHANGE_MIN_DAYS_BACKEND) {
   const required = Math.max(PRICE_CHANGE_MIN_DAYS_BACKEND, minDays);
-  if (daysBetween(now, effectiveAt) < required) return `The effective date must be at least ${required} days from today.`;
+  if (Number.isNaN(effectiveAt.getTime()) || calendarDaysBetween(now, effectiveAt) < required) return `The effective date must be at least ${required} days from today.`;
   return null;
+}
+
+/** Latest due price for each plan, including plans that currently have no renewing member. */
+export function dueCatalogPrices<T extends { membershipId: string; newPriceCents: number; effectiveAt: Date }>(changes: T[], now: Date) {
+  const latest = new Map<string, T>();
+  for (const change of changes) {
+    if (change.effectiveAt > now) continue;
+    const current = latest.get(change.membershipId);
+    if (!current || change.effectiveAt >= current.effectiveAt) latest.set(change.membershipId, change);
+  }
+  return [...latest.values()].map((change) => ({ membershipId: change.membershipId, priceCents: change.newPriceCents }));
 }
 
 export function priceAfterNotice(input: {

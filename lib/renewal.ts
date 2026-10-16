@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne } from "drizzle-orm";
 import { adminEmails } from "@/lib/env";
 import { db } from "@/lib/db";
 import {
@@ -29,6 +29,7 @@ import {
   cancellationMail,
   cancellationScreen,
   confirmationSummary,
+  dueCatalogPrices,
   dunningBody,
   firstName,
   isoDate,
@@ -441,6 +442,10 @@ function handled(rows: { kind: string; eventOn: string; status: string }[], kind
 export async function scheduleRenewalNotices(now = new Date()) {
   let sent = 0;
   let missed = 0;
+  const duePrices = await db.select().from(membershipPriceChanges).where(lte(membershipPriceChanges.effectiveAt, now)).orderBy(asc(membershipPriceChanges.effectiveAt));
+  for (const update of dueCatalogPrices(duePrices, now)) {
+    await db.update(memberships).set({ priceCents: update.priceCents }).where(eq(memberships.id, update.membershipId));
+  }
   const subs = await db.select().from(membershipSubscriptions).where(and(ne(membershipSubscriptions.status, "cancelled"), eq(membershipSubscriptions.cancelAtPeriodEnd, false)));
   if (!subs.length) return { sent, missed };
   const planIds = [...new Set(subs.map((sub) => sub.membershipId))];
@@ -463,13 +468,6 @@ export async function scheduleRenewalNotices(now = new Date()) {
   if (orderIds.length) {
     const orderRows = await db.select().from(orders).where(inArray(orders.id, orderIds));
     for (const order of orderRows) ordersById.set(order.id, order);
-  }
-
-  for (const change of priceChanges) {
-    if (change.effectiveAt <= now) {
-      const later = priceChanges.some((other) => other.membershipId === change.membershipId && other.effectiveAt > change.effectiveAt && other.effectiveAt <= now);
-      if (!later) await db.update(memberships).set({ priceCents: change.newPriceCents }).where(eq(memberships.id, change.membershipId));
-    }
   }
 
   for (const sub of subs) {

@@ -46,7 +46,8 @@ import {
   checkoutMustReleaseSeat,
   collectsOnline,
   duplicateSeriesBooking,
-  membershipRenewalExtendsAccess,
+  collectedRenewalGrantsAccess,
+  renewedMembershipPeriod,
   membershipStatusOnAbandon,
   membershipStatusOnCreate,
   membershipStatusOnPayment,
@@ -1012,8 +1013,13 @@ export async function renewMembershipFromInvoice(input: {
   if (!original) return { extended: false };
   const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, original.id)).limit(1);
   if (!sub) return { extended: false };
-  if (sub.cancelAtPeriodEnd || sub.status === "cancelled") return { extended: false };
-  if (!membershipRenewalExtendsAccess({ billingReason: input.billingReason, currentPeriodEnd: sub.currentPeriodEnd, invoicePeriodEnd: input.periodEnd })) {
+  if (!collectedRenewalGrantsAccess({
+    status: sub.status,
+    cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+    billingReason: input.billingReason,
+    currentPeriodEnd: sub.currentPeriodEnd,
+    invoicePeriodEnd: input.periodEnd,
+  })) {
     return { extended: false };
   }
   const money = renewalChargeSplit(original, input.amountPaidCents);
@@ -1035,12 +1041,10 @@ export async function renewMembershipFromInvoice(input: {
     stripePaymentIntentId: input.paymentIntentId,
     stripeSubscriptionId: input.subscriptionId,
   });
-  await db.update(membershipSubscriptions).set({
-    status: membershipStatusOnPayment(),
-    currentPeriodStart: input.periodStart,
-    currentPeriodEnd: input.periodEnd,
-    classesUsedThisPeriod: 0,
-  }).where(eq(membershipSubscriptions.id, sub.id));
+  await db.update(membershipSubscriptions).set(renewedMembershipPeriod({
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+  })).where(eq(membershipSubscriptions.id, sub.id));
   return { extended: true };
 }
 

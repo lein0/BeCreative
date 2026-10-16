@@ -137,6 +137,37 @@ export function membershipRenewalExtendsAccess(input: {
   return input.invoicePeriodEnd.getTime() > input.currentPeriodEnd.getTime();
 }
 
+/**
+ * A renewal Stripe already collected still buys that period.
+ * A scheduled cancel stays in place and ends access when that paid period ends.
+ * A membership already marked cancelled is not revived.
+ */
+export function collectedRenewalGrantsAccess(input: {
+  status: string;
+  cancelAtPeriodEnd: boolean;
+  billingReason: string | null | undefined;
+  currentPeriodEnd: Date;
+  invoicePeriodEnd: Date;
+}) {
+  if (input.status === "cancelled") return false;
+  // cancelAtPeriodEnd stays true. The charged period is still granted, and the cancel ends then.
+  return membershipRenewalExtendsAccess({
+    billingReason: input.billingReason,
+    currentPeriodEnd: input.currentPeriodEnd,
+    invoicePeriodEnd: input.invoicePeriodEnd,
+  });
+}
+
+/** Fields written when a collected renewal moves the term forward. The scheduled cancel flag is left unchanged. */
+export function renewedMembershipPeriod(input: { periodStart: Date; periodEnd: Date }) {
+  return {
+    status: membershipStatusOnPayment(),
+    currentPeriodStart: input.periodStart,
+    currentPeriodEnd: input.periodEnd,
+    classesUsedThisPeriod: 0,
+  };
+}
+
 /** Keep the original order's fee split when a renewal charges the same amount. A different amount keeps that same ratio. */
 export function renewalChargeSplit(
   original: { studentPaysCents: number; platformFeeCents: number; teacherAmountCents: number; listPriceCents: number; discountCents: number },

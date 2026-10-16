@@ -11,12 +11,20 @@ import {
   acknowledgmentStillDue,
   buildDisclosure,
   consentAccepted,
+  daysBetween,
   dunningBody,
   failedRenewalNotice,
   legalIdentity,
+  addLocalMonths,
+  calendarDaysBetween,
+  dueCatalogPrices,
+  formatRenewalDate,
+  isoDate,
   materialPriceStays,
+  MEMBERSHIP_POLICY_ANCHOR,
   membershipCheckoutPlan,
   membershipOffer,
+  membershipPolicyText,
   membershipStartedAt,
   membershipTermPhrase,
   noticeMail,
@@ -29,6 +37,7 @@ import {
   priceNoticeSentAt,
   purchaseButtonLabel,
   relatedPriceChange,
+  renewalEffectiveAt,
   renewalNoticeEligible,
   replacementCard,
   savedCardDetails,
@@ -318,6 +327,13 @@ describe("notice scheduler windows", () => {
     expect(priceChangeDateError(now, noon("2026-10-19"), PRICE_CHANGE_MIN_DAYS_BACKEND)).toBeNull();
     expect(priceChangeDateError(now, noon("2026-10-14"))).toMatch(/8 days/);
     expect(priceChangeDateError(now, noon("2026-11-20"), 30)).toBeNull();
+    const afternoon = new Date("2026-10-16T23:30:00.000Z");
+    const fourteenDays = renewalEffectiveAt("2026-10-30");
+    expect(calendarDaysBetween(afternoon, fourteenDays)).toBe(14);
+    expect(daysBetween(afternoon, fourteenDays)).toBeLessThan(14);
+    expect(priceChangeDateError(afternoon, fourteenDays, PRICE_CHANGE_MIN_DAYS_TEACHER)).toBeNull();
+    expect(priceChangeDateError(afternoon, renewalEffectiveAt("2026-10-29"), PRICE_CHANGE_MIN_DAYS_TEACHER)).toMatch(/14 days/);
+    expect(isoDate(fourteenDays)).toBe("2026-10-30");
   });
 });
 
@@ -495,5 +511,38 @@ describe("cancellation and dunning", () => {
     expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, { cardBrand: "mastercard", cardLast4: "4444" })).toEqual({ cardBrand: "mastercard", cardLast4: "4444" });
     expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, { cardBrand: "visa", cardLast4: "4242" })).toBeNull();
     expect(replacementCard({ cardBrand: "visa", cardLast4: "4242" }, null)).toBeNull();
+  });
+
+  it("shows the teacher cancellation policy at checkout and on the membership link", () => {
+    const view = disclosure();
+    expect(view.canonical).toContain("Cancel anytime before the next renewal.");
+    expect(view.policyUrl).toBe(`https://northwind.test/t/maya-alvarez/m/monthly-studio#${MEMBERSHIP_POLICY_ANCHOR}`);
+    const linked = view.lines.flatMap((item) => item.segments).find((segment) => segment.href);
+    expect(linked?.href).toBe(view.policyUrl);
+    expect(membershipPolicyText("Cancel anytime before the next renewal.", "Maya Alvarez Studio")).toBe("Cancel anytime before the next renewal.");
+    expect(membershipPolicyText("  ", "Maya Alvarez Studio")).toContain("Maya Alvarez Studio's cancellation policy");
+  });
+
+  it("uses the California calendar day for notices and month-ahead period ends", () => {
+    const evening = new Date("2026-10-16T03:30:00.000Z");
+    expect(formatRenewalDate(evening)).toBe("October 15, 2026");
+    expect(isoDate(evening)).toBe("2026-10-15");
+    const nextMonth = addLocalMonths(evening, 1);
+    expect(isoDate(nextMonth)).toBe("2026-11-15");
+    expect(formatRenewalDate(nextMonth)).toBe("November 15, 2026");
+  });
+
+  it("applies a due catalog price even when the plan has no renewing member", () => {
+    const now = noon("2026-11-01");
+    const prices = dueCatalogPrices([
+      { membershipId: "empty", newPriceCents: 14000, effectiveAt: noon("2026-10-01") },
+      { membershipId: "empty", newPriceCents: 15000, effectiveAt: noon("2026-12-01") },
+      { membershipId: "ending", newPriceCents: 9000, effectiveAt: noon("2026-09-01") },
+      { membershipId: "ending", newPriceCents: 11000, effectiveAt: noon("2026-10-15") },
+    ], now);
+    expect(prices).toEqual([
+      { membershipId: "empty", priceCents: 14000 },
+      { membershipId: "ending", priceCents: 11000 },
+    ]);
   });
 });

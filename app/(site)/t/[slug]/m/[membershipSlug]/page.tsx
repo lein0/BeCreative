@@ -5,7 +5,7 @@ import { Panel } from "@/components/bits";
 import { RenewalCheckout } from "@/components/renewal-checkout";
 import { ShareButton } from "@/components/share-button";
 import { disclosureForMembership } from "@/lib/renewal";
-import { purchaseButtonLabel } from "@/lib/renewal-copy";
+import { MEMBERSHIP_POLICY_ANCHOR, membershipPolicyText, purchaseButtonLabel } from "@/lib/renewal-copy";
 import { teacherProfile } from "@/lib/queries";
 import { studioCanSell } from "@/lib/review-rules";
 import { money } from "@/lib/utils";
@@ -46,6 +46,10 @@ async function Body({ params }: { params: Promise<{ slug: string; membershipSlug
             <button className="rounded-full bg-ink px-5 py-3 text-base text-paper">{button}</button>
           </form>
         )}
+        <section id={MEMBERSHIP_POLICY_ANCHOR} className="mt-6 border-t border-line pt-4">
+          <h2 className="text-lg font-semibold">Cancellation policy</h2>
+          <p className="mt-2 whitespace-pre-wrap text-base">{membershipPolicyText(plan.pauseCancelPolicy, profile.teacher.studioName || "This studio")}</p>
+        </section>
       </Panel>
     </div>
   );
