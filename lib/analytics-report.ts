@@ -194,18 +194,27 @@ export async function teacherFunnel(filter: AnalyticsFilter) {
 }
 
 export async function cohortRetention(filter: AnalyticsFilter) {
-  const rows = await db.select().from(bookings).where(and(eq(bookings.status, "confirmed"), gte(bookings.createdAt, new Date(filter.to.getTime() - 120 * 86_400_000)), lte(bookings.createdAt, filter.to)));
-  const byUser = new Map<string, Date[]>();
-  for (const row of rows) {
+  const windowStart = new Date(filter.to.getTime() - 120 * 86_400_000);
+  const inWindow = await db.select({ userId: bookings.userId, createdAt: bookings.createdAt }).from(bookings).where(and(eq(bookings.status, "confirmed"), gte(bookings.createdAt, windowStart), lte(bookings.createdAt, filter.to), sql`${bookings.userId} is not null`));
+  const ids = [...new Set(inWindow.map((row) => row.userId).filter((id): id is string => Boolean(id)))];
+  if (!ids.length) return [];
+  const firstRows = await db
+    .select({ userId: bookings.userId, firstAt: sql<Date>`min(${bookings.createdAt})` })
+    .from(bookings)
+    .where(and(eq(bookings.status, "confirmed"), inArray(bookings.userId, ids)))
+    .groupBy(bookings.userId);
+  const firstByUser = new Map(firstRows.flatMap((row) => (row.userId ? [[row.userId, new Date(row.firstAt)] as const] : [])));
+  const datesByUser = new Map<string, Date[]>();
+  for (const row of inWindow) {
     if (!row.userId) continue;
-    const list = byUser.get(row.userId) ?? [];
+    const list = datesByUser.get(row.userId) ?? [];
     list.push(row.createdAt);
-    byUser.set(row.userId, list);
+    datesByUser.set(row.userId, list);
   }
   const cohorts = new Map<string, { size: number; month1: number; month2: number }>();
-  for (const dates of byUser.values()) {
-    dates.sort((a, b) => a.getTime() - b.getTime());
-    const first = dates[0]!;
+  for (const [userId, dates] of datesByUser) {
+    const first = firstByUser.get(userId);
+    if (!first || first.getTime() < windowStart.getTime() || first.getTime() > filter.to.getTime()) continue;
     const key = first.toISOString().slice(0, 7);
     const bucket = cohorts.get(key) ?? { size: 0, month1: 0, month2: 0 };
     bucket.size += 1;

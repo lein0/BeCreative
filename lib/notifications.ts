@@ -159,7 +159,7 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   if (devicePushWanted(pref?.push, tokens.length)) {
     try {
       const { sendDevicePush } = await import("@/lib/device-push");
-      await sendDevicePush(tokens, row.title, row.body, row.href ? clickUrl(row.href, "push", row.userId) : undefined);
+      await sendDevicePush(tokens, row.title, row.body, row.href || undefined);
     } catch {
       // Expo errors must not fail the job. Email already went out, and a retry would send it again.
     }

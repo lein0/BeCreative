@@ -72,7 +72,8 @@ export async function forwardPostHog(input: { name: string; distinctId: string; 
 
 export async function capture(input: TrackInput) {
   if (!isCatalogEvent(input.name)) return { ok: false as const };
-  const anonymousId = input.anonymousId ?? (await requestAnonymousId());
+  const supplied = input.anonymousId == null ? null : experimentSubject({ cookie: input.anonymousId });
+  const anonymousId = supplied ?? (await requestAnonymousId());
   const consent = input.consent ?? (await cookieValue("bc_cookie")) === "1";
   const id = crypto.randomUUID();
   const platform: PlatformName = platformName(input.platform);
@@ -106,8 +107,9 @@ export async function capture(input: TrackInput) {
 }
 
 export async function stitchAnonymous(userId: string, anonymousId: string | null) {
-  if (!anonymousId) return;
-  await db.update(analyticsEvents).set({ userId }).where(and(eq(analyticsEvents.anonymousId, anonymousId), isNull(analyticsEvents.userId)));
+  const subject = experimentSubject({ cookie: anonymousId });
+  if (!subject) return;
+  await db.update(analyticsEvents).set({ userId }).where(and(eq(analyticsEvents.anonymousId, subject), isNull(analyticsEvents.userId)));
 }
 
 export async function stitchFromCookies(userId: string) {

@@ -35,7 +35,7 @@ const { purchaseOffer, rescheduleBooking, fulfillPaidCheckout } = await import("
 const { dispatchStripeEvent } = await import("@/app/api/webhooks/stripe/route");
 const { handleMobileApi } = await import("@/lib/mobile-api");
 const { loadExperiment, assignExperiment } = await import("@/lib/experiments");
-const { experimentResults } = await import("@/lib/analytics-report");
+const { cohortRetention, experimentResults } = await import("@/lib/analytics-report");
 const { deliverOutbox } = await import("@/lib/notifications");
 const { sendEmail } = await import("@/lib/email");
 const { sendDevicePush } = await import("@/lib/device-push");
@@ -79,7 +79,8 @@ describe("PR 7 weekday Bugbot sweep", () => {
     }
     await db.delete(schema.analyticsEvents).where(sql`${schema.analyticsEvents.anonymousId} like ${`${tag}%`} or ${schema.analyticsEvents.properties}->>'experiment' = ${`${tag}-cta`}`);
     await db.delete(schema.rateBuckets).where(sql`${schema.rateBuckets.key} like ${`%${tag}%`}`);
-    await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-signin:203.0.113.77", "api-track:unknown"]));
+    await db.delete(schema.analyticsEvents).where(eq(schema.analyticsEvents.path, `/${tag}-shared`));
+    await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-signin:203.0.113.77", "api-track:unknown", "api-track:203.0.113.41"]));
     if (teacherIds.length) await db.delete(schema.teachers).where(inArray(schema.teachers.id, teacherIds));
     if (userIds.length) await db.delete(schema.user).where(inArray(schema.user.id, userIds));
     if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
@@ -277,6 +278,10 @@ describe("PR 7 weekday Bugbot sweep", () => {
     await deliverOutbox(outboxId);
     await deliverOutbox(outboxId);
     expect(sendEmail).toHaveBeenCalledTimes(1);
+    const email = vi.mocked(sendEmail).mock.calls[0]?.[0] as { text?: string };
+    expect(email.text).toContain("/api/r");
+    expect(email.text).toContain("c=email");
+    expect(sendDevicePush).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ token: `${tag}-on` })]), "Booked", "See you there.", "/bookings");
     const [row] = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.id, outboxId));
     expect(row?.status).toBe("sent");
   });
@@ -316,6 +321,27 @@ describe("PR 7 weekday Bugbot sweep", () => {
     const rows = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, `${tag}-phone`));
     expect(rows.map((row) => row.name).sort()).toEqual(["class_viewed", "screen_view", "search"]);
     expect(rows.every((row) => row.userId === student)).toBe(true);
+  });
+
+  it("drops the shared anonymous subject on track", async () => {
+    const headers = { "content-type": "application/json", "x-forwarded-for": "203.0.113.41" };
+    const shared = await handleMobileApi(new Request("http://localhost/api/v1/track", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "page_view", anonymousId: "anonymous", path: `/${tag}-shared` }),
+    }), ["track"]);
+    expect(shared.status).toBe(200);
+    const sharedRows = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.path, `/${tag}-shared`));
+    expect(sharedRows).toHaveLength(1);
+    expect(sharedRows[0]?.anonymousId).toBeNull();
+    const kept = await handleMobileApi(new Request("http://localhost/api/v1/track", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "page_view", anonymousId: `${tag}-visitor` }),
+    }), ["track"]);
+    expect(kept.status).toBe(200);
+    const keptRows = await db.select().from(schema.analyticsEvents).where(eq(schema.analyticsEvents.anonymousId, `${tag}-visitor`));
+    expect(keptRows).toHaveLength(1);
   });
 
   it("rejects client-posted experiment exposures", async () => {
@@ -455,6 +481,44 @@ describe("PR 7 weekday Bugbot sweep", () => {
     expect(slots.status).toBe(200);
     const slotsBody = await slots.json() as { slots: { id: string }[] };
     expect(slotsBody.slots.map((slot) => slot.id)).toEqual([openId]);
+  });
+
+  it("places a student in the cohort of their first confirmed booking", async () => {
+    const categoryId = crypto.randomUUID();
+    categoryIds.push(categoryId);
+    await db.insert(schema.categories).values({ id: categoryId, name: "Acting", slug: `${tag}-cohort` });
+    const owner = await person("cohort-owner");
+    const returning = await person("cohort-return");
+    const firstTime = await person("cohort-new");
+    const teacherId = crypto.randomUUID();
+    teacherIds.push(teacherId);
+    await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-cohort-studio`, studioName: tag, status: "approved", bio: "" });
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId,
+      teacherId,
+      categoryId,
+      slug: `${tag}-cohort-class`,
+      title: "Cohort study",
+      skillLevel: "all",
+      format: "class",
+      delivery: "virtual",
+      maxSize: 8,
+      durationMinutes: 60,
+      pricePerSessionCents: 0,
+      status: "published",
+    });
+    const to = new Date("2035-06-01T00:00:00Z");
+    const day = 86_400_000;
+    await db.insert(schema.bookings).values([
+      { id: crypto.randomUUID(), userId: returning, classId, kind: "session", status: "confirmed", createdAt: new Date("2034-01-01T00:00:00Z") },
+      { id: crypto.randomUUID(), userId: returning, classId, kind: "session", status: "confirmed", createdAt: new Date(to.getTime() - 10 * day) },
+      { id: crypto.randomUUID(), userId: firstTime, classId, kind: "session", status: "confirmed", createdAt: new Date("2035-04-01T00:00:00Z") },
+      { id: crypto.randomUUID(), userId: firstTime, classId, kind: "session", status: "confirmed", createdAt: new Date(to.getTime() - 27 * day) },
+    ]);
+    const rows = await cohortRetention({ from: new Date("2035-01-01T00:00:00Z"), to });
+    expect(rows.find(([key]) => key === "2035-05")).toBeUndefined();
+    expect(rows.find(([key]) => key === "2035-04")?.[1]).toEqual({ size: 1, month1: 1, month2: 0 });
   });
 
   it("keeps tracking redirects on this site when the target has a backslash", async () => {
