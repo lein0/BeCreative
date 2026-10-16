@@ -21,6 +21,8 @@ import {
   linkClicks,
   locations,
   memberships,
+  messageLog,
+  shortLinks,
   membershipSubscriptions,
   orders,
   packPurchases,
@@ -62,6 +64,8 @@ export async function wipeDemo() {
   await db.delete(tickets).where(sql`${tickets.isDemo} = true`);
   await db.delete(disputeNotes).where(sql`${disputeNotes.disputeId} = 'dp_demo_scene'`);
   await db.delete(disputes).where(sql`${disputes.isDemo} = true`);
+  await db.delete(messageLog).where(sql`${messageLog.isDemo} = true`);
+  await db.delete(shortLinks).where(eq(shortLinks.code, "demo-scene"));
   await db.delete(faqArticles).where(sql`${faqArticles.id} like 'faq-%'`);
   await db.delete(cannedReplies).where(eq(cannedReplies.id, "canned-refund-window"));
   await db.delete(waitlistEntries).where(sql`${waitlistEntries.isDemo} = true`);

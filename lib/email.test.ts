@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildRawEmail, individualDeliveries } from "@/lib/email";
+import { buildRawEmail } from "@/lib/email-mime";
+import { allowedRecipients, individualDeliveries, sameInbox } from "@/lib/email";
 
 describe("private recipient delivery", () => {
   it("gives each student their own message and drops duplicates", () => {
@@ -10,19 +11,50 @@ describe("private recipient delivery", () => {
     expect(new Set(messages.flatMap((message) => message.to)).size).toBe(messages.length);
   });
 
+  it("does not mail a suppressed address", () => {
+    expect(allowedRecipients(["Jules@Example.com", "ada@example.com"], ["jules@example.com"])).toEqual(["ada@example.com"]);
+    expect(allowedRecipients(["jules@example.com"], ["Jules@Example.com"])).toEqual([]);
+  });
+
+  it("matches a bounce when the stored address differs only by case", () => {
+    expect(sameInbox("Jules@Example.com", "jules@example.com")).toBe(true);
+    expect(sameInbox("  Jules@Example.com ", "jules@example.com")).toBe(true);
+    expect(sameInbox("other@example.com", "jules@example.com")).toBe(false);
+  });
+
   it("strips header breaks and keeps the HTML part", () => {
     const raw = buildRawEmail({
-      from: "studio@example.com",
       to: ["student@example.com"],
       subject: "Hello\r\nBcc: evil@example.com",
       text: "plain",
       html: "<p>Hello</p>",
       headers: { "X-Class": "Scene\nstudy" },
-    });
+    }, "studio@example.com");
     expect(raw.split("\r\n").some((line) => line.startsWith("Bcc:"))).toBe(false);
     expect(raw).toContain("Subject: Hello Bcc: evil@example.com");
     expect(raw).toContain("X-Class: Scene study");
     expect(raw).toContain("Content-Type: text/html; charset=UTF-8");
     expect(raw).toContain("<p>Hello</p>");
+  });
+
+  it("encodes a non-ASCII subject and strips a unicode line separator", () => {
+    const raw = buildRawEmail({
+      to: ["student@example.com"],
+      subject: "Café class",
+      text: "Café class",
+      html: "<p>Café</p>",
+    }, "studio@example.com");
+    const subject = raw.split("\r\n").find((line) => line.startsWith("Subject: "));
+    expect(subject).toMatch(/=\?UTF-8\?B\?/);
+    expect(subject).not.toContain("Café");
+    const encoded = subject?.match(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/)?.[1] ?? "";
+    expect(Buffer.from(encoded, "base64").toString("utf8")).toBe("Café class");
+    const split = buildRawEmail({
+      to: ["student@example.com"],
+      subject: "Hello\u2028Bcc: evil@example.com",
+      text: "plain",
+    }, "studio@example.com");
+    expect(split.split("\r\n").some((line) => line.startsWith("Bcc:"))).toBe(false);
+    expect(split).toContain("Subject: Hello Bcc: evil@example.com");
   });
 });

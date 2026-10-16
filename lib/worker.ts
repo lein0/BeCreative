@@ -1,8 +1,9 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { bookingSessions, bookings, classes, services, sessions, visitBookings } from "@/lib/db/schema";
+import { bookingSessions, bookings, classes, services, sessions, teachers, visitBookings } from "@/lib/db/schema";
 import { DISPUTE_SUBMIT_ATTEMPTS } from "@/lib/dispute-evidence";
 import { claimJobs, enqueueJob, finishJob, requeueJob } from "@/lib/jobs";
+import { quietSmsNeedsRequeue, reminderJob } from "@/lib/messaging-rules";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
 import { captureException } from "@/lib/sentry";
 
@@ -14,7 +15,14 @@ export async function workJobs(limit = 20) {
       const payload = (job.payload ?? {}) as Record<string, unknown>;
       if (job.kind === "notification.deliver" || job.kind === "notification.sms") {
         const audience = payload.audience === "teacher" || payload.audience === "student" ? payload.audience : undefined;
-        await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, job.kind === "notification.sms" ? "sms" : "all");
+        const delivery = await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, {
+          textEligible: payload.textEligible === true,
+          smsOnly: job.kind === "notification.sms",
+        });
+        if (delivery && quietSmsNeedsRequeue({ jobKind: job.kind, deferred: delivery.smsDeferred }) && delivery.smsRunAt) {
+          await requeueJob(job.id, delivery.smsRunAt);
+          continue;
+        }
       }
       if (job.kind === "dispute.submit") {
         const { submitDispute } = await import("@/lib/disputes");
@@ -29,14 +37,15 @@ export async function workJobs(limit = 20) {
           continue;
         }
       }
-      if (job.kind === "reminder.send") {
+      if (job.kind === "reminder.send" || job.kind === "lifecycle.notify") {
         await emitNotification({
           userId: String(payload.userId),
-          event: "booking.reminder",
-          audience: "student",
+          event: (payload.event as "booking.reminder") || "booking.reminder",
+          audience: payload.audience === "teacher" ? "teacher" : "student",
           title: String(payload.title ?? "Class reminder"),
           body: String(payload.body ?? ""),
           href: String(payload.href ?? "/bookings"),
+          textEligible: payload.textEligible === true,
         });
       }
       await finishJob(job.id);
@@ -79,12 +88,13 @@ export async function scheduleReminders(now = new Date()) {
       const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
       for (const booking of mine) {
         if (!booking.userId) continue;
-        await enqueueJob("reminder.send", {
+        await enqueueJob("reminder.send", reminderJob({
           userId: booking.userId,
           title: `${klass?.title ?? "Your class"} is in ${window.label}`,
           body: `It starts ${session.startsAt.toISOString()}.`,
           href: klass ? `/c/${klass.slug}` : "/bookings",
-        }, new Date(), `reminder:${session.id}:${booking.userId}:${window.hours}`);
+          hours: window.hours,
+        }), new Date(), `reminder:${session.id}:${booking.userId}:${window.hours}`);
         queued += 1;
       }
     }
@@ -95,12 +105,13 @@ export async function scheduleReminders(now = new Date()) {
     for (const visit of visits) {
       if (!visit.userId) continue;
       const [service] = await db.select().from(services).where(eq(services.id, visit.serviceId)).limit(1);
-      await enqueueJob("reminder.send", {
+      await enqueueJob("reminder.send", reminderJob({
         userId: visit.userId,
         title: `${service?.title ?? "Your visit"} is in ${window.label}`,
         body: `It starts ${visit.startsAt.toISOString()}.`,
         href: service ? `/s/${service.slug}` : "/bookings",
-      }, new Date(), `reminder:visit:${visit.id}:${visit.userId}:${window.hours}`);
+        hours: window.hours,
+      }), new Date(), `reminder:visit:${visit.id}:${visit.userId}:${window.hours}`);
       queued += 1;
     }
   }
@@ -116,6 +127,19 @@ export async function notifyTeacherOfBooking(input: { teacherUserId: string; stu
     body: `${input.studentName} booked ${input.title}.`,
     href: input.href,
   });
+  const [teacher] = await db.select().from(teachers).where(eq(teachers.userId, input.teacherUserId)).limit(1);
+  if (!teacher) return;
+  const [count] = await db.select({ total: sql<number>`count(*)::int` }).from(bookings).innerJoin(classes, eq(classes.id, bookings.classId)).where(and(eq(classes.teacherId, teacher.id), eq(bookings.status, "confirmed")));
+  if (Number(count?.total ?? 0) === 1) {
+    await emitNotification({
+      userId: input.teacherUserId,
+      event: "teacher.first_booking",
+      audience: "teacher",
+      title: input.title,
+      body: `${input.studentName} took the first seat.`,
+      href: input.href,
+    });
+  }
 }
 
 export async function notifyOfferPurchased(input: { teacherUserId: string; title: string; href: string }) {

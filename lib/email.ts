@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { emailOutbox } from "@/lib/db/schema";
+import { emailOutbox, user } from "@/lib/db/schema";
+import { buildRawEmail } from "@/lib/email-mime";
 
 export type EmailMessage = {
   to: string[];
@@ -9,6 +11,26 @@ export type EmailMessage = {
   teacherId?: string | null;
   headers?: Record<string, string>;
 };
+
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function sameInbox(stored: string, reported: string) {
+  return normalizeEmail(stored) === normalizeEmail(reported);
+}
+
+export async function findUserByEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const [row] = await db.select().from(user).where(sql`lower(${user.email}) = ${normalized}`).limit(1);
+  return row ?? null;
+}
+
+export function allowedRecipients(recipients: string[], suppressedEmails: string[]) {
+  const blocked = new Set(suppressedEmails.map((email) => normalizeEmail(email)).filter(Boolean));
+  return individualDeliveries(recipients).filter((email) => !blocked.has(normalizeEmail(email)));
+}
 
 export function individualDeliveries(recipients: string[]) {
   const seen = new Set<string>();
@@ -21,39 +43,6 @@ export function individualDeliveries(recipients: string[]) {
     deliveries.push(email);
   }
   return deliveries;
-}
-
-export function headerSafe(value: string) {
-  return value.replace(/[\r\n]+/g, " ").replace(/[^\t\x20-\x7E]/g, "");
-}
-
-export function buildRawEmail(message: { from: string; to: string[]; subject: string; text: string; html?: string; headers?: Record<string, string> }) {
-  const headers = [
-    `From: ${headerSafe(message.from)}`,
-    `To: ${message.to.map(headerSafe).join(", ")}`,
-    `Subject: ${headerSafe(message.subject)}`,
-    ...Object.entries(message.headers ?? {}).map(([key, value]) => `${headerSafe(key)}: ${headerSafe(value)}`),
-    "MIME-Version: 1.0",
-  ];
-  if (!message.html) {
-    return [...headers, "Content-Type: text/plain; charset=UTF-8", "", message.text].join("\r\n");
-  }
-  const boundary = `bc_${crypto.randomUUID().replace(/-/g, "")}`;
-  return [
-    ...headers,
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
-    "",
-    `--${boundary}`,
-    "Content-Type: text/plain; charset=UTF-8",
-    "",
-    message.text,
-    `--${boundary}`,
-    "Content-Type: text/html; charset=UTF-8",
-    "",
-    message.html,
-    `--${boundary}--`,
-    "",
-  ].join("\r\n");
 }
 
 export interface EmailProvider {
@@ -80,14 +69,7 @@ class SesEmailProvider implements EmailProvider {
     const { SESClient, SendRawEmailCommand } = await import("@aws-sdk/client-ses");
     // No static keys: the default credential chain uses the App Runner instance role.
     const client = new SESClient({ region });
-    const raw = buildRawEmail({
-      from,
-      to: message.to,
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-      headers: message.headers,
-    });
+    const raw = buildRawEmail(message, from, process.env.SES_CONFIGURATION_SET || undefined);
     const result = await client.send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(raw) } }));
     return { providerMessageId: result.MessageId ?? null };
   }
@@ -107,19 +89,27 @@ export async function sendIndividually(input: Omit<EmailMessage, "to"> & { recip
 }
 
 export async function sendEmail(message: EmailMessage) {
+  const blocked: string[] = [];
+  for (const email of individualDeliveries(message.to)) {
+    const row = await findUserByEmail(email);
+    if (row?.emailSuppressed) blocked.push(row.email);
+  }
+  const to = allowedRecipients(message.to, blocked);
+  if (!to.length) return { id: null, ok: false as const, skipped: true as const };
+  const delivery = { ...message, to };
   const provider = getEmailProvider();
   const id = crypto.randomUUID();
   try {
-    const result = await provider.send(message);
+    const result = await provider.send(delivery);
     await db.insert(emailOutbox).values({
       id,
-      toAddresses: message.to,
-      subject: message.subject,
-      textBody: message.text,
-      htmlBody: message.html,
+      toAddresses: delivery.to,
+      subject: delivery.subject,
+      textBody: delivery.text,
+      htmlBody: delivery.html,
       provider: provider.name,
       status: provider.name === "console" ? "logged" : "sent",
-      teacherId: message.teacherId,
+      teacherId: delivery.teacherId,
       error: result.providerMessageId,
     });
     return { id, ok: true as const };
@@ -127,10 +117,10 @@ export async function sendEmail(message: EmailMessage) {
     const text = error instanceof Error ? error.message : "Email failed";
     await db.insert(emailOutbox).values({
       id,
-      toAddresses: message.to,
-      subject: message.subject,
-      textBody: message.text,
-      htmlBody: message.html,
+      toAddresses: delivery.to,
+      subject: delivery.subject,
+      textBody: delivery.text,
+      htmlBody: delivery.html,
       provider: provider.name,
       status: "failed",
       error: text,

@@ -1,10 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { account, leadActivities, leads, teachers, user, userRoles, verification } from "@/lib/db/schema";
+import { account, leadActivities, leads, teachers, triggerOverrides, user, userRoles, verification } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
-import { inviteActivityNote, inviteSetPasswordUrl, teacherInviteEmail } from "@/lib/invites";
+import { renderEmail } from "@/lib/email-templates";
+import { inviteActivityNote, inviteSetPasswordUrl, shouldSendTeacherInvite } from "@/lib/invites";
 import { passwordResetIdentifier } from "@/lib/review-rules";
 import { offersOnlineOf, planLeadImport, priorityOf, rowsFromCsv, statusOf, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
+import { triggerEnabled } from "@/lib/triggers";
 import { uniqueSlug } from "@/lib/utils";
 import { OUTREACH_LABELS, type OutreachStatus } from "@/lib/constants";
 import { appOrigin } from "@/lib/env";
@@ -136,7 +138,9 @@ export async function convertLead(leadId: string) {
     .where(and(eq(account.userId, userId), eq(account.providerId, "credential")))
     .limit(1);
   let note = "Existing account linked.";
-  if (!credential?.password) {
+  const overrides = await db.select().from(triggerOverrides);
+  const invitesOn = triggerEnabled("auth.invite", Object.fromEntries(overrides.map((row) => [row.id, row.enabled])));
+  if (shouldSendTeacherInvite({ triggerOn: invitesOn, hasPassword: Boolean(credential?.password) })) {
     const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await db.insert(verification).values({
@@ -147,13 +151,12 @@ export async function convertLead(leadId: string) {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    const mail = teacherInviteEmail({
-      contactName: lead.contactName,
-      businessName: lead.businessName,
-      url: inviteSetPasswordUrl(appOrigin(), token),
-    });
-    await sendEmail({ to: [lead.email], subject: mail.subject, text: mail.text, html: mail.html });
+    const url = inviteSetPasswordUrl(appOrigin(), token);
+    const rendered = await renderEmail("auth.invite", { name: lead.contactName || lead.businessName, href: url, title: lead.businessName });
+    await sendEmail({ to: [lead.email], subject: rendered.subject, text: `${rendered.text}\n${url}`, html: rendered.html });
     note = inviteActivityNote();
+  } else if (!credential?.password) {
+    note = "Invite email is off, so no password link was sent.";
   }
   const [alreadyTeacher] = await db.select().from(teachers).where(eq(teachers.userId, userId)).limit(1);
   const teacherId = alreadyTeacher?.id ?? crypto.randomUUID();

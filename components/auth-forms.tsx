@@ -38,6 +38,15 @@ export function SignupForm({ google }: { google?: boolean }) {
       <input name="name" required placeholder="Name" className={control} />
       <input name="email" type="email" required placeholder="Email" className={control} />
       <input name="password" type="password" required minLength={8} placeholder="Password" className={control} />
+      <input name="phone" type="tel" placeholder="Mobile phone (optional)" className={control} />
+      <label className="flex items-start gap-2 text-sm text-ink/80">
+        <input type="checkbox" name="smsOptIn" value="1" className="mt-1" />
+        <span>Text me class reminders. Frequency varies. Reply STOP to opt out. Msg & data rates may apply. <Link href="/legal/sms" className="underline">SMS terms</Link></span>
+      </label>
+      <label className="flex items-start gap-2 text-sm text-ink/80">
+        <input type="checkbox" name="marketingOptIn" value="1" className="mt-1" />
+        <span>Email me occasional notes about classes I might like. This is separate from booking emails.</span>
+      </label>
       <button disabled={pending} className="w-full rounded-full bg-clay py-3 text-white">
         {pending ? "Creating…" : "Create account"}
       </button>

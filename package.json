@@ -15,9 +15,12 @@
     "db:wipe-demo": "dotenv -e .env.local -- tsx scripts/wipe-demo.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-pinpoint-sms-voice-v2": "^3.1147.0",
     "@aws-sdk/client-s3": "^3.901.0",
     "@aws-sdk/client-ses": "^3.901.0",
     "@aws-sdk/s3-request-presigner": "^3.901.0",
+    "@react-email/components": "^1.0.12",
+    "@react-email/render": "^2.1.0",
     "better-auth": "1.7.7",
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",

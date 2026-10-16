@@ -26,7 +26,9 @@ import {
   cannedReplies,
   disputes,
   faqArticles,
+  messageLog,
   notifications,
+  shortLinks,
   ticketMessages,
   tickets,
   orders,
@@ -758,6 +760,19 @@ async function main() {
     isDemo: true,
   });
   await db.insert(ticketMessages).values({ id: "ticket-demo-safety-msg", ticketId: "ticket-demo-safety", authorUserId: studentId, body: "We could not lock the side door on the way out. Please tell the studio." });
+
+  await db.insert(messageLog).values({
+    id: "msg-demo-reminder",
+    userId: studentId,
+    channel: "sms",
+    provider: "aws",
+    toAddress: "+13105550100",
+    body: "Scene Study is in 2 hours. Reply STOP to opt out.",
+    costCents: 1,
+    status: "sent",
+    isDemo: true,
+  });
+  await db.insert(shortLinks).values({ code: "demo-scene", url: "http://localhost:3000/bookings" });
 
   await db.insert(notifications).values([
     { id: "note-demo-booking", userId: maya.userId, event: "booking.created", title: "New booking: Scene Study", body: "Jules Navarro booked Scene Study.", href: "/teach/sessions", isDemo: true },

@@ -16,3 +16,7 @@ export function teacherInviteEmail(input: { contactName: string; businessName: s
 export function inviteActivityNote() {
   return "Sent a link to set a password.";
 }
+
+export function shouldSendTeacherInvite(input: { triggerOn: boolean; hasPassword: boolean }) {
+  return input.triggerOn && !input.hasPassword;
+}

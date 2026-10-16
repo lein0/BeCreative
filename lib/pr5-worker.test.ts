@@ -26,6 +26,7 @@ vi.mock("@/lib/sentry", () => ({
 
 const { workJobs } = await import("@/lib/worker");
 const { captureException } = await import("@/lib/sentry");
+const { deliverOutbox } = await import("@/lib/notifications");
 
 function claim(attempts: number) {
   box.claimed = [{ id: "job-1", kind: "dispute.submit", payload: { disputeId: "dp_1" }, attempts }];
@@ -76,5 +77,21 @@ describe("dispute submit worker", () => {
     expect(box.requeue).toHaveBeenCalledWith("job-1", expect.any(Date), "stripe down");
     expect(box.finish).not.toHaveBeenCalled();
     expect(captureException).toHaveBeenCalled();
+  });
+
+  it("requeues a quiet-hours SMS job and finishes a deliver job that only scheduled the text", async () => {
+    const runAt = new Date("2026-10-17T15:00:00Z");
+    vi.mocked(deliverOutbox).mockResolvedValue({ smsDeferred: true, smsRunAt: runAt });
+    box.claimed = [{ id: "sms-1", kind: "notification.sms", payload: { outboxId: "out-1", textEligible: true, audience: "student" }, attempts: 1 }];
+    await workJobs();
+    expect(box.requeue).toHaveBeenCalledWith("sms-1", runAt);
+    expect(box.finish).not.toHaveBeenCalled();
+
+    box.requeue.mockClear();
+    box.finish.mockClear();
+    box.claimed = [{ id: "deliver-1", kind: "notification.deliver", payload: { outboxId: "out-1", textEligible: true, audience: "student" }, attempts: 1 }];
+    await workJobs();
+    expect(box.finish).toHaveBeenCalledWith("deliver-1");
+    expect(box.requeue).not.toHaveBeenCalled();
   });
 });

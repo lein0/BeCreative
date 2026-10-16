@@ -1,12 +1,13 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type Stripe from "stripe";
 import { fulfillPaidCheckout, refundOrderByPaymentIntent, renewMembershipFromInvoice } from "@/lib/booking-service";
-import { chargeFullyRefunded, paidInvoiceRenewal } from "@/lib/checkout-rules";
+import { chargeFullyRefunded, orderIdsForFailedSubscription, paidInvoiceRenewal } from "@/lib/checkout-rules";
 import { handleEarlyFraud, recordDispute } from "@/lib/disputes";
 import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
-import { stripeEvents, teachers } from "@/lib/db/schema";
+import { membershipSubscriptions, orders, stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
+import { invoiceSubscriptionId } from "@/lib/stripe-invoice";
 import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
 export async function POST(request: Request) {
@@ -38,7 +39,7 @@ async function dispatchStripeEvent(event: Stripe.Event) {
     const subscription = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
     if (orderId) await fulfillPaidCheckout(orderId, paymentIntent ?? null, subscription ?? null);
   }
-  if (event.type === "invoice.paid") {
+  if (event.type === "invoice.paid" || event.type === "invoice.payment_succeeded") {
     const renewal = paidInvoiceRenewal(event.data.object);
     if (renewal) await renewMembershipFromInvoice(renewal);
   }
@@ -74,6 +75,17 @@ async function dispatchStripeEvent(event: Stripe.Event) {
       paymentIntent = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent?.id ?? paymentIntent;
     }
     await handleEarlyFraud({ chargeId: chargeId ?? warning.id, paymentIntentId: paymentIntent, amountCents });
+  }
+  if (event.type === "invoice.payment_failed") {
+    const invoice = event.data.object;
+    const subscription = invoiceSubscriptionId(invoice);
+    if (subscription) {
+      const linked = await db.select({ id: orders.id }).from(orders).where(eq(orders.stripeSubscriptionId, subscription));
+      const orderIds = orderIdsForFailedSubscription(linked.map((row) => row.id));
+      if (orderIds.length) {
+        await db.update(membershipSubscriptions).set({ status: "past_due" }).where(and(inArray(membershipSubscriptions.orderId, orderIds), eq(membershipSubscriptions.status, "active")));
+      }
+    }
   }
   if (event.type === "account.updated") {
     const account = event.data.object;
