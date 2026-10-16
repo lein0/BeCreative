@@ -123,5 +123,6 @@ describe("invoice.payment_failed subscription id", () => {
     const where = sqlText(state.updates[0]?.where);
     expect(where).toContain("renewal:in_9");
     expect(where).toContain("order_original");
+    expect(where).toContain("active");
   });
 });

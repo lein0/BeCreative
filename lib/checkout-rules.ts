@@ -138,6 +138,11 @@ export function membershipRenewalExtendsAccess(input: {
   return input.invoicePeriodEnd.getTime() > input.currentPeriodEnd.getTime();
 }
 
+/** A failed renewal marks an active membership past due. Cancelled and pending rows stay as they are. */
+export function failedInvoiceMarksPastDue(status: string) {
+  return status === "active";
+}
+
 /** Renewal orders reuse the subscription id. The membership row stays on the original order, so a failed invoice has to name every linked order. */
 export function orderIdsForFailedSubscription(orderIds: string[]) {
   return [...new Set(orderIds.filter((id) => id.length > 0))];

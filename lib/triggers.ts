@@ -30,7 +30,7 @@ export const TRIGGERS: Trigger[] = [
   { id: "booking.created", event: "booking.created", template: "teacher.booking", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: new booking" },
   { id: "signup.followed", event: "signup.followed", template: "teacher.follow", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: new follow" },
   { id: "waitlist.joined", event: "waitlist.joined", template: "teacher.waitlist", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: waitlist join" },
-  { id: "student.waitlist", event: "waitlist.joined", template: "student.waitlist", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Student: you joined the waitlist" },
+  { id: "student.waitlist", event: "student.waitlist", template: "student.waitlist", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Student: you joined the waitlist" },
   { id: "waitlist.promoted", event: "waitlist.promoted", template: "teacher.promoted", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: waitlist auto-promote" },
   { id: "offer.purchased", event: "offer.purchased", template: "teacher.offer", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: pack or membership purchase" },
   { id: "payout.sent", event: "payout.sent", template: "teacher.payout", channels: ["email", "in_app"], delayMinutes: 0, consent: "transactional", description: "Teacher: payout sent" },

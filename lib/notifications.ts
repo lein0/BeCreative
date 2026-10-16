@@ -4,9 +4,9 @@ import { notificationOutbox, notificationPreferences, notifications, platformSet
 import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { appOrigin } from "@/lib/env";
-import { enqueueJob } from "@/lib/jobs";
+import { enqueueJob, ensureQueuedJob } from "@/lib/jobs";
 import { dispatchText, imessageConfigured, smsProviderConfigured } from "@/lib/messaging";
-import { composeSms, deferredSmsAllowed, maySend, smsWanted, textTransportReady } from "@/lib/messaging-rules";
+import { composeSms, deferredSmsAllowed, maySend, quietSmsJob, smsWanted, textTransportReady } from "@/lib/messaging-rules";
 import { channelsFor, defaultPrefs, minutesOfClock, nextQuietEnd, smsAllowedNow, unsubscribeUrl, type ChannelPrefs } from "@/lib/notify-prefs";
 import { sendWebPush } from "@/lib/push";
 import { SHIP_DEFAULTS, TEACHER_EVENTS, type NotificationEvent } from "@/lib/ship-defaults";
@@ -63,8 +63,8 @@ async function triggerMap() {
 
 export async function deliverOutbox(outboxId: string, phone?: string | null, audienceHint?: "teacher" | "student", options?: { textEligible?: boolean; smsOnly?: boolean }) {
   const [row] = await db.select().from(notificationOutbox).where(eq(notificationOutbox.id, outboxId)).limit(1);
-  if (!row || !row.userId) return;
-  if (row.status === "sent" && !options?.smsOnly) return;
+  if (!row || !row.userId) return { smsDeferred: false };
+  if (row.status === "sent" && !options?.smsOnly) return { smsDeferred: false };
   const [person] = await db.select().from(user).where(eq(user.id, row.userId)).limit(1);
   const audience = audienceFor(row.event, audienceHint);
   const trigger = templateFor(row.event, audience);
@@ -81,13 +81,13 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
       savedSms: pref ? pref.sms : null,
       smsOptIn: Boolean(person?.smsOptIn),
     })) {
-      await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId });
+      return sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId, audience, textEligible: Boolean(options.textEligible) });
     }
-    return;
+    return { smsDeferred: false };
   }
   if (!enabled) {
     await db.update(notificationOutbox).set({ status: "skipped" }).where(eq(notificationOutbox.id, outboxId));
-    return;
+    return { smsDeferred: false };
   }
   const [pref] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, row.userId), eq(notificationPreferences.event, row.event))).limit(1);
   const textEligible = Boolean(options?.textEligible);
@@ -140,26 +140,34 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
       headers: { "List-Unsubscribe": `<${link}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" },
     });
   }
+  let smsDeferred = false;
+  let smsRunAt: Date | undefined;
   if (channels.sms && destination && maySend({ ...consentOk, channel: "sms" })) {
-    await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId, audience, textEligible });
+    const deferred = await sendText({ userId: row.userId, phone: destination, title: row.title, body: row.body, href: row.href, imessageEnabled: settings?.imessageEnabled ?? SHIP_DEFAULTS.imessageEnabled, quietStart: settings?.quietHoursStart, quietEnd: settings?.quietHoursEnd, outboxId, audience, textEligible });
+    smsDeferred = deferred.smsDeferred;
+    smsRunAt = deferred.smsRunAt;
   }
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
   await db.update(notificationOutbox).set({ status: "sent" }).where(eq(notificationOutbox.id, outboxId));
+  return { smsDeferred, smsRunAt };
 }
 
 async function sendText(input: { userId: string; phone: string | null; title: string; body: string; href?: string | null; imessageEnabled: boolean; quietStart?: string | null; quietEnd?: string | null; outboxId: string; audience?: "teacher" | "student"; textEligible?: boolean }) {
-  if (!input.phone) return;
+  if (!input.phone) return { smsDeferred: false };
   const localMinutes = minutesOfClock(new Intl.DateTimeFormat("en-GB", { timeZone: SHIP_DEFAULTS.quietHoursZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()));
   const start = input.quietStart ?? SHIP_DEFAULTS.quietHoursStart;
   const end = input.quietEnd ?? SHIP_DEFAULTS.quietHoursEnd;
   if (!smsAllowedNow(localMinutes, start, end)) {
-    await enqueueJob("notification.sms", { outboxId: input.outboxId, phone: input.phone, audience: input.audience, textEligible: input.textEligible }, nextQuietEnd(end), `sms:${input.outboxId}`);
-    return;
+    const runAt = nextQuietEnd(end);
+    const retry = quietSmsJob({ outboxId: input.outboxId, phone: input.phone, audience: input.audience, textEligible: input.textEligible });
+    await ensureQueuedJob(retry.kind, retry.payload, runAt, retry.key);
+    return { smsDeferred: true, smsRunAt: runAt };
   }
   const target = input.href ? await shortenLink(new URL(input.href, appOrigin()).toString()) : "";
   await dispatchText({ to: input.phone, body: composeSms({ title: input.title, body: input.body, link: target }), userId: input.userId, imessageEnabled: input.imessageEnabled });
+  return { smsDeferred: false };
 }
 
 export async function unreadCount(userId: string) {

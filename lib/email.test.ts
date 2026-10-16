@@ -36,4 +36,25 @@ describe("private recipient delivery", () => {
     expect(raw).toContain("Content-Type: text/html; charset=UTF-8");
     expect(raw).toContain("<p>Hello</p>");
   });
+
+  it("encodes a non-ASCII subject and strips a unicode line separator", () => {
+    const raw = buildRawEmail({
+      to: ["student@example.com"],
+      subject: "Café class",
+      text: "Café class",
+      html: "<p>Café</p>",
+    }, "studio@example.com");
+    const subject = raw.split("\r\n").find((line) => line.startsWith("Subject: "));
+    expect(subject).toMatch(/=\?UTF-8\?B\?/);
+    expect(subject).not.toContain("Café");
+    const encoded = subject?.match(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/)?.[1] ?? "";
+    expect(Buffer.from(encoded, "base64").toString("utf8")).toBe("Café class");
+    const split = buildRawEmail({
+      to: ["student@example.com"],
+      subject: "Hello\u2028Bcc: evil@example.com",
+      text: "plain",
+    }, "studio@example.com");
+    expect(split.split("\r\n").some((line) => line.startsWith("Bcc:"))).toBe(false);
+    expect(split).toContain("Subject: Hello Bcc: evil@example.com");
+  });
 });

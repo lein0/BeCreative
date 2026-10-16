@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type Stripe from "stripe";
 import { fulfillPaidCheckout, refundOrderByPaymentIntent, renewMembershipFromInvoice } from "@/lib/booking-service";
 import { chargeFullyRefunded, orderIdsForFailedSubscription, paidInvoiceRenewal } from "@/lib/checkout-rules";
@@ -82,7 +82,9 @@ async function dispatchStripeEvent(event: Stripe.Event) {
     if (subscription) {
       const linked = await db.select({ id: orders.id }).from(orders).where(eq(orders.stripeSubscriptionId, subscription));
       const orderIds = orderIdsForFailedSubscription(linked.map((row) => row.id));
-      if (orderIds.length) await db.update(membershipSubscriptions).set({ status: "past_due" }).where(inArray(membershipSubscriptions.orderId, orderIds));
+      if (orderIds.length) {
+        await db.update(membershipSubscriptions).set({ status: "past_due" }).where(and(inArray(membershipSubscriptions.orderId, orderIds), eq(membershipSubscriptions.status, "active")));
+      }
     }
   }
   if (event.type === "account.updated") {

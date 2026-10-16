@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { channelAfterAttempt, chooseTextChannel, composeSms, deferredSmsAllowed, guardSms, inboundSmsFields, maySend, reminderJob, smsKeyword, smsOnByDefault, smsWanted, textTransportReady, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
+import { channelAfterAttempt, chooseTextChannel, composeSms, deferredSmsAllowed, guardSms, inboundSmsFields, maySend, quietSmsJob, quietSmsNeedsRequeue, reminderJob, smsKeyword, smsOnByDefault, smsWanted, textTransportReady, twimlMessage, withinMonthlyCap } from "@/lib/messaging-rules";
+import { STUDENT_EVENTS, TEACHER_EVENTS } from "@/lib/ship-defaults";
 import { templateFor } from "@/lib/triggers";
 
 describe("text defaults and consent", () => {
@@ -52,7 +53,12 @@ describe("SMS keywords and iMessage fallback", () => {
     expect(templateFor("booking.cancelled", "teacher")?.template).toBe("teacher.cancelled");
     expect(templateFor("booking.cancelled", "student")?.template).toBe("booking.cancelled");
     expect(templateFor("waitlist.joined", "teacher")?.template).toBe("teacher.waitlist");
-    expect(templateFor("waitlist.joined", "student")?.template).toBe("student.waitlist");
+    expect(templateFor("student.waitlist", "student")?.template).toBe("student.waitlist");
+    expect(templateFor("student.waitlist", "student")?.event).toBe("student.waitlist");
+    expect(TEACHER_EVENTS).toContain("waitlist.joined");
+    expect(STUDENT_EVENTS).toContain("student.waitlist");
+    expect(STUDENT_EVENTS).not.toContain("waitlist.joined");
+    expect(TEACHER_EVENTS).not.toContain("student.waitlist");
   });
 
   it("returns keyword confirmation as TwiML for a form webhook", () => {
@@ -102,6 +108,11 @@ describe("SMS keywords and iMessage fallback", () => {
   it("sends when only iMessage is configured, and includes the visit reminder text flag", () => {
     expect(textTransportReady({ smsProvider: false, imessageOn: true })).toBe(true);
     expect(textTransportReady({ smsProvider: false, imessageOn: false })).toBe(false);
+    const retry = quietSmsJob({ outboxId: "out-1", phone: "+13105550100", audience: "student", textEligible: true });
+    expect(retry.key).toBe("sms:out-1");
+    expect(retry.payload).toMatchObject({ audience: "student", textEligible: true });
+    expect(quietSmsNeedsRequeue({ jobKind: "notification.sms", deferred: true })).toBe(true);
+    expect(quietSmsNeedsRequeue({ jobKind: "notification.deliver", deferred: true })).toBe(false);
     expect(reminderJob({ userId: "u", title: "Sauna is in 2 hours", body: "Soon", href: "/bookings", hours: 2 }).textEligible).toBe(true);
     expect(reminderJob({ userId: "u", title: "Sauna is in 24 hours", body: "Soon", href: "/bookings", hours: 24 })).toMatchObject({ event: "booking.reminder", audience: "student", textEligible: false });
   });

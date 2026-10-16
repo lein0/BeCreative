@@ -11,6 +11,7 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   chargeFullyRefunded,
+  failedInvoiceMarksPastDue,
   membershipPaymentRestoresAccess,
   membershipRenewalExtendsAccess,
   orderIdsForFailedSubscription,
@@ -173,6 +174,12 @@ describe("membership renewals", () => {
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(true);
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_create", currentStatus: "past_due", currentPeriodEnd: end, invoicePeriodEnd: new Date("2027-01-01T00:00:00Z") })).toBe(false);
     expect(membershipPaymentRestoresAccess({ billingReason: "subscription_cycle", currentStatus: "active", currentPeriodEnd: end, invoicePeriodEnd: end })).toBe(false);
+  });
+
+  it("does not move a cancelled or pending membership when an invoice fails", () => {
+    expect(failedInvoiceMarksPastDue("active")).toBe(true);
+    expect(failedInvoiceMarksPastDue("cancelled")).toBe(false);
+    expect(failedInvoiceMarksPastDue("pending")).toBe(false);
   });
 
   it("keeps the original order when a renewal order shares the subscription", () => {

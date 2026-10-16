@@ -76,6 +76,25 @@ export function textTransportReady(input: { smsProvider: boolean; imessageOn: bo
   return input.smsProvider || input.imessageOn;
 }
 
+/** A quiet-hours retry must keep the same key and the text flag. A fresh insert collides and drops both. */
+export function quietSmsJob(input: { outboxId: string; phone: string; audience?: "teacher" | "student"; textEligible?: boolean }) {
+  return {
+    kind: "notification.sms" as const,
+    key: `sms:${input.outboxId}`,
+    payload: {
+      outboxId: input.outboxId,
+      phone: input.phone,
+      ...(input.audience ? { audience: input.audience } : {}),
+      textEligible: Boolean(input.textEligible),
+    },
+  };
+}
+
+/** The SMS job is already running, so the retry has to requeue that row instead of inserting another. */
+export function quietSmsNeedsRequeue(input: { jobKind: string; deferred: boolean }) {
+  return input.jobKind === "notification.sms" && input.deferred;
+}
+
 export function reminderJob(input: { userId: string; title: string; body: string; href: string; hours: number }) {
   return {
     userId: input.userId,

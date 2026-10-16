@@ -535,7 +535,7 @@ export async function bookSession(input: {
     if ("waitlisted" in created && created.waitlisted) {
       if ("teacherUserId" in created && created.teacherUserId) {
         await emitNotification({ userId: created.teacherUserId, event: "waitlist.joined", audience: "teacher", title: `Waitlist: ${created.title}`, body: `${input.name} joined the waitlist.`, href: `/c/${created.classSlug}` });
-        await emitNotification({ userId: input.userId, event: "waitlist.joined", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
+        await emitNotification({ userId: input.userId, event: "student.waitlist", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
       }
       return { waitlisted: true };
     }

@@ -55,6 +55,7 @@ export const STUDENT_EVENTS = [
   "booking.cancelled",
   "booking.refunded",
   "waitlist.spot_open",
+  "student.waitlist",
   "class.changed",
   "receipt.sent",
   "ticket.updated",

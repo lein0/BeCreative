@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, services, sessions, teachers, visitBookings } from "@/lib/db/schema";
 import { DISPUTE_SUBMIT_ATTEMPTS } from "@/lib/dispute-evidence";
 import { claimJobs, enqueueJob, finishJob, requeueJob } from "@/lib/jobs";
-import { reminderJob } from "@/lib/messaging-rules";
+import { quietSmsNeedsRequeue, reminderJob } from "@/lib/messaging-rules";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
 import { captureException } from "@/lib/sentry";
 
@@ -15,10 +15,14 @@ export async function workJobs(limit = 20) {
       const payload = (job.payload ?? {}) as Record<string, unknown>;
       if (job.kind === "notification.deliver" || job.kind === "notification.sms") {
         const audience = payload.audience === "teacher" || payload.audience === "student" ? payload.audience : undefined;
-        await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, {
+        const delivery = await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, {
           textEligible: payload.textEligible === true,
           smsOnly: job.kind === "notification.sms",
         });
+        if (delivery && quietSmsNeedsRequeue({ jobKind: job.kind, deferred: delivery.smsDeferred }) && delivery.smsRunAt) {
+          await requeueJob(job.id, delivery.smsRunAt);
+          continue;
+        }
       }
       if (job.kind === "dispute.submit") {
         const { submitDispute } = await import("@/lib/disputes");
