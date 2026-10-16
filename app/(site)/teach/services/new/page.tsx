@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { control, Field } from "@/components/bits";
 import { WindowPicker } from "@/components/window-picker";
 import { saveServiceAction } from "@/lib/actions";
+import { secondPrivateMinutesDefault, secondPrivatePriceDefault } from "@/lib/visit-form";
 import { requireActor } from "@/lib/actor";
 import { categoryTree, teacherByUser } from "@/lib/queries";
 import { one } from "@/lib/utils";
@@ -43,8 +44,8 @@ async function Body({ searchParams }: { searchParams: Promise<{ error?: string }
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="First length (minutes)"><input name="minutesA" type="number" defaultValue={60} className={control} /></Field>
           <Field label="First price ($)"><input name="priceA" type="number" step="1" defaultValue={90} className={control} /></Field>
-          <Field label="Second length (minutes)"><input name="minutesB" type="number" defaultValue={90} className={control} /></Field>
-          <Field label="Second price ($)"><input name="priceB" type="number" step="1" defaultValue={120} className={control} /></Field>
+          <Field label="Second length (minutes)"><input name="minutesB" type="number" defaultValue={secondPrivateMinutesDefault} placeholder="90" className={control} /></Field>
+          <Field label="Second price ($)"><input name="priceB" type="number" step="1" defaultValue={secondPrivatePriceDefault} placeholder="120" className={control} /></Field>
         </div>
         <p className="text-sm text-ink/60">Shared slots use the room price and length below. Leave the second private price blank if you offer one length.</p>
         <div className="grid gap-3 sm:grid-cols-3">

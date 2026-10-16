@@ -570,31 +570,31 @@ async function releaseBookingSeat(booking: typeof bookings.$inferSelect, now: Da
   }
 }
 
-export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect, now: Date) {
-  const cancelled = await db
+export async function releaseVisitSeat(visit: typeof visitBookings.$inferSelect, now: Date, database: Pick<typeof db, "insert" | "update"> = db) {
+  const cancelled = await database
     .update(visitBookings)
     .set({ status: "cancelled", cancelledAt: now })
     .where(and(eq(visitBookings.id, visit.id), eq(visitBookings.status, "confirmed")))
     .returning({ id: visitBookings.id });
   if (!cancelled.length) return;
   if (visit.packPurchaseId) {
-    const [purchase] = await db
+    const [purchase] = await database
       .update(packPurchases)
       .set({ creditsRemaining: sql`${packPurchases.creditsRemaining} + 1` })
       .where(eq(packPurchases.id, visit.packPurchaseId))
       .returning({ id: packPurchases.id });
     if (purchase) {
-      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
+      await database.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "pack", sourceId: purchase.id, direction: "restore" });
     }
   }
   if (visit.membershipSubscriptionId) {
-    const [sub] = await db
+    const [sub] = await database
       .update(membershipSubscriptions)
       .set({ classesUsedThisPeriod: sql`GREATEST(0, ${membershipSubscriptions.classesUsedThisPeriod} - 1)` })
       .where(eq(membershipSubscriptions.id, visit.membershipSubscriptionId))
       .returning({ id: membershipSubscriptions.id });
     if (sub) {
-      await db.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "membership", sourceId: sub.id, direction: "restore" });
+      await database.insert(creditLedger).values({ id: crypto.randomUUID(), userId: visit.userId, sourceType: "membership", sourceId: sub.id, direction: "restore" });
     }
   }
 }

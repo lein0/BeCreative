@@ -183,22 +183,23 @@ export async function signedWaiverVersion(teacherId: string, userId: string) {
   return rows.reduce((max, row) => Math.max(max, row.version), 0) || null;
 }
 
-export async function signWaiver(input: { teacherId: string; userId: string; signedName: string; ip: string | null }) {
+export async function signWaiver(input: { teacherId: string; userId: string; signedName: string; ip: string | null; version: number }) {
   const name = input.signedName.trim();
   if (name.length < 2) return { error: "Type your name to sign." };
   const [waiver] = await db.select().from(waivers).where(eq(waivers.teacherId, input.teacherId)).limit(1);
   if (!waiver) return { error: "This studio has no waiver." };
+  if (!Number.isInteger(input.version) || input.version !== waiver.version) return { error: "The waiver changed. Read the new version and sign again." };
   const id = crypto.randomUUID();
   await db.insert(waiverSignatures).values({
     id,
     waiverId: waiver.id,
     teacherId: input.teacherId,
     userId: input.userId,
-    version: waiver.version,
+    version: input.version,
     signedName: name,
     ip: input.ip,
   }).onConflictDoNothing();
-  return { ok: true, version: waiver.version };
+  return { ok: true, version: input.version };
 }
 
 export async function bookVisit(input: {
@@ -630,7 +631,7 @@ export async function cancelVisit(userId: string, visitId: string) {
   if (existing) await settlePendingCheckout(existing);
   const paymentIntent = await db.transaction(async (tx) => {
     if (visit.orderId) await tx.execute(sql`select id from orders where id = ${visit.orderId} for update`);
-    await releaseVisitSeat(visit, now);
+    await releaseVisitSeat(visit, now, tx);
     const [order] = visit.orderId ? await tx.select().from(orders).where(eq(orders.id, visit.orderId)).limit(1) : [];
     if (!visit.orderId || !order || order.status === "refunded" || order.status === "cancelled") return null;
     await tx.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, visit.orderId));

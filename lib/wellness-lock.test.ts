@@ -137,7 +137,7 @@ describe("wellness booking locks", () => {
     const student = await person("f");
     const blocked = await bookVisit({ userId: student, email: "f@example.com", serviceId, optionId, startsAt });
     expect(blocked).toEqual({ error: "Sign the studio waiver before booking." });
-    const signed = await signWaiver({ teacherId, userId: student, signedName: "Fern Lee", ip: "203.0.113.10" });
+    const signed = await signWaiver({ teacherId, userId: student, signedName: "Fern Lee", ip: "203.0.113.10", version: 1 });
     expect(signed).toMatchObject({ ok: true, version: 1 });
     const booked = await bookVisit({ userId: student, email: "f@example.com", serviceId, optionId, startsAt });
     expect(booked).toHaveProperty("orderId");

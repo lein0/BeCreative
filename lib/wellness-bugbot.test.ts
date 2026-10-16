@@ -48,7 +48,7 @@ const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { sendEmail } = await import("@/lib/email");
 const { fulfillPaidCheckout, releaseVisitSeat } = await import("@/lib/booking-service");
-const { bookVisit, cancelVisit, openSlotsForService, rosterWaiver } = await import("@/lib/wellness-service");
+const { bookVisit, cancelVisit, openSlotsForService, rosterWaiver, signWaiver } = await import("@/lib/wellness-service");
 
 const tag = `bug-${crypto.randomUUID().slice(0, 8)}`;
 const ids: { teacher?: string; users: string[]; category?: string } = { users: [] };
@@ -737,5 +737,102 @@ describe("wellness bugbot regressions", () => {
     const [sub] = await db.select().from(schema.membershipSubscriptions).where(eq(schema.membershipSubscriptions.id, subId));
     expect(purchase?.creditsRemaining).toBe(2);
     expect(sub?.classesUsedThisPeriod).toBe(0);
+  });
+
+  it("refuses to sign a waiver version the student did not read", async () => {
+    const waiverId = crypto.randomUUID();
+    await db.insert(schema.waivers).values({
+      id: waiverId,
+      teacherId: ids.teacher!,
+      body: "A liability waiver for this studio visit. Not medical advice.",
+      version: 2,
+    });
+    const student = await person("waiver-version");
+    const stale = await signWaiver({ teacherId: ids.teacher!, userId: student, signedName: "Ada Lee", ip: "203.0.113.8", version: 1 });
+    expect(stale).toEqual({ error: "The waiver changed. Read the new version and sign again." });
+    const rows = await db.select().from(schema.waiverSignatures).where(eq(schema.waiverSignatures.userId, student));
+    expect(rows).toHaveLength(0);
+    const current = await signWaiver({ teacherId: ids.teacher!, userId: student, signedName: "Ada Lee", ip: "203.0.113.8", version: 2 });
+    expect(current).toEqual({ ok: true, version: 2 });
+    const [saved] = await db.select().from(schema.waiverSignatures).where(eq(schema.waiverSignatures.userId, student));
+    expect(saved?.version).toBe(2);
+  });
+
+  it("keeps the visit and pack credit when the cancel transaction rolls back", async () => {
+    const { serviceId, optionId } = await appointment("Rollback", ids.teacher!, ids.category!);
+    const student = await person("rollback");
+    const packId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId: ids.teacher!, slug: `${tag}-rollback`, name: "One", creditCount: 1, priceCents: 1000 });
+    const purchaseId = crypto.randomUUID();
+    await db.insert(schema.packPurchases).values({
+      id: purchaseId,
+      userId: student,
+      packId,
+      teacherId: ids.teacher!,
+      creditsTotal: 1,
+      creditsRemaining: 0,
+    });
+    const orderId = crypto.randomUUID();
+    const visitId = crypto.randomUUID();
+    const startsAt = new Date(Date.now() + 7 * 86_400_000);
+    await db.insert(schema.orders).values({
+      id: orderId,
+      userId: student,
+      teacherId: ids.teacher,
+      kind: "visit",
+      status: "pay_at_studio",
+      listPriceCents: 9000,
+      studentPaysCents: 9000,
+      paymentPath: "cash",
+    });
+    await db.insert(schema.visitBookings).values({
+      id: visitId,
+      orderId,
+      userId: student,
+      serviceId,
+      optionId,
+      offeringKind: "appointment",
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 60 * 60_000),
+      packPurchaseId: purchaseId,
+    });
+    const fn = `cancel_guard_${orderId.replace(/-/g, "").slice(0, 20)}`;
+    await pool.query(`
+      CREATE FUNCTION ${fn}() RETURNS trigger AS $guard$
+      BEGIN
+        IF NEW.status = 'cancelled' THEN
+          RAISE EXCEPTION 'cancel order blocked';
+        END IF;
+        RETURN NEW;
+      END;
+      $guard$ LANGUAGE plpgsql
+    `);
+    await pool.query(`CREATE TRIGGER ${fn} BEFORE UPDATE ON orders FOR EACH ROW WHEN (NEW.id = '${orderId}') EXECUTE FUNCTION ${fn}()`);
+    try {
+      await cancelVisit(student, visitId);
+      throw new Error("cancel should have rolled back");
+    } catch (error) {
+      const parts: string[] = [];
+      let current: unknown = error;
+      for (let depth = 0; current && depth < 5; depth += 1) {
+        if (current instanceof Error) {
+          parts.push(current.message);
+          current = current.cause;
+        } else {
+          parts.push(String(current));
+          break;
+        }
+      }
+      expect(parts.join(" ")).toMatch(/cancel order blocked/);
+    } finally {
+      await pool.query(`DROP TRIGGER IF EXISTS ${fn} ON orders`);
+      await pool.query(`DROP FUNCTION IF EXISTS ${fn}()`);
+    }
+    const [visit] = await db.select().from(schema.visitBookings).where(eq(schema.visitBookings.id, visitId));
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.id, purchaseId));
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(visit?.status).toBe("confirmed");
+    expect(purchase?.creditsRemaining).toBe(0);
+    expect(order?.status).toBe("pay_at_studio");
   });
 });

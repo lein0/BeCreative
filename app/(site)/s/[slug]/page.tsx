@@ -111,6 +111,7 @@ async function Body({ params, searchParams }: { params: Promise<{ slug: string }
                 <form action={signWaiverAction} className="mt-4 space-y-3">
                   <input type="hidden" name="teacherId" value={detail.teacher.id} />
                   <input type="hidden" name="slug" value={detail.service.slug} />
+                  <input type="hidden" name="version" value={detail.waiver.version} />
                   <label className="block text-sm">
                     Type your name to sign
                     <input name="signedName" required minLength={2} className="mt-1 min-h-11 w-full rounded-2xl border border-line bg-white px-3" placeholder={actor.name} data-testid="waiver-name" />

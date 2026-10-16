@@ -19,6 +19,7 @@ import type { RecurrenceRule } from "@/lib/recurrence";
 import { attachMedia, emailRoster, featureClass, manualBook, moveSession, saveClass, saveMembership, savePack, savePromo, setCheckin, setPaused, setTeacherStatus, skipSession, updateRecurrence } from "@/lib/studio-service";
 import { geocoder } from "@/lib/geocode";
 import { uniqueSlug } from "@/lib/utils";
+import { privateVisitOptions } from "@/lib/visit-form";
 import { bookVisit, cancelVisit, saveCredential, saveService, saveWaiver, signWaiver, verifyCredential } from "@/lib/wellness-service";
 
 function text(formData: FormData, key: string) {
@@ -516,6 +517,7 @@ export async function signWaiverAction(formData: FormData) {
     userId: actor.id,
     signedName: text(formData, "signedName"),
     ip: clientIp(await headers()),
+    version: Number(text(formData, "version")),
   });
   if (result.error) redirect(`/s/${slug}?error=${encodeURIComponent(result.error)}`);
   redirect(`/s/${slug}?signed=1`);
@@ -541,10 +543,12 @@ export async function saveServiceAction(formData: FormData) {
   const windows = parsed.filter((window) => window.weekday >= 0 && window.weekday <= 6 && /^\d{2}:\d{2}$/.test(window.start) && /^\d{2}:\d{2}$/.test(window.end));
   const kind = text(formData, "kind") === "access" ? "access" : "appointment";
   const options = kind === "appointment"
-    ? [
-        { label: `${num(formData, "minutesA", 60)} min`, minutes: num(formData, "minutesA", 60), priceCents: Math.round(num(formData, "priceA") * 100) },
-        { label: `${num(formData, "minutesB", 90)} min`, minutes: num(formData, "minutesB", 90), priceCents: Math.round(num(formData, "priceB") * 100) },
-      ].filter((option) => option.minutes > 0 && option.priceCents > 0)
+    ? privateVisitOptions({
+        minutesA: text(formData, "minutesA"),
+        priceA: text(formData, "priceA"),
+        minutesB: text(formData, "minutesB"),
+        priceB: text(formData, "priceB"),
+      })
     : [];
   const addons = [1, 2].map((index) => ({
     name: text(formData, `addonName${index}`),
