@@ -15,9 +15,15 @@ describe("capacity", () => {
   });
 
   it("stops a manual booking at capacity unless the teacher overrides it", () => {
-    expect(decideManualBooking({ capacity: 2, confirmedCount: 2, override: false })).toEqual({ ok: false, reason: "full" });
-    expect(decideManualBooking({ capacity: 2, confirmedCount: 1, override: false })).toEqual({ ok: true });
-    expect(decideManualBooking({ capacity: 2, confirmedCount: 2, override: true })).toEqual({ ok: true });
+    expect(decideManualBooking({ status: "scheduled", capacity: 2, confirmedCount: 2, override: false })).toEqual({ ok: false, reason: "full" });
+    expect(decideManualBooking({ status: "scheduled", capacity: 2, confirmedCount: 1, override: false })).toEqual({ ok: true });
+    expect(decideManualBooking({ status: "scheduled", capacity: 2, confirmedCount: 2, override: true })).toEqual({ ok: true });
+  });
+
+  it("refuses a manual booking on a cancelled, paused, or completed date even with an override", () => {
+    expect(decideManualBooking({ status: "cancelled", capacity: 8, confirmedCount: 0, override: true })).toEqual({ ok: false, reason: "cancelled_session" });
+    expect(decideManualBooking({ status: "paused", capacity: 8, confirmedCount: 0, override: true })).toEqual({ ok: false, reason: "paused" });
+    expect(decideManualBooking({ status: "completed", capacity: 8, confirmedCount: 0, override: true })).toEqual({ ok: false, reason: "completed" });
   });
 
   it("requires every upcoming session in a series to have room", () => {

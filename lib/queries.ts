@@ -61,12 +61,16 @@ export async function catalog(filters: {
   const upcoming = ids.length
     ? await db.select().from(sessions).where(and(inArray(sessions.classId, ids), eq(sessions.status, "scheduled"), gte(sessions.startsAt, new Date()))).orderBy(asc(sessions.startsAt))
     : [];
-  const nextByClass = new Map<string, (typeof upcoming)[number]>();
-  for (const session of upcoming) if (!nextByClass.has(session.classId)) nextByClass.set(session.classId, session);
+  const upcomingByClass = new Map<string, (typeof upcoming)[number][]>();
+  for (const session of upcoming) {
+    const list = upcomingByClass.get(session.classId) ?? [];
+    list.push(session);
+    upcomingByClass.set(session.classId, list);
+  }
   const counts = upcoming.length ? await countMap(upcoming.map((session) => session.id)) : new Map<string, number>();
   return rows
     .map((row) => {
-      const next = nextByClass.get(row.class.id) ?? null;
+      const next = nextSessionOnOrAfter(upcomingByClass.get(row.class.id) ?? [], filters.date);
       const price = row.class.pricePerSessionCents ?? row.class.pricePerSeriesCents ?? 0;
       const miles = filters.lat != null && filters.lng != null && row.location ? haversine(filters.lat, filters.lng, row.location.lat, row.location.lng) : null;
       return { ...row, next, spots: next ? Math.max(0, next.capacity - (counts.get(next.id) ?? 0)) : null, price, miles };
@@ -81,10 +85,15 @@ export async function catalog(filters: {
       if (filters.format && row.class.format !== filters.format) return false;
       if (filters.delivery && row.class.delivery !== filters.delivery) return false;
       if (filters.maxPrice && row.price > filters.maxPrice * 100) return false;
-      if (filters.date && (!row.next || row.next.localDate < filters.date)) return false;
+      if (filters.date && !row.next) return false;
       if (filters.miles && row.class.delivery === "in_person" && (row.miles == null || row.miles > filters.miles)) return false;
       return true;
     });
+}
+
+export function nextSessionOnOrAfter<T extends { localDate: string; startsAt: Date }>(sessions: T[], date?: string) {
+  const matches = sessions.filter((session) => !date || session.localDate >= date);
+  return matches.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0] ?? null;
 }
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {

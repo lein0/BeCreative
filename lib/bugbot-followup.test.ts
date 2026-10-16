@@ -42,7 +42,7 @@ const schema = await import("@/lib/db/schema");
 const { bookSession, cancelBooking, confirmedCount, fulfillPaidCheckout, purchaseOffer, releaseExpiredCheckoutHolds, renewMembershipFromInvoice } = await import("@/lib/booking-service");
 const { sendEmail, sendIndividually } = await import("@/lib/email");
 const { createCheckout } = await import("@/lib/stripe");
-const { classDetail, teacherProfile } = await import("@/lib/queries");
+const { catalog, classDetail, teacherProfile } = await import("@/lib/queries");
 const { mediaUploadAllowed } = await import("@/lib/media-upload");
 const { manualBook, saveClass, setPaused, syncRule } = await import("@/lib/studio-service");
 
@@ -193,6 +193,46 @@ describe("Bugbot follow-ups", () => {
     expect(foreign).toEqual({ error: "That class belongs to another studio." });
     const links = await db.select().from(schema.bookingSessions).where(eq(schema.bookingSessions.sessionId, sessionId));
     expect(links).toHaveLength(0);
+  });
+
+  it("refuses a manual booking on a cancelled date even when capacity is overridden", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("status-owner");
+    const teacherId = await studio(owner, `${tag}-status`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-status-class`, title: "Status", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-03-01T18:00:00Z"), endsAt: new Date("2027-03-01T19:00:00Z"), localDate: "2027-03-01", capacity: 8, status: "cancelled",
+    });
+    const result = await manualBook({
+      classId, sessionId, teacherId, name: "Guest", email: "guest@example.com", payment: "unpaid", override: true, actorUserId: owner, delegated: false,
+    });
+    expect(result).toEqual({ error: "This date is cancelled." });
+    const links = await db.select().from(schema.bookingSessions).where(eq(schema.bookingSessions.sessionId, sessionId));
+    expect(links).toHaveLength(0);
+  });
+
+  it("keeps a class in a date search when a later session matches", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("date-owner");
+    const teacherId = await studio(owner, `${tag}-date`);
+    const classId = crypto.randomUUID();
+    const slug = `${tag}-date-class`;
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug, title: `${tag} Thursday and Saturday`, skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    await db.insert(schema.sessions).values([
+      { id: crypto.randomUUID(), classId, startsAt: new Date("2027-04-08T18:00:00Z"), endsAt: new Date("2027-04-08T19:00:00Z"), localDate: "2027-04-08", capacity: 8, status: "scheduled" },
+      { id: crypto.randomUUID(), classId, startsAt: new Date("2027-04-10T18:00:00Z"), endsAt: new Date("2027-04-10T19:00:00Z"), localDate: "2027-04-10", capacity: 8, status: "scheduled" },
+    ]);
+    const saturday = await catalog({ date: "2027-04-10", q: tag });
+    expect(saturday.map((row) => row.class.id)).toContain(classId);
+    expect(saturday.find((row) => row.class.id === classId)?.next?.localDate).toBe("2027-04-10");
+    const after = await catalog({ date: "2027-04-11", q: tag });
+    expect(after.map((row) => row.class.id)).not.toContain(classId);
   });
 
   it("releases the seat when Stripe throws during checkout", async () => {

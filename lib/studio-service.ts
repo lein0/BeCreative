@@ -350,6 +350,13 @@ export async function moveSession(sessionId: string, date: string, time: string,
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: "session.move", entityType: "session", entityId: sessionId, summary: `Moved a session to ${date} ${time}` });
 }
 
+function manualBookError(reason: "full" | "cancelled_session" | "paused" | "completed") {
+  if (reason === "full") return "This session is full. Check override capacity to add someone anyway.";
+  if (reason === "paused") return "This date is paused.";
+  if (reason === "completed") return "This date is already completed.";
+  return "This date is cancelled.";
+}
+
 export async function manualBook(input: { classId: string; sessionId: string; teacherId: string; name: string; email: string; payment: "paid" | "pay_at_studio" | "unpaid"; override: boolean; actorUserId: string; delegated: boolean }) {
   const [klass] = await db.select().from(classes).where(eq(classes.id, input.classId)).limit(1);
   if (!klass) return { error: "Class not found." };
@@ -360,8 +367,14 @@ export async function manualBook(input: { classId: string; sessionId: string; te
   const bookingId = crypto.randomUUID();
   const saved = await db.transaction(async (tx) => {
     await tx.execute(sql`select id from sessions where id = ${input.sessionId} for update`);
-    const decision = decideManualBooking({ capacity: session.capacity, confirmedCount: await confirmedCount(session.id, tx as unknown as typeof db), override: input.override });
-    if (!decision.ok) return { error: "This session is full. Check override capacity to add someone anyway." };
+    const [locked] = await tx.select({ status: sessions.status, capacity: sessions.capacity }).from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
+    const decision = decideManualBooking({
+      status: (locked?.status ?? session.status) as "scheduled" | "cancelled" | "completed" | "paused",
+      capacity: locked?.capacity ?? session.capacity,
+      confirmedCount: await confirmedCount(session.id, tx as unknown as typeof db),
+      override: input.override,
+    });
+    if (!decision.ok) return { error: manualBookError(decision.reason) };
     await tx.insert(bookings).values({
       id: bookingId,
       classId: klass.id,

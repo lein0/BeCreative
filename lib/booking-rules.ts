@@ -29,7 +29,10 @@ export function decideBooking(input: {
   return { ok: false, reason: "full" };
 }
 
-export function decideManualBooking(input: { capacity: number; confirmedCount: number; override: boolean }): { ok: true } | { ok: false; reason: "full" } {
+export function decideManualBooking(input: { status: SessionState; capacity: number; confirmedCount: number; override: boolean }): { ok: true } | { ok: false; reason: "full" | "cancelled_session" | "paused" | "completed" } {
+  if (input.status === "paused") return { ok: false, reason: "paused" };
+  if (input.status === "completed") return { ok: false, reason: "completed" };
+  if (input.status !== "scheduled") return { ok: false, reason: "cancelled_session" };
   if (input.override) return { ok: true };
   if (spotsRemaining(input.capacity, input.confirmedCount) < 1) return { ok: false, reason: "full" };
   return { ok: true };
