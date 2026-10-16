@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { classHasStarted, disputeLiability, disputeUpdateFromStripe, disputeAcceptsEvidence, earlyFraudDecision, evidenceForReason, nextDisputeSubmitAt, refreshCheckedInEvidence, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
+import { classHasStarted, disputeLiability, disputeUpdateFromStripe, disputeAcceptsEvidence, earlyFraudDecision, evidenceForReason, evidenceForStripe, nextDisputeSubmitAt, refreshCheckedInEvidence, scopedDisputeRecords, shouldAutoSubmit, withTeacherNotes, type EvidencePacket } from "@/lib/dispute-evidence";
 import { textPdf } from "@/lib/evidence-pdf";
 import { db } from "@/lib/db";
 import { auditLog, bookingSessions, bookings, classes, disputeNotes, disputes, emailOutbox, membershipSubscriptions, orders, packPurchases, platformSettings, policyAcceptances, services, sessions, teachers, user, visitBookings, waiverSignatures } from "@/lib/db/schema";
@@ -231,7 +231,7 @@ export async function submitDispute(disputeId: string, actorUserId?: string | nu
     purpose: "dispute_evidence",
     file: { data: pdf, name: `${row.id}.pdf`, type: "application/pdf" },
   });
-  await stripe.disputes.update(row.id, { evidence: { ...packet.evidence, uncategorized_file: file.id }, submit: true });
+  await stripe.disputes.update(row.id, { evidence: evidenceForStripe(packet.evidence, file.id), submit: true });
   await db.update(disputes).set({ evidenceStatus: "submitted", stripeFileId: file.id, updatedAt: new Date() }).where(eq(disputes.id, row.id));
   await db.insert(auditLog).values({ id: crypto.randomUUID(), actorUserId: actorUserId ?? null, action: "dispute.submit", entityType: "dispute", entityId: row.id, summary: row.reason });
   return { ok: true };

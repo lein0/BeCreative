@@ -82,6 +82,15 @@ export async function supportReplyAction(formData: FormData) {
     const merged = await mergeTickets(ticketId, text(formData, "targetId"));
     if (!merged.ok) redirect(errorRedirectPath(text(formData, "back") || "/admin/support", "Those tickets can't be merged."));
   } else if (command === "resolve") {
+    const body = text(formData, "body");
+    const internal = formData.get("internal") === "1";
+    if (body && ticketCommandAllowed(
+      { isAdmin: canViewPlatformStats(actor.roles), isTicketTeacher, isOwner: Boolean(ticket && ticket.userId === actor.id), resolved: ticket?.status === "resolved" },
+      "reply",
+      internal,
+    )) {
+      await replyToTicket({ ticketId, authorUserId: actor.id, body, internal, teacherSide: true });
+    }
     await resolveTicket(ticketId);
   } else if (command === "csat") {
     await recordCsat(ticketId, Number(text(formData, "score") || 5));

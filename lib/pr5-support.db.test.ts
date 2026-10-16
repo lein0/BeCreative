@@ -156,6 +156,21 @@ describe("support actions", () => {
     await expect(disputeAction(form({ disputeId: "dp_1", command: "submit", back: "/admin/disputes/dp_1" }))).rejects.toThrow("REDIRECT:/admin/disputes/dp_1?error=Stripe%20is%20not%20configured");
   });
 
+  it("keeps a typed reply when an admin resolves the ticket", async () => {
+    actorBox.current = { id: "admin-1", name: "Ada", email: "ada@example.com", image: null, roles: ["admin"], isDemo: false };
+    seedTable(schema.tickets, [{ id: "t1", userId: "student-1", status: "open", subject: "Mine" }]);
+    await expect(supportReplyAction(form({ ticketId: "t1", command: "resolve", body: "All set", back: "/admin/support/t1" }))).rejects.toThrow("REDIRECT:/admin/support/t1");
+    expect(supportBox.replyToTicket).toHaveBeenCalledWith(expect.objectContaining({ ticketId: "t1", authorUserId: "admin-1", body: "All set" }));
+    expect(supportBox.resolveTicket).toHaveBeenCalledWith("t1");
+    expect(supportBox.replyToTicket.mock.invocationCallOrder[0]).toBeLessThan(supportBox.resolveTicket.mock.invocationCallOrder[0]!);
+
+    supportBox.replyToTicket.mockClear();
+    supportBox.resolveTicket.mockClear();
+    await expect(supportReplyAction(form({ ticketId: "t1", command: "resolve", body: "   ", back: "/admin/support/t1" }))).rejects.toThrow("REDIRECT:/admin/support/t1");
+    expect(supportBox.replyToTicket).not.toHaveBeenCalled();
+    expect(supportBox.resolveTicket).toHaveBeenCalledWith("t1");
+  });
+
   it("does not treat a bad merge as done", async () => {
     actorBox.current = { id: "admin-1", name: "Ada", email: "ada@example.com", image: null, roles: ["admin"], isDemo: false };
     seedTable(schema.tickets, [{ id: "t1", userId: "student-1", status: "open", subject: "Mine" }]);

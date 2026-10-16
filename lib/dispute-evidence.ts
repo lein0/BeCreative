@@ -21,32 +21,93 @@ export function normalizeDisputeReason(reason: string) {
   return known.find((item) => item === reason) ?? "general";
 }
 
+const STRIPE_EVIDENCE_FILES = new Set([
+  "cancellation_policy",
+  "customer_communication",
+  "customer_signature",
+  "duplicate_charge_documentation",
+  "receipt",
+  "refund_policy",
+  "service_documentation",
+  "shipping_documentation",
+  "uncategorized_file",
+]);
+
+const FILE_TEXT_FIELD: Record<string, string> = {
+  cancellation_policy: "cancellation_policy_disclosure",
+  customer_communication: "uncategorized_text",
+  customer_signature: "uncategorized_text",
+  duplicate_charge_documentation: "duplicate_charge_explanation",
+  receipt: "uncategorized_text",
+  refund_policy: "refund_policy_disclosure",
+  service_documentation: "uncategorized_text",
+  shipping_documentation: "uncategorized_text",
+};
+
+function isStripeFileId(value: string) {
+  return value.startsWith("file_");
+}
+
 export function evidenceForReason(reason: string, packet: EvidencePacket): Record<string, string> {
   const policy = `${packet.policyText} Accepted ${packet.acceptedAt ?? "not recorded"} from ${packet.acceptedIp ?? "unknown IP"}, policy version ${packet.policyVersion ?? "n/a"}.`;
   const activity = `Session ${packet.sessionWhen}. Check-in: ${packet.checkedIn ? "yes" : "no"}. Waiver: ${packet.waiverSigned ?? "none"}. Emails: ${packet.emailsSent}. Prior bookings: ${packet.priorBookings}.`;
+  const notes = [activity, packet.messages, packet.serviceNotes].filter(Boolean).join("\n");
   const shared = {
     customer_name: packet.customerName,
     customer_email_address: packet.customerEmail,
     product_description: packet.productDescription,
-    customer_communication: packet.messages || packet.emailsSent || "No messages on file.",
     service_date: packet.sessionWhen,
-    service_documentation: packet.serviceNotes,
-    uncategorized_text: activity,
+    uncategorized_text: notes,
   };
   switch (normalizeDisputeReason(reason)) {
     case "fraudulent":
-      return { ...shared, customer_signature: packet.waiverSigned ?? "No waiver signature.", access_activity_log: activity, refund_policy: policy, customer_purchase_ip: packet.acceptedIp ?? "" };
+      return { ...shared, access_activity_log: activity, refund_policy_disclosure: policy, customer_purchase_ip: packet.acceptedIp ?? "" };
     case "product_not_received":
-      return { ...shared, access_activity_log: activity, service_documentation: `${packet.serviceNotes} ${activity}` };
+      return { ...shared, access_activity_log: activity };
     case "duplicate":
-      return { ...shared, duplicate_charge_explanation: packet.refundExplanation || "This customer has one charge for this booking.", refund_policy: policy };
+      return { ...shared, duplicate_charge_explanation: packet.refundExplanation || "This customer has one charge for this booking.", refund_policy_disclosure: policy };
     case "subscription_canceled":
-      return { ...shared, cancellation_policy: policy, cancellation_rebuttal: packet.refundExplanation || "The pass was active on the service date." };
+      return { ...shared, cancellation_policy_disclosure: policy, cancellation_rebuttal: packet.refundExplanation || "The pass was active on the service date." };
     case "credit_not_processed":
-      return { ...shared, refund_policy: policy, refund_refusal_explanation: `${packet.refundExplanation} Refunds follow the window the customer accepted at checkout.`.trim() };
+      return { ...shared, refund_policy_disclosure: policy, refund_refusal_explanation: `${packet.refundExplanation} Refunds follow the window the customer accepted at checkout.`.trim() };
     default:
-      return { ...shared, refund_policy: policy };
+      return { ...shared, refund_policy_disclosure: policy };
   }
+}
+
+/** Stripe file slots reject prose. Text moves to the matching disclosure field and the uploaded PDF fills the slot. */
+export function evidenceForStripe(evidence: Record<string, string>, fileId: string) {
+  const next: Record<string, string> = {};
+  const append = (key: string, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    next[key] = next[key] ? `${next[key]}\n${trimmed}` : trimmed;
+  };
+  for (const [key, value] of Object.entries(evidence)) {
+    if (!value) continue;
+    if (!STRIPE_EVIDENCE_FILES.has(key)) {
+      append(key, value);
+      continue;
+    }
+    if (isStripeFileId(value)) {
+      next[key] = value;
+      continue;
+    }
+    const textKey = FILE_TEXT_FIELD[key];
+    if (textKey) append(textKey, value);
+    next[key] = fileId;
+  }
+  if (next.refund_policy_disclosure) next.refund_policy = next.refund_policy && isStripeFileId(next.refund_policy) ? next.refund_policy : fileId;
+  if (next.cancellation_policy_disclosure) next.cancellation_policy = next.cancellation_policy && isStripeFileId(next.cancellation_policy) ? next.cancellation_policy : fileId;
+  if (next.uncategorized_text) {
+    next.customer_communication = next.customer_communication && isStripeFileId(next.customer_communication) ? next.customer_communication : fileId;
+    next.service_documentation = next.service_documentation && isStripeFileId(next.service_documentation) ? next.service_documentation : fileId;
+  }
+  if (next.uncategorized_text?.includes("Waiver:") && !next.uncategorized_text.includes("Waiver: none")) {
+    next.customer_signature = next.customer_signature && isStripeFileId(next.customer_signature) ? next.customer_signature : fileId;
+  }
+  next.uncategorized_file = fileId;
+  return next;
 }
 
 export function shouldAutoSubmit(input: { autoSubmit: boolean; held: boolean; attendanceConfirmed: boolean; dueBy: Date | null; now: Date; leadHours: number }) {

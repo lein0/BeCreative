@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disputeAcceptsEvidence, disputeLiability, disputeUpdateFromStripe, earlyFraudDecision, evidenceForReason, refreshCheckedInEvidence, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
+import { disputeAcceptsEvidence, disputeLiability, disputeUpdateFromStripe, earlyFraudDecision, evidenceForReason, evidenceForStripe, refreshCheckedInEvidence, shouldAutoSubmit, type EvidencePacket } from "@/lib/dispute-evidence";
 
 const packet: EvidencePacket = {
   customerName: "Jules Navarro",
@@ -25,10 +25,34 @@ describe("dispute evidence", () => {
     expect(evidenceForReason("fraudulent", packet).customer_purchase_ip).toBe("203.0.113.8");
     expect(evidenceForReason("product_not_received", packet).service_date).toContain("2026-10-13");
     expect(evidenceForReason("duplicate", packet).duplicate_charge_explanation).toContain("One charge");
-    expect(evidenceForReason("subscription_canceled", packet).cancellation_policy).toContain("24 hours");
+    expect(evidenceForReason("subscription_canceled", packet).cancellation_policy_disclosure).toContain("24 hours");
+    expect(evidenceForReason("subscription_canceled", packet).cancellation_policy).toBeUndefined();
     expect(evidenceForReason("credit_not_processed", packet).refund_refusal_explanation).toContain("window");
-    expect(evidenceForReason("general", packet).refund_policy).toContain("Accepted");
+    expect(evidenceForReason("general", packet).refund_policy_disclosure).toContain("Accepted");
+    expect(evidenceForReason("general", packet).refund_policy).toBeUndefined();
+    expect(evidenceForReason("fraudulent", packet).customer_communication).toBeUndefined();
     expect(evidenceForReason("something_else", packet).customer_name).toBe("Jules Navarro");
+  });
+
+  it("sends file ids in Stripe file slots and keeps the prose in text fields", () => {
+    const filed = evidenceForStripe({
+      refund_policy: "Full refund until 24 hours before.",
+      customer_communication: "Reminder email sent.",
+      customer_name: "Jules Navarro",
+      uncategorized_text: "Waiver: Jules Navarro signed version 1",
+    }, "file_1");
+    expect(filed.refund_policy).toBe("file_1");
+    expect(filed.customer_communication).toBe("file_1");
+    expect(filed.customer_signature).toBe("file_1");
+    expect(filed.uncategorized_file).toBe("file_1");
+    expect(filed.service_documentation).toBe("file_1");
+    expect(filed.refund_policy_disclosure).toContain("24 hours");
+    expect(filed.uncategorized_text).toContain("Reminder email sent.");
+    expect(filed.customer_name).toBe("Jules Navarro");
+    for (const [key, value] of Object.entries(filed)) {
+      if (value.startsWith("file_")) expect(value).toBe("file_1");
+      else expect(key).not.toMatch(/_policy$|_documentation$|_communication$|_signature$|_file$/);
+    }
   });
 
   it("submits immediately when attendance is confirmed, otherwise about 48 hours before the deadline", () => {
