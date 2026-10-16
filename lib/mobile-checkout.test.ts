@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, membershipsForClass, nativeIntentPath, orderToAbandon, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl, unpaidCheckoutOrder } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, keepCheckoutOpen, membershipsForClass, mobileReturnTarget, nativeIntentPath, orderToAbandon, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl, unpaidCheckoutOrder } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -119,5 +119,19 @@ describe("live mobile checkout", () => {
     expect(unpaidCheckoutOrder({ orderId: "ord-free" })).toBeNull();
     expect(orderToAbandon({ reopenCheckout: true, orderId: "ord-1" })).toBeNull();
     expect(orderToAbandon({ reopenCheckout: false, orderId: "ord-1" })).toBe("ord-1");
+  });
+
+  it("keeps an open checkout when only promo or pay-with changes", () => {
+    expect(keepCheckoutOpen("details", true)).toBe(true);
+    expect(keepCheckoutOpen("seat", true)).toBe(false);
+    expect(orderToAbandon({ reopenCheckout: keepCheckoutOpen("details", true), orderId: "ord-1" })).toBeNull();
+    expect(orderToAbandon({ reopenCheckout: keepCheckoutOpen("seat", true), orderId: "ord-1" })).toBe("ord-1");
+  });
+
+  it("leaves web checkout on the https return page", () => {
+    expect(mobileReturnTarget({ flow: "booking", cancelled: false, web: true })).toBeNull();
+    expect(mobileReturnTarget({ flow: "booking", cancelled: true, web: true })).toBeNull();
+    expect(mobileReturnTarget({ flow: "booking", cancelled: false, web: false })).toBe("becreative://bookings?flow=booking&paid=1");
+    expect(mobileReturnTarget({ flow: "pack", cancelled: true, web: false })).toBe("becreative://bookings?flow=pack&cancelled=1");
   });
 });

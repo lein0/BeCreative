@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, membershipsForClass, orderToAbandon, resumeBookingPath, unpaidCheckoutOrder } from "../../../lib/mobile-client";
+import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, keepCheckoutOpen, membershipsForClass, orderToAbandon, resumeBookingPath, unpaidCheckoutOrder } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -66,8 +66,8 @@ export default function BookScreen() {
   const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
 
   useEffect(() => {
-    setReopenCheckout(false);
-  }, [sessionId, series, promo, usePack, useMembership]);
+    setReopenCheckout((open) => keepCheckoutOpen("seat", open));
+  }, [sessionId, series]);
 
   async function submit() {
     if (!detail || !user) {
