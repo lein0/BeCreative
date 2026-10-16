@@ -9,15 +9,35 @@ import * as schema from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
 import { renderEmail } from "@/lib/email-templates";
 import { triggerEnabled } from "@/lib/triggers";
-import { appOrigin, authSecret, googleAuthConfigured, isBootstrapAdminEmail, trustedProxyCidrs } from "@/lib/env";
+import { appOrigin, appleIdTokenAudiences, authSecret, googleIdTokenAudiences, isBootstrapAdminEmail, trustedProxyCidrs } from "@/lib/env";
 
 export function emailVerificationRequired() {
   return process.env.REQUIRE_EMAIL_VERIFICATION !== "false";
 }
 
 const origin = appOrigin();
-const googleClientId = process.env.GOOGLE_CLIENT_ID;
-const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+const googleAudiences = googleIdTokenAudiences();
+const appleAudiences = appleIdTokenAudiences();
+const socialProviders = {
+  ...(googleAudiences.length
+    ? {
+        google: {
+          clientId: googleAudiences.length === 1 ? googleAudiences[0]! : googleAudiences,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET || "id-token-only",
+        },
+      }
+    : {}),
+  ...(appleAudiences.length
+    ? {
+        apple: {
+          clientId: process.env.APPLE_CLIENT_ID || appleAudiences[0]!,
+          clientSecret: process.env.APPLE_CLIENT_SECRET || "id-token-only",
+          appBundleIdentifier: process.env.APPLE_APP_BUNDLE_IDENTIFIER,
+          audience: appleAudiences,
+        },
+      }
+    : {}),
+};
 
 export const auth = betterAuth({
   secret: authSecret(),
@@ -64,13 +84,11 @@ export const auth = betterAuth({
       await sendEmail({ to: [user.email], subject: rendered.subject, text: `${rendered.text}\n${url}`, html: rendered.html });
     },
   },
-  ...(googleAuthConfigured() && googleClientId && googleClientSecret
-    ? { socialProviders: { google: { clientId: googleClientId, clientSecret: googleClientSecret } } }
-    : {}),
+  ...(Object.keys(socialProviders).length ? { socialProviders } : {}),
   account: {
     accountLinking: {
       enabled: true,
-      trustedProviders: ["google"],
+      trustedProviders: ["google", "apple"],
     },
   },
   user: {

@@ -22,8 +22,24 @@ export function isBootstrapAdminEmail(email: string) {
   return adminEmails().includes(email.trim().toLowerCase());
 }
 
+function splitIds(value: string | undefined) {
+  return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
 export function googleAuthConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+
+export function googleIdTokenAudiences() {
+  return [...new Set([...splitIds(process.env.GOOGLE_CLIENT_ID), ...splitIds(process.env.GOOGLE_IOS_CLIENT_ID), ...splitIds(process.env.GOOGLE_ANDROID_CLIENT_ID)])];
+}
+
+export function appleIdTokenAudiences() {
+  return [...new Set([...splitIds(process.env.APPLE_CLIENT_ID), ...splitIds(process.env.APPLE_APP_BUNDLE_IDENTIFIER)])];
+}
+
+export function socialIdTokenReady(provider: "apple" | "google") {
+  return provider === "google" ? googleIdTokenAudiences().length > 0 : appleIdTokenAudiences().length > 0;
 }
 
 export function trustedProxyCidrs() {
