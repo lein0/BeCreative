@@ -76,7 +76,7 @@ App Store Connect and Play Console still need a human for the first app record, 
 
 ## Deep links the website must serve
 
-The app claims `https://<LINK_HOST>/c/...`, `/t/...` (including `/bio`, `/p/:pack`, `/m/:membership`), `/reset`, and `/verify-email`, plus `becreative://` copies of those paths. Promo links are the same paths with `?code=`.
+The app claims `https://<LINK_HOST>/c/...`, `/t/...` (including `/bio`, `/p/:pack`, `/m/:membership`), `/reset`, `/verify`, and `/verify-email`, plus `becreative://` copies of those paths. Promo links are the same paths with `?code=`. Password reset confirms on `/reset`. Email verification confirms on `/verify`.
 
 Host these two files on the website origin. This branch does not change the Next.js app. The web launch needs to serve them before universal links and Android App Links verify.
 
@@ -88,9 +88,9 @@ Sources are in `mobile/well-known/`. Replace `TEAMID` with the Apple Team ID and
 ## What Eric needs to provide
 
 1. Apple Developer Program membership, Team ID, and an App Store Connect app for `com.becreative.students` (or the bundle id he prefers).
-2. Sign in with Apple turned on for that App ID. A Services ID and key if Android should use Apple too. Google is offered, so Apple is required on iOS.
+2. Sign in with Apple turned on for that App ID. Set the server `APPLE_APP_BUNDLE_IDENTIFIER` to `com.becreative.students` and `APPLE_CLIENT_ID` to the Services ID. Android also needs `EXPO_PUBLIC_APPLE_SERVICE_ID` (that same Services ID) so the app can request an Apple identity token. Without those, `POST /auth/social` returns 503 and the app says Apple sign-in is not configured.
 3. Google Play Console account, the app record, and the same package name.
-4. Google Cloud OAuth client ids: `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`.
+4. A Google Cloud **web** OAuth client id in `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. Sign-in opens a browser redirect on iOS, Android, and web, and that redirect only works with the web client. Set the server `GOOGLE_CLIENT_ID` to the same value or Google sign-in returns 503. iOS and Android OAuth client ids are not used for this redirect.
 5. An Expo account (`EXPO_OWNER`) and a real `EAS_PROJECT_ID` from `eas init`.
 6. Push credentials through `eas credentials` (APNs key and FCM v1). No cert files belong in git.
 7. Stripe publishable key `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`, an Apple Pay merchant id, and the merchant id registered in the Apple Developer account and Stripe dashboard. The secret key stays on the server.
@@ -102,7 +102,7 @@ The website admin seed already treats `eric.leino@gmail.com` as an admin. That a
 
 ## App Review notes worth pasting
 
-Students pay independent teachers for in-person classes and wellness sessions (yoga, massage, sauna, and the rest). Those are real-world services, so checkout is Stripe PaymentSheet with Apple Pay and Google Pay, not in-app purchase. Account deletion is under You. Sign in with Apple is on the sign-in screen next to Google. The app has no teacher tools.
+Students pay independent teachers for in-person classes and wellness sessions (yoga, massage, sauna, and the rest). Those are real-world services, so checkout is Stripe PaymentSheet with Apple Pay and Google Pay, not in-app purchase. Account deletion is under You and asks for the password or a fresh Apple or Google sign-in before it removes the profile. Sign in with Apple is on the sign-in screen next to Google. The app has no teacher tools.
 
 ## Design
 

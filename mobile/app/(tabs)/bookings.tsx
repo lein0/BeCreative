@@ -1,15 +1,17 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
 import type { BookingListItem, Slot } from "@mobile/api/types";
 import { Body, Button, Card, ConfirmDialog, Display, Notice, Sheet, Title } from "@mobile/components/ui";
-import { whenLabel } from "@mobile/format";
+import { checkoutCancelMessage } from "../../../lib/mobile-client";
+import { placeLabel, rescheduleOptionLabel, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
 import { useAppTheme } from "@mobile/theme/theme";
 
 export default function Bookings() {
+  const { cancelled } = useLocalSearchParams<{ cancelled?: string }>();
   const { api, track, ready, user } = useSession();
   const router = useRouter();
   const { colors } = useAppTheme();
@@ -18,11 +20,17 @@ export default function Bookings() {
   const [error, setError] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [moveId, setMoveId] = useState<string | null>(null);
+  const [moveZone, setMoveZone] = useState<string | null>(null);
   const [options, setOptions] = useState<Slot[]>([]);
 
   const load = useCallback(() => {
     void api.bookings().then((result) => setRows(result.bookings)).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load bookings."));
   }, [api]);
+
+  useEffect(() => {
+    const note = checkoutCancelMessage(cancelled);
+    if (note) setMessage(note);
+  }, [cancelled]);
 
   useEffect(() => {
     if (!ready || !user) return;
@@ -51,6 +59,7 @@ export default function Bookings() {
     }
     const detail = await api.classDetail(row.slug);
     setOptions(detail.slots);
+    setMoveZone(row.timezone);
     setMoveId(row.id);
   }
 
@@ -75,7 +84,8 @@ export default function Bookings() {
         {rows.map((row) => (
           <Card key={row.id}>
             <Title>{row.title}</Title>
-            <Body muted>{row.status}</Body>
+            <Body>{whenLabel(row.startsAt, row.timezone)}</Body>
+            <Body muted>{placeLabel(row.location)} · {row.status}</Body>
             <Button label="Get help with this booking" tone="ghost" onPress={() => router.push(`/help/${row.id}`)} />
             {row.status !== "cancelled" ? <Button label="Cancel" tone="ghost" onPress={() => setCancelId(row.id)} testID={`cancel-${row.id}`} /> : null}
             {row.status === "confirmed" ? <Button label="Reschedule" tone="ink" onPress={() => void openMove(row)} /> : null}
@@ -93,7 +103,7 @@ export default function Bookings() {
       />
       <Sheet visible={Boolean(moveId)} title="Move this booking" onClose={() => setMoveId(null)}>
         {options.map((slot) => (
-          <Button key={slot.id} label={whenLabel(slot.startsAt)} tone="ghost" onPress={() => void moveTo(slot.id)} />
+          <Button key={slot.id} label={rescheduleOptionLabel(slot.startsAt, moveZone)} tone="ghost" onPress={() => void moveTo(slot.id)} />
         ))}
       </Sheet>
     </SafeAreaView>

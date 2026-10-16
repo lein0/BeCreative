@@ -54,7 +54,10 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   refundCancelsBooking,
+  nextBookingAfterReplace,
+  replacedCheckoutToAbandon,
   sessionLockOrder,
+  type HoldRelease,
 } from "@/lib/checkout-rules";
 import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
@@ -171,25 +174,38 @@ export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { 
   const stripe = touchStripe ? getStripe() : null;
   let released = 0;
   for (const order of stale) {
-    if (stripe && !(await stripeHoldCanRelease(stripe, order))) continue;
-    const updated = await db
-      .update(orders)
-      .set({ status: "expired", updatedAt: now })
-      .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
-      .returning({ id: orders.id });
-    if (!updated.length) continue;
-    const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
-    const seatLinks = linked.length
-      ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
-      : [];
-    await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
-    await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
-    await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
-    await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
-    await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
-    released += 1;
+    if ((await releaseOnePendingHold(order, now, stripe)) === "released") released += 1;
   }
   if (touchStripe) await expireStripeForReleasedHolds();
+  return released;
+}
+
+async function releaseOnePendingHold(order: typeof orders.$inferSelect, now: Date, stripe: ReturnType<typeof getStripe>): Promise<HoldRelease> {
+  if (stripe && !(await stripeHoldCanRelease(stripe, order))) return "blocked";
+  const updated = await db
+    .update(orders)
+    .set({ status: "expired", updatedAt: now })
+    .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
+    .returning({ id: orders.id });
+  if (!updated.length) return "skipped";
+  const linked = await db.select({ id: bookings.id }).from(bookings).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+  const seatLinks = linked.length
+    ? await db.select({ sessionId: bookingSessions.sessionId }).from(bookingSessions).where(inArray(bookingSessions.bookingId, linked.map((row) => row.id)))
+    : [];
+  await db.update(bookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(bookings.orderId, order.id), eq(bookings.status, "confirmed")));
+  await db.update(visitBookings).set({ status: "cancelled", cancelledAt: now }).where(and(eq(visitBookings.orderId, order.id), eq(visitBookings.status, "confirmed")));
+  await db.update(promoRedemptions).set({ reversed: true }).where(eq(promoRedemptions.orderId, order.id));
+  await db.update(membershipSubscriptions).set({ status: membershipStatusOnAbandon() }).where(eq(membershipSubscriptions.orderId, order.id));
+  await offerOpenedSeats(seatLinks.map((link) => link.sessionId));
+  return "released";
+}
+
+/** Drop the unpaid seat from a checkout the student replaced. Paid or in-flight Stripe charges stay. */
+export async function releaseReplacedCheckout(orderId: string, userId: string): Promise<HoldRelease> {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order || !replacedCheckoutToAbandon(order, userId)) return "skipped";
+  const released = await releaseOnePendingHold(order, new Date(), getStripe());
+  if (released === "released") await expireStripeForReleasedHolds();
   return released;
 }
 
@@ -279,11 +295,12 @@ function priceFields(quote: { listPriceCents: number; discountCents: number; stu
   };
 }
 
-export function checkoutPaths(returnToApp: boolean | undefined, flow: string, successPath: string, cancelPath: string) {
+export function checkoutPaths(returnToApp: boolean | undefined, flow: string, successPath: string, cancelPath: string, platform?: string) {
   if (!returnToApp) return { successPath, cancelPath };
+  const web = platform === "web" ? "&web=1" : "";
   return {
-    successPath: `/mobile/return?flow=${encodeURIComponent(flow)}&paid=1`,
-    cancelPath: `/mobile/return?flow=${encodeURIComponent(flow)}&cancelled=1`,
+    successPath: `/mobile/return?flow=${encodeURIComponent(flow)}&paid=1${web}`,
+    cancelPath: `/mobile/return?flow=${encodeURIComponent(flow)}&cancelled=1${web}`,
   };
 }
 
@@ -301,6 +318,7 @@ export async function bookSession(input: {
   paymentSheet?: boolean;
   platform?: string;
   returnToApp?: boolean;
+  abandonOrderId?: string;
 }): Promise<{ error?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; orderId?: string; waitlisted?: boolean; alreadyBooked?: boolean; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
   const attr = await attribution();
   const codeInput = checkoutPromoCode(input.code, attr.code);
@@ -308,6 +326,11 @@ export async function bookSession(input: {
   const fee = await fees();
   const now = new Date();
   await releaseExpiredCheckoutHolds(now);
+  if (input.abandonOrderId) {
+    const release = await releaseReplacedCheckout(input.abandonOrderId, input.userId);
+    const next = nextBookingAfterReplace(release);
+    if (!next.proceed) return { error: next.error };
+  }
 
   try {
     const created = await db.transaction(async (tx) => {
@@ -638,7 +661,7 @@ export async function bookSession(input: {
             return { orderId: created.orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "", ...priceFields(created.quote) };
           }
         }
-        const paths = checkoutPaths(input.returnToApp, "booking", `/bookings?paid=1`, `/c/${created.klass.slug}?cancelled=1`);
+        const paths = checkoutPaths(input.returnToApp, "booking", `/bookings?paid=1`, `/c/${created.klass.slug}?cancelled=1`, input.platform);
         const session = await createCheckout({
           name: created.klass.title,
           amountCents: created.quote.studentPaysCents,
@@ -1113,7 +1136,7 @@ async function redemptionCounts(promoCodeId: string, userId: string) {
   return { totalRedemptions: Number(totals?.count ?? 0), customerRedemptions: Number(mine?.count ?? 0) };
 }
 
-export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; returnToApp?: boolean }): Promise<{ error?: string; ok?: boolean; orderId?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
+export async function purchaseOffer(input: { userId: string; email: string; kind: "pack" | "membership"; id: string; code?: string; paymentSheet?: boolean; platform?: string; returnToApp?: boolean }): Promise<{ error?: string; ok?: boolean; orderId?: string; checkoutUrl?: string; clientSecret?: string; publishableKey?: string; listPriceCents?: number; discountCents?: number; studentPaysCents?: number; codeApplied?: string | null }> {
   const fee = await fees();
   const attr = await attribution();
   const normalized = checkoutPromoCode(input.code, attr.code);
@@ -1218,7 +1241,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
       }
     }
     if (status === "pending" && teacher) {
-      const paths = checkoutPaths(input.returnToApp, "pack", "/bookings?pack=1", `/t/${teacher.slug}`);
+      const paths = checkoutPaths(input.returnToApp, "pack", "/bookings?pack=1", `/t/${teacher.slug}`, input.platform);
       try {
         const session = await createCheckout({
           name: pack.name,
@@ -1336,7 +1359,7 @@ export async function purchaseOffer(input: { userId: string; email: string; kind
     return { error: error instanceof Error ? error.message : "Could not buy." };
   }
   if (status === "pending" && teacher) {
-    const paths = checkoutPaths(input.returnToApp, "membership", "/bookings?membership=1", `/t/${teacher.slug}`);
+    const paths = checkoutPaths(input.returnToApp, "membership", "/bookings?membership=1", `/t/${teacher.slug}`, input.platform);
     let session: { id: string; url: string | null } | null = null;
     try {
       session = await createCheckout({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkoutSessionOutcome } from "./outcome";
+import { checkoutReturnAction, checkoutSessionOutcome } from "./outcome";
 
 describe("checkout session outcome", () => {
   it("does not treat a cancelled return or a closed sheet as a paid booking", () => {
@@ -13,5 +13,12 @@ describe("checkout session outcome", () => {
     expect(checkoutSessionOutcome({ type: "success", url: "becreative://bookings?flow=booking&paid=1" })).toBe("success");
     expect(checkoutSessionOutcome({ type: "success", url: "https://classes.becreative.app/bookings?pack=1" })).toBe("success");
     expect(checkoutSessionOutcome({ type: "success", url: "https://classes.becreative.app/bookings?membership=1" })).toBe("success");
+  });
+
+  it("keeps a cancelled pack or membership checkout on the offer", () => {
+    expect(checkoutReturnAction("success")).toEqual({ proceed: true, message: null });
+    expect(checkoutReturnAction("cancel").proceed).toBe(false);
+    expect(checkoutReturnAction("cancel").message).toMatch(/cancelled/i);
+    expect(checkoutReturnAction("dismiss").proceed).toBe(false);
   });
 });

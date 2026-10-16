@@ -9,6 +9,8 @@
           { "/": "/t/*" },
           { "/": "/reset" },
           { "/": "/reset?*" },
+          { "/": "/verify" },
+          { "/": "/verify?*" },
           { "/": "/verify-email" },
           { "/": "/verify-email?*" }
         ]

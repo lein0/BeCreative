@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError } from "@mobile/api";
-import type { ClassDetail, WalletPack } from "@mobile/api/types";
+import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingSubmitLock, checkoutFollowsBooking, resumeBookingPath } from "../../../lib/mobile-client";
+import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, keepCheckoutOpen, membershipsForClass, orderToAbandon, resumeBookingPath, unpaidCheckoutOrder, waiverLoadNotice, waiverSignGate, withoutStaleWaiverError } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -23,13 +23,18 @@ export default function BookScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [promo, setPromo] = useState(typeof code === "string" ? code : attribution && "code" in attribution && attribution.code ? attribution.code : "");
   const [usePack, setUsePack] = useState(false);
+  const [useMembership, setUseMembership] = useState(false);
   const [packs, setPacks] = useState<WalletPack[]>([]);
+  const [memberships, setMemberships] = useState<WalletMembership[]>([]);
   const [agreed, setAgreed] = useState(false);
   const [signedName, setSignedName] = useState(user?.name ?? "");
   const [waiverBody, setWaiverBody] = useState<string | null>(null);
-  const [waiverSigned, setWaiverSigned] = useState(false);
+  const [waiver, setWaiver] = useState<{ required: boolean; signed: boolean } | null>(null);
+  const [waiverFailed, setWaiverFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reopenCheckout, setReopenCheckout] = useState(false);
+  const [checkoutOrderId, setCheckoutOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.name) setSignedName((current) => current || user.name);
@@ -37,56 +42,101 @@ export default function BookScreen() {
 
   useEffect(() => {
     if (!slug || !ready) return;
+    let stale = false;
+    setWaiver(null);
+    setWaiverFailed(false);
+    setWaiverBody(null);
+    setError((current) => withoutStaleWaiverError(current));
     void api.classDetail(slug).then((next) => {
+      if (stale) return;
       setDetail(next);
       const preferred = typeof sessionParam === "string" ? sessionParam : null;
       setSessionId(next.slots.some((slot) => slot.id === preferred) ? preferred : next.slots[0]?.id ?? null);
       void track("booking_started", { slug: next.class.slug });
-      if (user) {
-        void api.waiver(next.teacher.slug).then((waiver) => {
-          setWaiverBody(waiver.body);
-          setWaiverSigned(waiver.signed);
-          if (waiver.signed) setAgreed(true);
-        }).catch(() => undefined);
-      }
-    }).catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Could not load this class."));
-    if (user) void api.wallet().then((wallet) => setPacks(wallet.packs.filter((item) => item.remaining > 0))).catch(() => undefined);
+      if (!user) return;
+      return api.waiver(next.teacher.slug).then((loaded) => {
+        if (stale) return;
+        setWaiverBody(loaded.body);
+        setWaiver({ required: loaded.required, signed: loaded.signed });
+        setWaiverFailed(false);
+        setError((current) => withoutStaleWaiverError(current));
+      }).catch(() => {
+        if (stale) return;
+        setWaiverFailed(true);
+        const notice = waiverLoadNotice(next.signatureRequired, true);
+        setError((current) => notice ?? withoutStaleWaiverError(current));
+      });
+    }).catch((err: unknown) => {
+      if (!stale) setError(err instanceof ApiError ? err.message : "Could not load this class.");
+    });
+    if (user) void api.wallet().then((wallet) => {
+      setPacks(wallet.packs);
+      setMemberships(wallet.memberships);
+    }).catch(() => undefined);
+    return () => {
+      stale = true;
+    };
   }, [api, ready, sessionParam, slug, track, user]);
 
   const eligiblePacks = detail ? packsForClass(packs, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
+  const eligibleMemberships = detail ? membershipsForClass(memberships, detail.class.id, detail.class.categoryId ?? "", detail.teacher.id) : [];
+  const waiverGate = waiverSignGate({
+    classRequiresSignature: Boolean(user && detail?.signatureRequired),
+    waiver,
+    loadFailed: waiverFailed,
+    signedName,
+  });
+
+  useEffect(() => {
+    if (!waiverGate.blockReason) setError((current) => withoutStaleWaiverError(current));
+  }, [waiverGate.blockReason]);
   const seriesPrice = detail?.class.seriesPriceCents ?? null;
   const shownPrice = detail ? bookDisplayCents({ series, sessionPriceCents: detail.class.priceCents, seriesPriceCents: seriesPrice }) : null;
+
+  useEffect(() => {
+    setReopenCheckout((open) => keepCheckoutOpen("seat", open));
+  }, [sessionId, series]);
 
   async function submit() {
     if (!detail || !user) {
       router.push({ pathname: "/login", params: { next: resumeBookingPath({ slug: slug ?? "", sessionId, series, code: promo }) } });
       return;
     }
-    if (!submitLock.current.tryAcquire()) return;
+    const plan = bookingContinuePlan(reopenCheckout, submitLock.current);
+    if (plan.action === "reopen") {
+      router.push("/checkout");
+      return;
+    }
+    if (plan.action !== "book") return;
+    const abandonOrderId = orderToAbandon({ reopenCheckout, orderId: checkoutOrderId }) ?? undefined;
     setBusy(true);
     setError(null);
-    let held = false;
+    let openedCheckout = false;
     try {
-      if (!agreed && !waiverSigned) {
+      if (!agreed) {
         setError("Accept the cancellation policy.");
         return;
       }
-      if (waiverBody && !waiverSigned) {
-        if (!signedName.trim()) {
-          setError("Type your name to sign.");
-          return;
-        }
+      if (waiverGate.blockReason) {
+        setError(waiverGate.blockReason);
+        return;
+      }
+      if (waiverGate.readyToSign) {
         await api.signWaiver(detail.teacher.slug, signedName.trim());
-        setWaiverSigned(true);
+        setWaiver({ required: true, signed: true });
       }
       const result = await api.book({
         sessionId: series ? undefined : sessionId ?? undefined,
         classId: detail.class.id,
         series,
         code: promo.trim() || undefined,
-        payWith: usePack && eligiblePacks[0] ? `pack:${eligiblePacks[0].id}` : "cash",
+        payWith: bookingPayWith({
+          membershipId: !series && useMembership ? eligibleMemberships[0]?.id : null,
+          packId: !series && usePack ? eligiblePacks[0]?.id : null,
+        }),
         policyAccepted: true,
         paymentSheet: Platform.OS !== "web",
+        abandonOrderId,
       });
       if (checkoutFollowsBooking(result) === "bookings") {
         setError("You already have this series booked.");
@@ -96,15 +146,15 @@ export default function BookScreen() {
       if (result.codeApplied) await track("promo_applied", { code: result.codeApplied });
       await track("checkout_started", { orderId: result.orderId ?? "" });
       setCheckoutDraft(draftFromResult(detail.class.title, result));
+      setCheckoutOrderId(unpaidCheckoutOrder(result));
       router.push("/checkout");
-      held = true;
+      openedCheckout = true;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not start checkout.");
     } finally {
-      if (!held) {
-        submitLock.current.release();
-        setBusy(false);
-      }
+      const settled = plan.finish(openedCheckout);
+      setBusy(settled.busy);
+      setReopenCheckout(settled.reopenCheckout);
     }
   }
 
@@ -124,17 +174,15 @@ export default function BookScreen() {
         {!series ? detail.slots.map((slot) => (
           <Button key={slot.id} label={`${whenLabel(slot.startsAt)}${slot.spots != null ? ` · ${slot.spots} spots` : ""}`} tone={sessionId === slot.id ? "accent" : "ghost"} onPress={() => setSessionId(slot.id)} />
         )) : <Body>All upcoming dates, one price.</Body>}
-        {eligiblePacks.length && !series ? <ToggleRow label={`Use ${eligiblePacks[0]!.name} (${eligiblePacks[0]!.remaining} left)`} value={usePack} onChange={setUsePack} /> : null}
+        {eligibleMemberships.length && !series ? <ToggleRow label={`Use ${eligibleMemberships[0]!.name}`} value={useMembership} onChange={(value) => { setUseMembership(value); if (value) setUsePack(false); }} /> : null}
+        {eligiblePacks.length && !series ? <ToggleRow label={`Use ${eligiblePacks[0]!.name} (${eligiblePacks[0]!.remaining} left)`} value={usePack} onChange={(value) => { setUsePack(value); if (value) setUseMembership(false); }} /> : null}
         <Field label="Promo code" value={promo} onChangeText={setPromo} testID="promo" />
         <Card>
           <Body>Cancellation policy</Body>
           <Body muted>{waiverBody || "Full refund until 24 hours before the start. Studio credit until 2 hours before. After that the seat is not refunded."}</Body>
-          {waiverSigned ? <Body>You already signed this waiver.</Body> : (
-            <>
-              <ToggleRow label="I agree" value={agreed} onChange={setAgreed} />
-              {waiverBody ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
-            </>
-          )}
+          {waiver?.signed && detail.signatureRequired ? <Body>You already signed this waiver.</Body> : null}
+          <ToggleRow label="I agree" value={agreed} onChange={setAgreed} />
+          {waiverGate.showNameField ? <Field label="Type your name to sign" value={signedName} onChangeText={setSignedName} testID="waiver-name" /> : null}
         </Card>
         {error ? <Notice>{error}</Notice> : null}
         <Body>Price {money(shownPrice ?? 0)}. The discount is applied at checkout.</Body>

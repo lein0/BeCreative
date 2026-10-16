@@ -1,5 +1,23 @@
 import type { PriceQuote } from "@/lib/pricing";
 
+/** Only the student's own pending checkout can be released when they book a different seat. */
+export function replacedCheckoutToAbandon(order: { userId: string; status: string } | null | undefined, userId: string) {
+  return Boolean(order && order.userId === userId && order.status === "pending");
+}
+
+export type HoldRelease = "released" | "blocked" | "skipped";
+
+/** A prior PaymentIntent that is processing or already paid must not be replaced by a second hold. */
+export function nextBookingAfterReplace(release: HoldRelease): { proceed: boolean; error?: string } {
+  if (release === "blocked") {
+    return {
+      proceed: false,
+      error: "The previous checkout is already paid or still processing. Finish that payment before booking again.",
+    };
+  }
+  return { proceed: true };
+}
+
 /** Same-origin relative path. Rejects protocol-relative URLs and backslashes. */
 export function safeNextPath(next: string | null | undefined, fallback = "/explore") {
   const value = (next ?? "").trim();

@@ -16,6 +16,8 @@ import {
   refundCancelsBooking,
   renewalChargeSplit,
   safeNextPath,
+  nextBookingAfterReplace,
+  replacedCheckoutToAbandon,
   sessionLockOrder,
   studioOwnsResource,
   unattendedRefundCents,
@@ -51,6 +53,24 @@ describe("paid packs receive credits when checkout completes", () => {
     expect(packCreditsOnCreate({ awaitingCardPayment: true, creditCount: 5 })).toBe(0);
     expect(packCreditsOnCreate({ awaitingCardPayment: false, creditCount: 5 })).toBe(5);
     expect(packCreditsOnPayment(5)).toBe(5);
+  });
+});
+
+describe("replaced checkout", () => {
+  it("releases only the student's own pending order", () => {
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "sam")).toBe(true);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "paid" }, "sam")).toBe(false);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "other")).toBe(false);
+    expect(replacedCheckoutToAbandon(null, "sam")).toBe(false);
+  });
+
+  it("does not open a second hold when the prior payment is still collecting", () => {
+    expect(nextBookingAfterReplace("blocked")).toEqual({
+      proceed: false,
+      error: "The previous checkout is already paid or still processing. Finish that payment before booking again.",
+    });
+    expect(nextBookingAfterReplace("released").proceed).toBe(true);
+    expect(nextBookingAfterReplace("skipped").proceed).toBe(true);
   });
 });
 

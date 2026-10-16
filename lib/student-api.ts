@@ -22,6 +22,12 @@ export function placeFields(location: { lat: number; lng: number; neighborhood: 
   };
 }
 
+/** A virtual class is online even when the studio row still has a map pin. */
+export function classPlace(delivery: string | null | undefined, location: Parameters<typeof placeFields>[0]) {
+  if (delivery === "virtual") return null;
+  return placeFields(location);
+}
+
 export function classNeedsSignature(waiverBody: string | null | undefined) {
   return Boolean(waiverBody?.trim());
 }
