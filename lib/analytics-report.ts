@@ -1,5 +1,6 @@
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { STUDENT_FUNNEL, TEACHER_FUNNEL } from "@/lib/analytics-events";
+import { LA_TIMEZONE } from "@/lib/constants";
 import { countConversionsAfterExposure, funnelReport, orderedByKey, twoProportionZ, variantScore } from "@/lib/analytics-math";
 import { db } from "@/lib/db";
 import {
@@ -193,6 +194,13 @@ export async function teacherFunnel(filter: AnalyticsFilter) {
   return funnelReport(steps);
 }
 
+export function cohortMonth(date: Date, timeZone = LA_TIMEZONE) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit" }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  return `${year}-${month}`;
+}
+
 export async function cohortRetention(filter: AnalyticsFilter) {
   const windowStart = new Date(filter.to.getTime() - 120 * 86_400_000);
   const inWindow = await db.select({ userId: bookings.userId, createdAt: bookings.createdAt }).from(bookings).where(and(eq(bookings.status, "confirmed"), gte(bookings.createdAt, windowStart), lte(bookings.createdAt, filter.to), sql`${bookings.userId} is not null`));
@@ -215,7 +223,7 @@ export async function cohortRetention(filter: AnalyticsFilter) {
   for (const [userId, dates] of datesByUser) {
     const first = firstByUser.get(userId);
     if (!first || first.getTime() < windowStart.getTime() || first.getTime() > filter.to.getTime()) continue;
-    const key = first.toISOString().slice(0, 7);
+    const key = cohortMonth(first);
     const bucket = cohorts.get(key) ?? { size: 0, month1: 0, month2: 0 };
     bucket.size += 1;
     if (dates.some((date) => date.getTime() - first.getTime() >= 28 * 86_400_000 && date.getTime() - first.getTime() < 62 * 86_400_000)) bucket.month1 += 1;

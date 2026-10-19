@@ -155,8 +155,8 @@ export async function deliverOutbox(outboxId: string, phone?: string | null, aud
   if (channels.push) {
     await sendWebPush({ endpoint: "", title: row.title, body: row.body, enabled: settings?.webPushEnabled ?? false });
   }
-  const tokens = await db.select().from(deviceTokens).where(eq(deviceTokens.userId, row.userId));
-  if (devicePushWanted(pref?.push, tokens.length)) {
+  const tokens = person?.deletedAt ? [] : await db.select().from(deviceTokens).where(eq(deviceTokens.userId, row.userId));
+  if (!person?.deletedAt && devicePushWanted(pref?.push, tokens.length)) {
     try {
       const { sendDevicePush } = await import("@/lib/device-push");
       await sendDevicePush(tokens, row.title, row.body, row.href || undefined);

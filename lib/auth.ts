@@ -106,6 +106,7 @@ export const auth = betterAuth({
           if (!userId) return;
           const [row] = await db.select({ email: schema.user.email }).from(schema.user).where(eq(schema.user.id, userId)).limit(1);
           if (row) await ensureAdminByEmail(row.email);
+          await stitchSessionUser(userId);
         },
       },
     },
@@ -114,6 +115,13 @@ export const auth = betterAuth({
 });
 
 export type SessionUser = typeof auth.$Infer.Session.user;
+
+/** Email login stitches in the action. Google sign-in only creates a session, so stitch here too. */
+export async function stitchSessionUser(userId: string) {
+  if (!userId) return;
+  const { stitchFromCookies } = await import("@/lib/analytics");
+  await stitchFromCookies(userId);
+}
 
 async function authTriggerOn(id: string) {
   const rows = await db.select().from(schema.triggerOverrides);

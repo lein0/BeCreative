@@ -46,6 +46,7 @@ const userIds: string[] = [];
 const teacherIds: string[] = [];
 const categoryIds: string[] = [];
 const orderIds: string[] = [];
+const locationIds: string[] = [];
 const promoIds: string[] = [];
 const experimentIds: string[] = [];
 
@@ -82,6 +83,7 @@ describe("PR 7 weekday Bugbot sweep", () => {
     await db.delete(schema.analyticsEvents).where(eq(schema.analyticsEvents.path, `/${tag}-shared`));
     await db.delete(schema.rateBuckets).where(inArray(schema.rateBuckets.key, ["api-signin:203.0.113.77", "api-track:unknown", "api-track:203.0.113.41"]));
     if (teacherIds.length) await db.delete(schema.teachers).where(inArray(schema.teachers.id, teacherIds));
+    if (locationIds.length) await db.delete(schema.locations).where(inArray(schema.locations.id, locationIds));
     if (userIds.length) await db.delete(schema.user).where(inArray(schema.user.id, userIds));
     if (categoryIds.length) await db.delete(schema.categories).where(inArray(schema.categories.id, categoryIds));
   });
@@ -121,6 +123,10 @@ describe("PR 7 weekday Bugbot sweep", () => {
       listPriceCents: 4000,
       studentPaysCents: 4000,
       paymentPath: "card",
+      ref: `${tag}-pack-ref`,
+      utmSource: `${tag}-ig`,
+      utmMedium: "social",
+      utmCampaign: "fall",
     });
     await dispatchStripeEvent({
       type: "payment_intent.succeeded",
@@ -128,6 +134,7 @@ describe("PR 7 weekday Bugbot sweep", () => {
     } as never);
     const rows = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "checkout_completed")));
     expect(rows.map((row) => row.platform)).toEqual(["ios"]);
+    expect(rows[0]).toMatchObject({ utmSource: `${tag}-ig`, utmMedium: "social", utmCampaign: "fall", shareCode: `${tag}-pack-ref` });
     const offers = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "offer_purchased")));
     expect(offers.map((row) => row.platform)).toEqual(["ios"]);
     await fulfillPaidCheckout(orderId, `${tag}-pi`, null, "android");
@@ -282,6 +289,23 @@ describe("PR 7 weekday Bugbot sweep", () => {
     expect(email.text).toContain("/api/r");
     expect(email.text).toContain("c=email");
     expect(sendDevicePush).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ token: `${tag}-on` })]), "Booked", "See you there.", "/bookings");
+    const removed = await person("push-deleted");
+    await db.update(schema.user).set({ deletedAt: new Date() }).where(eq(schema.user.id, removed));
+    await db.insert(schema.notificationPreferences).values({
+      id: crypto.randomUUID(),
+      userId: removed,
+      event: "booking.confirmed",
+      email: false,
+      inApp: false,
+      sms: false,
+      push: true,
+    });
+    await db.insert(schema.deviceTokens).values({ id: crypto.randomUUID(), userId: removed, token: `${tag}-deleted`, platform: "ios", provider: "expo" });
+    const deletedOutbox = crypto.randomUUID();
+    await db.insert(schema.notificationOutbox).values({ id: deletedOutbox, userId: removed, event: "booking.confirmed", title: "Booked", body: "See you there.", href: "/bookings" });
+    vi.mocked(sendDevicePush).mockClear();
+    await deliverOutbox(deletedOutbox);
+    expect(sendDevicePush).not.toHaveBeenCalled();
     const [row] = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.id, outboxId));
     expect(row?.status).toBe("sent");
   });
@@ -400,11 +424,24 @@ describe("PR 7 weekday Bugbot sweep", () => {
     const teacherId = crypto.randomUUID();
     teacherIds.push(teacherId);
     await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-attr-studio`, studioName: tag, status: "approved", bio: "" });
+    const locationId = crypto.randomUUID();
+    locationIds.push(locationId);
+    await db.insert(schema.locations).values({
+      id: locationId,
+      addressLine1: "1 Sunset",
+      city: "Silver Lake",
+      state: "CA",
+      postalCode: "90026",
+      neighborhood: "Silver Lake",
+      lat: 34.09,
+      lng: -118.27,
+    });
     const classId = crypto.randomUUID();
     await db.insert(schema.classes).values({
       id: classId,
       teacherId,
       categoryId,
+      locationId,
       slug: `${tag}-attr-class`,
       title: "Free study",
       skillLevel: "all",
@@ -435,6 +472,16 @@ describe("PR 7 weekday Bugbot sweep", () => {
     expect(order?.utmSource).toBe("instagram");
     expect(order?.utmMedium).toBe("social");
     expect(order?.utmCampaign).toBe("fall");
+    const [paid] = await db.select().from(schema.analyticsEvents).where(and(eq(schema.analyticsEvents.userId, student), eq(schema.analyticsEvents.name, "checkout_completed")));
+    expect(paid).toMatchObject({
+      utmSource: "instagram",
+      utmMedium: "social",
+      utmCampaign: "fall",
+      shareCode: `${tag}-bio`,
+      vertical: "creative",
+      category: `${tag}-attr`,
+      city: "Silver Lake",
+    });
     if (order) orderIds.push(order.id);
   });
 
@@ -490,6 +537,7 @@ describe("PR 7 weekday Bugbot sweep", () => {
     const owner = await person("cohort-owner");
     const returning = await person("cohort-return");
     const firstTime = await person("cohort-new");
+    const evening = await person("cohort-evening");
     const teacherId = crypto.randomUUID();
     teacherIds.push(teacherId);
     await db.insert(schema.teachers).values({ id: teacherId, userId: owner, slug: `${tag}-cohort-studio`, studioName: tag, status: "approved", bio: "" });
@@ -513,12 +561,14 @@ describe("PR 7 weekday Bugbot sweep", () => {
     await db.insert(schema.bookings).values([
       { id: crypto.randomUUID(), userId: returning, classId, kind: "session", status: "confirmed", createdAt: new Date("2034-01-01T00:00:00Z") },
       { id: crypto.randomUUID(), userId: returning, classId, kind: "session", status: "confirmed", createdAt: new Date(to.getTime() - 10 * day) },
-      { id: crypto.randomUUID(), userId: firstTime, classId, kind: "session", status: "confirmed", createdAt: new Date("2035-04-01T00:00:00Z") },
+      { id: crypto.randomUUID(), userId: firstTime, classId, kind: "session", status: "confirmed", createdAt: new Date("2035-04-01T18:00:00Z") },
       { id: crypto.randomUUID(), userId: firstTime, classId, kind: "session", status: "confirmed", createdAt: new Date(to.getTime() - 27 * day) },
+      { id: crypto.randomUUID(), userId: evening, classId, kind: "session", status: "confirmed", createdAt: new Date("2035-04-01T06:30:00Z") },
     ]);
     const rows = await cohortRetention({ from: new Date("2035-01-01T00:00:00Z"), to });
     expect(rows.find(([key]) => key === "2035-05")).toBeUndefined();
     expect(rows.find(([key]) => key === "2035-04")?.[1]).toEqual({ size: 1, month1: 1, month2: 0 });
+    expect(rows.find(([key]) => key === "2035-03")?.[1]).toEqual({ size: 1, month1: 0, month2: 0 });
   });
 
   it("keeps tracking redirects on this site when the target has a backslash", async () => {

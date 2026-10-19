@@ -5,9 +5,11 @@ import { db } from "@/lib/db";
 import {
   bookingSessions,
   bookings,
+  categories,
   classes,
   creditLedger,
   introRedemptions,
+  locations,
   studioCredits,
   memberships,
   membershipSubscriptions,
@@ -106,6 +108,21 @@ async function attribution() {
 function givenAttribution(value: string | null | undefined) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+async function classDimensions(classId: string) {
+  const [row] = await db
+    .select({ vertical: categories.vertical, category: categories.slug, city: locations.city })
+    .from(classes)
+    .innerJoin(categories, eq(categories.id, classes.categoryId))
+    .leftJoin(locations, eq(locations.id, classes.locationId))
+    .where(eq(classes.id, classId))
+    .limit(1);
+  return { vertical: row?.vertical ?? null, category: row?.category ?? null, city: row?.city ?? null };
+}
+
+function attributionFields(attr: { ref: string | null; utmSource: string | null; utmMedium: string | null; utmCampaign: string | null }) {
+  return { shareCode: attr.ref, utmSource: attr.utmSource, utmMedium: attr.utmMedium, utmCampaign: attr.utmCampaign };
 }
 
 function attributionFrom(input: { ref?: string | null; utmSource?: string | null; utmMedium?: string | null; utmCampaign?: string | null }, cookie: Awaited<ReturnType<typeof attribution>>) {
@@ -621,11 +638,12 @@ export async function bookSession(input: {
       return { error: ready.reason };
     }
     const { capture } = await import("@/lib/analytics");
+    const tracked = { userId: input.userId, platform: input.platform, ...attributionFields(attr), ...(await classDimensions(created.klass.id)) };
     await capture({ name: "booking_started", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId, classId: created.klass.id } });
     if (created.quote.discountCents > 0) await capture({ name: "promo_applied", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId } });
     if (created.status === "pending") {
       try {
-        await capture({ name: "checkout_started", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId } });
+        await capture({ name: "checkout_started", ...tracked, properties: { orderId: created.orderId } });
         if (input.paymentSheet) {
           const intent = await createPaymentIntent({
             amountCents: created.quote.studentPaysCents,
@@ -670,7 +688,7 @@ export async function bookSession(input: {
     });
     await notifyTeacherOfBooking({ teacherUserId: created.teacher.userId, studentName: input.name, title: created.klass.title, href: `/teach` });
     await notifyStudentConfirmed({ userId: input.userId, title: created.klass.title, href: `/c/${created.klass.slug}` });
-    await capture({ name: "checkout_completed", userId: input.userId, platform: input.platform, properties: { orderId: created.orderId, classId: created.klass.id, teacherId: created.teacher.id } });
+    await capture({ name: "checkout_completed", ...tracked, properties: { orderId: created.orderId, classId: created.klass.id, teacherId: created.teacher.id, kind: "booking" } });
     return { orderId: created.orderId };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Could not book." };
@@ -928,8 +946,19 @@ function orderMetadata(orderId: string, userId: string, platform?: string | null
 async function recordOfferMoney(userId: string, orderId: string, kind: string, platform?: string | null) {
   const { capture } = await import("@/lib/analytics");
   const named = platformName(platform);
-  await capture({ name: "checkout_completed", userId, platform: named, properties: { orderId, kind } });
-  if (kind === "pack" || kind === "membership") await capture({ name: "offer_purchased", userId, platform: named, properties: { orderId, kind } });
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  const [booking] = await db.select({ classId: bookings.classId }).from(bookings).where(eq(bookings.orderId, orderId)).limit(1);
+  const tracked = {
+    userId,
+    platform: named,
+    shareCode: order?.ref ?? null,
+    utmSource: order?.utmSource ?? null,
+    utmMedium: order?.utmMedium ?? null,
+    utmCampaign: order?.utmCampaign ?? null,
+    ...(booking ? await classDimensions(booking.classId) : { vertical: null, category: null, city: null }),
+  };
+  await capture({ name: "checkout_completed", ...tracked, properties: { orderId, kind } });
+  if (kind === "pack" || kind === "membership") await capture({ name: "offer_purchased", ...tracked, properties: { orderId, kind } });
 }
 
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null, platform?: string | null) {

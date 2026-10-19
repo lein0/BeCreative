@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { account, apiTokens, bookings, notifications, orders, session, user } from "@/lib/db/schema";
+import { account, apiTokens, bookings, deviceTokens, notifications, orders, session, user } from "@/lib/db/schema";
 
 export async function exportAccount(userId: string) {
   const [person] = await db.select().from(user).where(eq(user.id, userId)).limit(1);
@@ -36,6 +36,7 @@ export async function deleteAccount(userId: string) {
     emailUnsubscribed: true,
   }).where(eq(user.id, userId));
   await revokeApiTokens(userId);
+  await db.delete(deviceTokens).where(eq(deviceTokens.userId, userId));
   await db.delete(session).where(eq(session.userId, userId));
   await db.delete(account).where(eq(account.userId, userId));
 }

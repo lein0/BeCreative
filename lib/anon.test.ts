@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { experimentSubject } from "@/lib/anon";
 import { capture, stitchFromCookies } from "@/lib/analytics";
+import { stitchSessionUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { analyticsEvents } from "@/lib/db/schema";
 import { subjectFromCookies } from "@/lib/experiments";
@@ -72,6 +74,20 @@ describe("first-visit experiment subject", () => {
     await stitchFromCookies("stitched-user");
     const [stitched] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
     expect(stitched?.userId).toBe("stitched-user");
+    await db.delete(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
+  });
+
+  it("stitches anonymous events when a session is created for Google sign-in", async () => {
+    state.cookie = "google-visitor";
+    state.header = null;
+    const saved = await capture({ name: "page_view", path: "/from-google", userId: null });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    await stitchSessionUser("google-user");
+    const [row] = await db.select().from(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
+    expect(row?.anonymousId).toBe("google-visitor");
+    expect(row?.userId).toBe("google-user");
+    expect(readFileSync("lib/auth.ts", "utf8")).toContain("await stitchSessionUser(userId)");
     await db.delete(analyticsEvents).where(eq(analyticsEvents.id, saved.id));
   });
 

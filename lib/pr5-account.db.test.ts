@@ -30,9 +30,11 @@ describe("deleted accounts", () => {
     seedTable(schema.account, [{ id: "a1", userId: "u1", providerId: "google", accountId: "google-1" }]);
     seedTable(schema.session, [{ id: "s1", userId: "u1", token: "tok" }]);
     seedTable(schema.apiTokens, [{ id: "t1", userId: "u1", tokenHash: "hash", expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null }]);
+    seedTable(schema.deviceTokens, [{ id: "d1", userId: "u1", token: "ExponentPushToken[gone]", platform: "ios", provider: "expo" }]);
     await deleteAccount("u1");
     expect(readTable(schema.account)).toHaveLength(0);
     expect(readTable(schema.session)).toHaveLength(0);
+    expect(readTable(schema.deviceTokens)).toHaveLength(0);
     expect(readTable(schema.apiTokens)[0]?.revokedAt).toBeInstanceOf(Date);
     expect(readTable(schema.user)[0]?.email).toBe("deleted+u1@users.invalid");
     expect(readTable(schema.user)[0]?.deletedAt).toBeInstanceOf(Date);

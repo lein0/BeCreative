@@ -44,6 +44,15 @@ async function headerValue(name: string) {
   }
 }
 
+async function signedInUserId() {
+  try {
+    const { getActor } = await import("@/lib/actor");
+    return (await getActor())?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Cookie when the browser already has one, otherwise the id the proxy minted on this request. */
 async function requestAnonymousId() {
   return experimentSubject({ cookie: await cookieValue(ANON_COOKIE), header: await headerValue(ANON_HEADER) });
@@ -74,6 +83,7 @@ export async function capture(input: TrackInput) {
   if (!isCatalogEvent(input.name)) return { ok: false as const };
   const supplied = input.anonymousId == null ? null : experimentSubject({ cookie: input.anonymousId });
   const anonymousId = supplied ?? (await requestAnonymousId());
+  const userId = input.userId !== undefined ? input.userId : await signedInUserId();
   const consent = input.consent ?? (await cookieValue("bc_cookie")) === "1";
   const id = crypto.randomUUID();
   const platform: PlatformName = platformName(input.platform);
@@ -81,7 +91,7 @@ export async function capture(input: TrackInput) {
     id,
     name: input.name,
     anonymousId,
-    userId: input.userId ?? null,
+    userId,
     platform,
     path: input.path ?? null,
     source: input.source ?? null,
@@ -97,7 +107,7 @@ export async function capture(input: TrackInput) {
     isDemo: Boolean(input.demo),
     ...(input.at ? { createdAt: input.at } : {}),
   });
-  const distinctId = input.userId || anonymousId || id;
+  const distinctId = userId || anonymousId || id;
   try {
     await forwardPostHog({ name: input.name, distinctId, properties: { platform, ...(input.properties ?? {}) }, consent });
   } catch {
