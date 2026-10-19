@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, fieldAutoCapitalize, keepCheckoutOpen, membershipsForClass, mobileReturnTarget, nativeIntentPath, orderToAbandon, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, systemPathForIncomingUrl, unpaidCheckoutOrder } from "@/lib/mobile-client";
+import { acceptLatest, authNeedsVerification, authSessionRedirect, bookDisplayCents, bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutCancelMessage, checkoutFollowsBooking, checkoutIsSettled, fieldAutoCapitalize, keepCheckoutOpen, markCheckoutSettled, membershipsForClass, mobileReturnTarget, nativeIntentPath, orderToAbandon, packsForClass, PAYMENT_SHEET_RETURN_URL, paymentSheetForPlatform, postLoginPath, resumeBookingPath, SETTLED_CHECKOUT_ERROR, settledCheckoutBlocksRebook, systemPathForIncomingUrl, unpaidCheckoutOrder } from "@/lib/mobile-client";
 
 describe("live mobile checkout", () => {
   it("uses a Checkout Session on web and a PaymentSheet on native", () => {
@@ -126,6 +126,16 @@ describe("live mobile checkout", () => {
     expect(keepCheckoutOpen("seat", true)).toBe(false);
     expect(orderToAbandon({ reopenCheckout: keepCheckoutOpen("details", true), orderId: "ord-1" })).toBeNull();
     expect(orderToAbandon({ reopenCheckout: keepCheckoutOpen("seat", true), orderId: "ord-1" })).toBe("ord-1");
+  });
+
+  it("does not book again when the checkout on screen has already settled", () => {
+    markCheckoutSettled("ord-paid");
+    expect(checkoutIsSettled("ord-paid")).toBe(true);
+    expect(checkoutIsSettled("ord-open")).toBe(false);
+    expect(settledCheckoutBlocksRebook({ reopenCheckout: false, orderId: "ord-paid", settled: true })).toBe(true);
+    expect(settledCheckoutBlocksRebook({ reopenCheckout: true, orderId: "ord-paid", settled: true })).toBe(false);
+    expect(settledCheckoutBlocksRebook({ reopenCheckout: false, orderId: "ord-open", settled: false })).toBe(false);
+    expect(SETTLED_CHECKOUT_ERROR).toMatch(/already complete/i);
   });
 
   it("leaves web checkout on the https return page", () => {

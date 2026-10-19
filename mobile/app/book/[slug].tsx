@@ -6,7 +6,7 @@ import { ApiError } from "@mobile/api";
 import type { ClassDetail, WalletMembership, WalletPack } from "@mobile/api/types";
 import { Body, Button, Card, Display, Field, Notice, ToggleRow } from "@mobile/components/ui";
 import { bookDisplayCents, packsForClass } from "@mobile/booking/flow";
-import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, keepCheckoutOpen, membershipsForClass, orderToAbandon, resumeBookingPath, unpaidCheckoutOrder } from "../../../lib/mobile-client";
+import { bookingContinuePlan, bookingPayWith, bookingSubmitLock, checkoutFollowsBooking, checkoutIsSettled, keepCheckoutOpen, membershipsForClass, orderToAbandon, resumeBookingPath, SETTLED_CHECKOUT_ERROR, settledCheckoutBlocksRebook, unpaidCheckoutOrder } from "../../../lib/mobile-client";
 import { draftFromResult, setCheckoutDraft } from "@mobile/checkout/draft";
 import { money, whenLabel } from "@mobile/format";
 import { useSession } from "@mobile/session";
@@ -85,6 +85,10 @@ export default function BookScreen() {
     setError(null);
     let openedCheckout = false;
     try {
+      if (settledCheckoutBlocksRebook({ reopenCheckout, orderId: checkoutOrderId, settled: checkoutIsSettled(checkoutOrderId) })) {
+        setError(SETTLED_CHECKOUT_ERROR);
+        return;
+      }
       if (!agreed && !waiverSigned) {
         setError("Accept the cancellation policy.");
         return;

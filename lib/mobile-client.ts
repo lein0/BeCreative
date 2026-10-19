@@ -1,4 +1,7 @@
+import { SETTLED_CHECKOUT_ERROR } from "@/lib/checkout-rules";
 import { offerCoversClass } from "@/lib/pricing";
+
+export { SETTLED_CHECKOUT_ERROR };
 
 /** Stripe PaymentSheet return. Must not be a bookings deep link, or 3DS unmounts checkout. */
 export const PAYMENT_SHEET_RETURN_URL = "becreative://stripe-return";
@@ -69,6 +72,21 @@ export function unpaidCheckoutOrder(result: { orderId?: string | null; checkoutU
 export function orderToAbandon(input: { reopenCheckout: boolean; orderId?: string | null }) {
   if (input.reopenCheckout || !input.orderId) return null;
   return input.orderId;
+}
+
+const settledCheckoutIds = new Set<string>();
+
+export function markCheckoutSettled(orderId: string | null | undefined) {
+  if (orderId) settledCheckoutIds.add(orderId);
+}
+
+export function checkoutIsSettled(orderId: string | null | undefined) {
+  return Boolean(orderId && settledCheckoutIds.has(orderId));
+}
+
+/** A paid checkout must not be sent through as a date change that books again. */
+export function settledCheckoutBlocksRebook(input: { reopenCheckout: boolean; orderId?: string | null; settled?: boolean }) {
+  return Boolean(input.orderId && !input.reopenCheckout && input.settled);
 }
 
 export function membershipsForClass<T extends { status: string; periodEnd?: string | null; classIds?: string[]; categoryIds?: string[]; teacherId?: string }>(

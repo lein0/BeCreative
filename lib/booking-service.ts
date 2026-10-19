@@ -55,9 +55,12 @@ import {
   parseAttributionCookie,
   refundCancelsBooking,
   nextBookingAfterReplace,
+  priorHoldReleaseTiming,
+  replacedCheckoutDecision,
   replacedCheckoutToAbandon,
   sessionLockOrder,
   type HoldRelease,
+  type PriorCheckoutDecision,
 } from "@/lib/checkout-rules";
 import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
@@ -138,6 +141,28 @@ function stripeResourceMissing(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "resource_missing";
 }
 
+/** Read Stripe only. Cancelling the session happens after the replacement is kept. */
+async function stripeHoldStillCollecting(
+  stripe: NonNullable<ReturnType<typeof getStripe>>,
+  order: { stripeCheckoutSessionId: string | null; stripePaymentIntentId: string | null },
+) {
+  if (order.stripeCheckoutSessionId) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      return session.status === "complete" || session.payment_status === "paid";
+    } catch {
+      return false;
+    }
+  }
+  if (!order.stripePaymentIntentId) return false;
+  try {
+    const intent = await stripe.paymentIntents.retrieve(order.stripePaymentIntentId);
+    return paymentIntentStillCollecting(intent.status);
+  } catch (error) {
+    return !stripeResourceMissing(error);
+  }
+}
+
 /** Keep the seat when Stripe has already collected or may still collect. Cancel an open PaymentIntent before releasing it. */
 async function stripeHoldCanRelease(
   stripe: NonNullable<ReturnType<typeof getStripe>>,
@@ -165,6 +190,24 @@ async function stripeHoldCanRelease(
     if (!stripeResourceMissing(error)) return false;
   }
   return true;
+}
+
+async function cancelOpenStripeCheckout(orderId: string) {
+  const stripe = getStripe();
+  if (!stripe) return;
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return;
+  try {
+    if (order.stripeCheckoutSessionId) {
+      const session = await stripe.checkout.sessions.retrieve(order.stripeCheckoutSessionId);
+      if (session.status === "open") await stripe.checkout.sessions.expire(order.stripeCheckoutSessionId);
+    } else if (order.stripePaymentIntentId) {
+      const intent = await stripe.paymentIntents.retrieve(order.stripePaymentIntentId);
+      if (!paymentIntentStillCollecting(intent.status) && intent.status !== "canceled") await stripe.paymentIntents.cancel(order.stripePaymentIntentId);
+    }
+  } catch {
+    // The new checkout is already closed.
+  }
 }
 
 export async function releaseExpiredCheckoutHolds(now = new Date(), options?: { touchStripe?: boolean }) {
@@ -200,6 +243,16 @@ async function releaseOnePendingHold(order: typeof orders.$inferSelect, now: Dat
   return "released";
 }
 
+/** Classify a checkout the student wants to replace. Does not cancel the seat or the Stripe session. */
+async function inspectReplacedCheckout(orderId: string, userId: string): Promise<PriorCheckoutDecision> {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  const decision = replacedCheckoutDecision(order, userId);
+  if (decision !== "release" || !order) return decision;
+  const stripe = getStripe();
+  if (stripe && (await stripeHoldStillCollecting(stripe, order))) return "blocked";
+  return "release";
+}
+
 /** Drop the unpaid seat from a checkout the student replaced. Paid or in-flight Stripe charges stay. */
 export async function releaseReplacedCheckout(orderId: string, userId: string): Promise<HoldRelease> {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
@@ -229,12 +282,16 @@ async function expireStripeForReleasedHolds() {
   }
 }
 
-export async function confirmedCount(sessionId: string, tx: typeof db = db) {
+export async function confirmedCount(sessionId: string, tx: typeof db = db, excludeOrderId?: string) {
   const [row] = await tx
     .select({ count: sql<number>`count(distinct coalesce(${bookings.userId}, ${bookings.id}))::int` })
     .from(bookingSessions)
     .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
-    .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
+    .where(and(
+      eq(bookingSessions.sessionId, sessionId),
+      eq(bookings.status, "confirmed"),
+      excludeOrderId ? sql`${bookings.orderId} is distinct from ${excludeOrderId}` : sql`true`,
+    ));
   return Number(row?.count ?? 0);
 }
 
@@ -326,14 +383,25 @@ export async function bookSession(input: {
   const fee = await fees();
   const now = new Date();
   await releaseExpiredCheckoutHolds(now);
+  let priorOrderId: string | null = null;
   if (input.abandonOrderId) {
-    const release = await releaseReplacedCheckout(input.abandonOrderId, input.userId);
-    const next = nextBookingAfterReplace(release);
-    if (!next.proceed) return { error: next.error };
+    const decision = await inspectReplacedCheckout(input.abandonOrderId, input.userId);
+    const plan = priorHoldReleaseTiming({ decision, replacementKept: false });
+    if (!plan.proceed) return { error: plan.error };
+    if (decision === "release") priorOrderId = input.abandonOrderId;
   }
 
   try {
     const created = await db.transaction(async (tx) => {
+      let releasePrior = false;
+      if (priorOrderId) {
+        await tx.execute(sql`select id from orders where id = ${priorOrderId} for update`);
+        const [held] = await tx.select({ userId: orders.userId, status: orders.status }).from(orders).where(eq(orders.id, priorOrderId)).limit(1);
+        const heldPlan = priorHoldReleaseTiming({ decision: replacedCheckoutDecision(held, input.userId), replacementKept: true });
+        if (!heldPlan.proceed) throw new Error(heldPlan.error ?? "Could not book.");
+        releasePrior = heldPlan.releaseNow;
+      }
+      const ignoreHeldOrder = releasePrior ? priorOrderId ?? undefined : undefined;
       let targetSessions: (typeof sessions.$inferSelect)[] = [];
       if (input.series) {
         if (!input.classId) throw new Error("Choose a class.");
@@ -357,7 +425,7 @@ export async function bookSession(input: {
       if (!teacher || teacher.status !== "approved") throw new Error("This teacher isn't bookable yet.");
 
       const counts = new Map<string, number>();
-      for (const session of targetSessions) counts.set(session.id, await confirmedCount(session.id, tx as unknown as typeof db));
+      for (const session of targetSessions) counts.set(session.id, await confirmedCount(session.id, tx as unknown as typeof db, ignoreHeldOrder));
 
       if (input.series) {
         if (!klass.seriesBookingEnabled) throw new Error("This teacher isn't selling the whole series.");
@@ -365,8 +433,9 @@ export async function bookSession(input: {
           .select({ classId: bookings.classId, kind: bookings.kind, status: bookings.status, orderId: bookings.orderId })
           .from(bookings)
           .where(and(eq(bookings.userId, input.userId), eq(bookings.classId, klass.id), eq(bookings.kind, "series")));
-        if (duplicateSeriesBooking(priorSeries, klass.id)) {
-          return { waitlisted: false as const, alreadyBooked: true as const, orderId: priorSeries.find((row) => row.status === "confirmed")?.orderId ?? undefined };
+        const blockingSeries = ignoreHeldOrder ? priorSeries.filter((row) => row.orderId !== ignoreHeldOrder) : priorSeries;
+        if (duplicateSeriesBooking(blockingSeries, klass.id)) {
+          return { waitlisted: false as const, alreadyBooked: true as const, releasePrior: false, orderId: blockingSeries.find((row) => row.status === "confirmed")?.orderId ?? undefined };
         }
         const decision = decideSeriesBooking(
           targetSessions.map((session) => ({
@@ -395,13 +464,18 @@ export async function bookSession(input: {
           .select({ id: bookings.id })
           .from(bookings)
           .innerJoin(bookingSessions, eq(bookingSessions.bookingId, bookings.id))
-          .where(and(eq(bookings.userId, input.userId), eq(bookingSessions.sessionId, session.id), eq(bookings.status, "confirmed")))
+          .where(and(
+            eq(bookings.userId, input.userId),
+            eq(bookingSessions.sessionId, session.id),
+            eq(bookings.status, "confirmed"),
+            ignoreHeldOrder ? sql`${bookings.orderId} is distinct from ${ignoreHeldOrder}` : sql`true`,
+          ))
           .limit(1);
         if (existing) throw new Error("You're already booked for that session.");
         if (!decision.ok) throw new Error(decision.reason === "full" ? "This session is full." : "That session can't be booked.");
         if (decision.status === "waitlisted") {
           await tx.insert(waitlistEntries).values({ id: crypto.randomUUID(), sessionId: session.id, userId: input.userId, status: "waiting" });
-          return { waitlisted: true as const, teacherUserId: teacher.userId, title: klass.title, classSlug: klass.slug };
+          return { waitlisted: true as const, releasePrior: false, teacherUserId: teacher.userId, title: klass.title, classSlug: klass.slug };
         }
       }
 
@@ -605,8 +679,20 @@ export async function bookSession(input: {
           direction: "consume",
         });
       }
-      return { waitlisted: false as const, alreadyBooked: false as const, orderId, bookingId, quote, status, klass, teacher, sessionCount: targetSessions.length };
+      return { waitlisted: false as const, alreadyBooked: false as const, releasePrior, orderId, bookingId, quote, status, klass, teacher, sessionCount: targetSessions.length };
     });
+
+    async function releasePriorHold() {
+      if (!("releasePrior" in created) || !created.releasePrior || !priorOrderId) return null;
+      const release = await releaseReplacedCheckout(priorOrderId, input.userId);
+      const next = nextBookingAfterReplace(release);
+      if (next.proceed) return null;
+      if ("orderId" in created && created.orderId) {
+        await cancelOpenStripeCheckout(created.orderId);
+        await abandonFailedCheckout(created.orderId);
+      }
+      return { error: next.error ?? "Could not book." };
+    }
 
     if ("waitlisted" in created && created.waitlisted) {
       if ("teacherUserId" in created && created.teacherUserId) {
@@ -658,6 +744,8 @@ export async function bookSession(input: {
           });
           if (intent?.client_secret) {
             await db.update(orders).set({ stripePaymentIntentId: intent.id }).where(eq(orders.id, created.orderId));
+            const replaced = await releasePriorHold();
+            if (replaced) return replaced;
             return { orderId: created.orderId, clientSecret: intent.client_secret, publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "", ...priceFields(created.quote) };
           }
         }
@@ -675,14 +763,23 @@ export async function bookSession(input: {
         });
         if (session?.id) {
           await db.update(orders).set({ stripeCheckoutSessionId: session.id }).where(eq(orders.id, created.orderId));
-          if (session.url) return { orderId: created.orderId, checkoutUrl: session.url, ...priceFields(created.quote) };
+          if (session.url) {
+            const replaced = await releasePriorHold();
+            if (replaced) return replaced;
+            return { orderId: created.orderId, checkoutUrl: session.url, ...priceFields(created.quote) };
+          }
         }
       } catch (error) {
         await abandonFailedCheckout(created.orderId);
         return { error: error instanceof Error ? error.message : "Could not book." };
       }
+      const replaced = await releasePriorHold();
+      if (replaced) return replaced;
       const offline = orderMoney(created.quote, false);
       await db.update(orders).set({ status: "pay_at_studio", platformFeeCents: offline.platformFeeCents, teacherAmountCents: offline.teacherAmountCents, platformLiabilityCents: offline.platformLiabilityCents }).where(eq(orders.id, created.orderId));
+    } else {
+      const replaced = await releasePriorHold();
+      if (replaced) return replaced;
     }
     await sendEmail({
       to: [input.email],

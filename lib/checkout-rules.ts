@@ -7,15 +7,41 @@ export function replacedCheckoutToAbandon(order: { userId: string | null; status
 
 export type HoldRelease = "released" | "blocked" | "skipped";
 
+export type PriorCheckoutDecision = "release" | "settled" | "skipped" | "blocked";
+
+export const SETTLED_CHECKOUT_ERROR = "That checkout is already complete. Your current seat stays reserved.";
+
+const COLLECTING_CHECKOUT_ERROR = "The previous checkout is already paid or still processing. Finish that payment before booking again.";
+
 /** A prior PaymentIntent that is processing or already paid must not be replaced by a second hold. */
 export function nextBookingAfterReplace(release: HoldRelease): { proceed: boolean; error?: string } {
-  if (release === "blocked") {
-    return {
-      proceed: false,
-      error: "The previous checkout is already paid or still processing. Finish that payment before booking again.",
-    };
-  }
+  if (release === "blocked") return { proceed: false, error: COLLECTING_CHECKOUT_ERROR };
   return { proceed: true };
+}
+
+/** Pending holds can be replaced. Paid and pay-at-studio seats are already reserved. */
+export function replacedCheckoutDecision(
+  order: { userId: string | null; status: string } | null | undefined,
+  userId: string,
+): Exclude<PriorCheckoutDecision, "blocked"> {
+  if (!order || order.userId !== userId) return "skipped";
+  if (order.status === "pending") return "release";
+  if (order.status === "paid" || order.status === "pay_at_studio") return "settled";
+  return "skipped";
+}
+
+/**
+ * Drop the previous unpaid seat only after the replacement booking is kept.
+ * A settled checkout is not a new booking.
+ */
+export function priorHoldReleaseTiming(input: { decision: PriorCheckoutDecision; replacementKept: boolean }): {
+  releaseNow: boolean;
+  proceed: boolean;
+  error?: string;
+} {
+  if (input.decision === "blocked") return { releaseNow: false, proceed: false, error: COLLECTING_CHECKOUT_ERROR };
+  if (input.decision === "settled") return { releaseNow: false, proceed: false, error: SETTLED_CHECKOUT_ERROR };
+  return { releaseNow: input.decision === "release" && input.replacementKept, proceed: true };
 }
 
 /** Same-origin relative path. Rejects protocol-relative URLs and backslashes. */
