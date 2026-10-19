@@ -44,7 +44,7 @@ const { sendEmail, sendIndividually } = await import("@/lib/email");
 const { createCheckout } = await import("@/lib/stripe");
 const { catalog, classDetail, teacherProfile } = await import("@/lib/queries");
 const { mediaUploadAllowed } = await import("@/lib/media-upload");
-const { manualBook, saveClass, setPaused, syncRule } = await import("@/lib/studio-service");
+const { manualBook, saveClass, setPaused, skipSession, syncRule } = await import("@/lib/studio-service");
 
 const tag = `bugbot-${crypto.randomUUID().slice(0, 8)}`;
 const userIds: string[] = [];
@@ -973,5 +973,203 @@ describe("Bugbot follow-ups", () => {
     expect(await mediaUploadAllowed({ id: owner, roles: ["teacher"] }, { teacherId })).toEqual({ ok: true });
     expect(await mediaUploadAllowed({ id: other, roles: ["teacher"] }, { classId, teacherId: otherTeacher })).toEqual({ ok: false, status: 403, error: "That class belongs to another studio." });
     expect(await mediaUploadAllowed({ id: owner, roles: ["teacher"] }, {})).toEqual({ ok: false, status: 403, error: "Choose a class to attach this file." });
+  });
+
+  it("keeps series, intro, waitlist, and draft flags when class details are saved", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("flags-owner");
+    const teacherId = await studio(owner, `${tag}-flags`, "pending");
+    const saved = await saveClass({
+      actorUserId: owner,
+      teacherId,
+      delegated: false,
+      title: "Draft flags",
+      description: "Original copy",
+      outcomes: "",
+      prerequisites: "",
+      whatToBring: "",
+      categoryId: cat,
+      skillLevel: "all",
+      format: "series",
+      delivery: "virtual",
+      virtualLink: "https://meet.example/flags",
+      maxSize: 10,
+      durationMinutes: 90,
+      pricePerSessionCents: 3200,
+      pricePerSeriesCents: 20000,
+      seriesBookingEnabled: true,
+      firstClassFree: true,
+      waitlistEnabled: false,
+      publish: false,
+    });
+    if ("error" in saved) throw new Error(saved.error);
+    const edited = await saveClass({
+      actorUserId: owner,
+      teacherId,
+      delegated: false,
+      classId: saved.classId,
+      title: "Draft flags",
+      description: "Updated copy",
+      outcomes: "",
+      prerequisites: "",
+      whatToBring: "",
+      categoryId: cat,
+      skillLevel: "all",
+      format: "series",
+      delivery: "virtual",
+      virtualLink: "https://meet.example/flags",
+      maxSize: 10,
+      durationMinutes: 90,
+      pricePerSessionCents: 3200,
+      pricePerSeriesCents: 20000,
+      seriesBookingEnabled: true,
+      firstClassFree: true,
+      waitlistEnabled: false,
+      publish: false,
+    });
+    if ("error" in edited) throw new Error(edited.error);
+    const [klass] = await db.select().from(schema.classes).where(eq(schema.classes.id, saved.classId));
+    expect(klass?.description).toBe("Updated copy");
+    expect(klass?.seriesBookingEnabled).toBe(true);
+    expect(klass?.firstClassFree).toBe(true);
+    expect(klass?.waitlistEnabled).toBe(false);
+    expect(klass?.status).toBe("draft");
+  });
+
+  it("refunds a skipped date with the same settlement as cancelling that booking", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("skip-owner");
+    const student = await person("skip-student");
+    const teacherId = await studio(owner, `${tag}-skip`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-skip-class`, title: "Skip class", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    const keptId = crypto.randomUUID();
+    await db.insert(schema.sessions).values([
+      { id: sessionId, classId, startsAt: new Date("2027-08-02T18:00:00Z"), endsAt: new Date("2027-08-02T19:00:00Z"), localDate: "2027-08-02", capacity: 8 },
+      { id: keptId, classId, startsAt: new Date("2027-08-09T18:00:00Z"), endsAt: new Date("2027-08-09T19:00:00Z"), localDate: "2027-08-09", capacity: 8 },
+    ]);
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    const paymentIntent = `pi_skip_${tag}`;
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "paid", listPriceCents: 2500, studentPaysCents: 2500, platformFeeCents: 250, teacherAmountCents: 2250, paymentPath: "card", stripePaymentIntentId: paymentIntent,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId });
+    const packId = crypto.randomUUID();
+    const purchaseId = crypto.randomUUID();
+    const packBookingId = crypto.randomUUID();
+    await db.insert(schema.packs).values({ id: packId, teacherId, slug: `${tag}-skip-pack`, name: "Skip pack", creditCount: 4, priceCents: 8000 });
+    await db.insert(schema.packPurchases).values({ id: purchaseId, userId: student, packId, teacherId, creditsTotal: 4, creditsRemaining: 3 });
+    await db.insert(schema.bookings).values({ id: packBookingId, userId: student, classId, kind: "session", status: "confirmed", packPurchaseId: purchaseId });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId: packBookingId, sessionId });
+    const planId = crypto.randomUUID();
+    const subId = crypto.randomUUID();
+    const memberBookingId = crypto.randomUUID();
+    await db.insert(schema.memberships).values({ id: planId, teacherId, slug: `${tag}-skip-plan`, name: "Skip plan", termMonths: 1, kind: "limited", classesPerPeriod: 4, priceCents: 4000 });
+    await db.insert(schema.membershipSubscriptions).values({
+      id: subId, userId: student, membershipId: planId, teacherId, status: "active", currentPeriodStart: new Date("2026-10-01T00:00:00Z"), currentPeriodEnd: new Date("2027-10-01T00:00:00Z"), classesUsedThisPeriod: 1, classesPerPeriod: 4, unlimited: false,
+    });
+    await db.insert(schema.bookings).values({ id: memberBookingId, userId: student, classId, kind: "session", status: "confirmed", membershipSubscriptionId: subId });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId: memberBookingId, sessionId });
+    const seriesBookingId = crypto.randomUUID();
+    const seriesOrderId = crypto.randomUUID();
+    await db.insert(schema.orders).values({
+      id: seriesOrderId, userId: student, teacherId, kind: "booking", status: "paid", listPriceCents: 8000, studentPaysCents: 8000, platformFeeCents: 800, teacherAmountCents: 7200, paymentPath: "card", stripePaymentIntentId: `pi_series_${tag}`,
+    });
+    await db.insert(schema.bookings).values({ id: seriesBookingId, orderId: seriesOrderId, userId: student, classId, kind: "series", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values([
+      { id: crypto.randomUUID(), bookingId: seriesBookingId, sessionId },
+      { id: crypto.randomUUID(), bookingId: seriesBookingId, sessionId: keptId },
+    ]);
+    refundCreate.mockClear();
+    await skipSession(sessionId, owner, false, teacherId);
+    const [session] = await db.select().from(schema.sessions).where(eq(schema.sessions.id, sessionId));
+    expect(session?.status).toBe("cancelled");
+    const [cardBooking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
+    expect(cardBooking?.status).toBe("cancelled");
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("refunded");
+    expect(refundCreate).toHaveBeenCalledWith({ payment_intent: paymentIntent });
+    const [purchase] = await db.select().from(schema.packPurchases).where(eq(schema.packPurchases.id, purchaseId));
+    expect(purchase?.creditsRemaining).toBe(4);
+    const [packBooking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, packBookingId));
+    expect(packBooking?.status).toBe("cancelled");
+    const [sub] = await db.select().from(schema.membershipSubscriptions).where(eq(schema.membershipSubscriptions.id, subId));
+    expect(sub?.classesUsedThisPeriod).toBe(0);
+    const [memberBooking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, memberBookingId));
+    expect(memberBooking?.status).toBe("cancelled");
+    const [seriesBooking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, seriesBookingId));
+    expect(seriesBooking?.status).toBe("confirmed");
+    const [seriesOrder] = await db.select().from(schema.orders).where(eq(schema.orders.id, seriesOrderId));
+    expect(seriesOrder?.status).toBe("paid");
+    expect(refundCreate).not.toHaveBeenCalledWith({ payment_intent: `pi_series_${tag}` });
+  });
+
+  it("refunds a drop-in when a booked date is removed from the series", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("reshape-owner");
+    const student = await person("reshape-student");
+    const teacherId = await studio(owner, `${tag}-reshape`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-reshape-class`, title: "Reshape", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 8, durationMinutes: 60, pricePerSessionCents: 2500, status: "published",
+    });
+    const recurrenceId = crypto.randomUUID();
+    await db.insert(schema.recurrences).values({
+      id: recurrenceId, classId, timezone: "America/Los_Angeles", frequency: "weekly", days: [{ weekday: 1, time: "18:00" }], startDate: "2026-10-05", endType: "on", endDate: "2026-10-19", durationMinutes: 60, capacity: 8,
+    });
+    await syncRule(recurrenceId, "2026-10-08");
+    const mondays = await db.select().from(schema.sessions).where(eq(schema.sessions.recurrenceId, recurrenceId));
+    const booked = mondays.find((session) => session.localDate >= "2026-10-19");
+    expect(booked).toBeTruthy();
+    const orderId = crypto.randomUUID();
+    const bookingId = crypto.randomUUID();
+    const paymentIntent = `pi_reshape_${tag}`;
+    await db.insert(schema.orders).values({
+      id: orderId, userId: student, teacherId, kind: "booking", status: "paid", listPriceCents: 2500, studentPaysCents: 2500, platformFeeCents: 250, teacherAmountCents: 2250, paymentPath: "card", stripePaymentIntentId: paymentIntent,
+    });
+    await db.insert(schema.bookings).values({ id: bookingId, orderId, userId: student, classId, kind: "session", status: "confirmed" });
+    await db.insert(schema.bookingSessions).values({ id: crypto.randomUUID(), bookingId, sessionId: booked!.id });
+    await db.update(schema.recurrences).set({ days: [{ weekday: 3, time: "18:00" }] }).where(eq(schema.recurrences.id, recurrenceId));
+    refundCreate.mockClear();
+    await syncRule(recurrenceId, "2026-10-08");
+    const [session] = await db.select().from(schema.sessions).where(eq(schema.sessions.id, booked!.id));
+    expect(session?.status).toBe("cancelled");
+    const [booking] = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId));
+    expect(booking?.status).toBe("cancelled");
+    const [order] = await db.select().from(schema.orders).where(eq(schema.orders.id, orderId));
+    expect(order?.status).toBe("refunded");
+    expect(refundCreate).toHaveBeenCalledWith({ payment_intent: paymentIntent });
+  });
+
+  it("does not add a second waitlist row for the same student and session", async () => {
+    const cat = await ensureCategory();
+    const owner = await person("dup-owner");
+    const holder = await person("dup-holder");
+    const waiting = await person("dup-wait");
+    const teacherId = await studio(owner, `${tag}-dup`);
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId, categoryId: cat, slug: `${tag}-dup-class`, title: "Dup wait", skillLevel: "all", format: "class", delivery: "virtual", maxSize: 1, durationMinutes: 60, pricePerSessionCents: 0, waitlistEnabled: true, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    await db.insert(schema.sessions).values({
+      id: sessionId, classId, startsAt: new Date("2027-09-01T18:00:00Z"), endsAt: new Date("2027-09-01T19:00:00Z"), localDate: "2027-09-01", capacity: 1,
+    });
+    const [holderRow] = await db.select().from(schema.user).where(eq(schema.user.id, holder));
+    const [waitingRow] = await db.select().from(schema.user).where(eq(schema.user.id, waiting));
+    const booked = await bookSession({ userId: holder, email: holderRow!.email, name: holderRow!.name, sessionId });
+    expect(booked.error).toBeUndefined();
+    const first = await bookSession({ userId: waiting, email: waitingRow!.email, name: waitingRow!.name, sessionId });
+    const second = await bookSession({ userId: waiting, email: waitingRow!.email, name: waitingRow!.name, sessionId });
+    expect(first.waitlisted).toBe(true);
+    expect(second.waitlisted).toBe(true);
+    const rows = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.userId, waiting));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("waiting");
   });
 });

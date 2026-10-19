@@ -138,6 +138,14 @@ export type ImportPlan = {
   warnings: string[];
 };
 
+/** A failed CSV import must not look like success. Partial imports still report the first error. */
+export function leadImportFailure(result: { errors: string[]; imported: number }): string | null {
+  if (!result.errors.length) return null;
+  const detail = result.errors[0] ?? "Could not import that file.";
+  if (result.imported > 0) return `${detail} ${result.imported} row${result.imported === 1 ? " was" : "s were"} imported before the error.`;
+  return detail;
+}
+
 export function planLeadImport(existing: ExistingLead[], rows: LeadCsvRow[]): { plans: ImportPlan[]; errors: string[] } {
   const byId = new Map(existing.map((lead) => [lead.id, lead]));
   const byDomain = new Map(existing.filter((lead) => lead.websiteDomain).map((lead) => [lead.websiteDomain as string, lead.id]));

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LEAD_CSV_COLUMNS } from "@/lib/constants";
-import { planLeadImport, rowsFromCsv, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
+import { leadImportFailure, planLeadImport, rowsFromCsv, toCsv, websiteDomain, type LeadCsvRow } from "@/lib/leads";
 
 const sample: LeadCsvRow = {
   lead_id: "lead-1",
@@ -53,5 +53,16 @@ describe("lead import", () => {
     expect(plan.errors).toEqual([]);
     expect(plan.plans[0]).toMatchObject({ action: "update", id: "lead-1", match: "lead_id" });
     expect(plan.plans[1]).toMatchObject({ action: "update", id: "lead-1", match: "website" });
+  });
+
+  it("reports parse and plan errors instead of a successful import", () => {
+    expect(leadImportFailure({ errors: ["The file is empty."], imported: 0 })).toBe("The file is empty.");
+    expect(leadImportFailure({ errors: ["Row 2: priority must be A, B, or C."], imported: 0 })).toBe("Row 2: priority must be A, B, or C.");
+    expect(leadImportFailure({ errors: ["Row 3: business name is required."], imported: 2 })).toBe("Row 3: business name is required. 2 rows were imported before the error.");
+    expect(leadImportFailure({ errors: [], imported: 4 })).toBeNull();
+    const parsed = rowsFromCsv("not,a,lead,file\n");
+    expect(parsed.errors.length).toBeGreaterThan(0);
+    expect(parsed.rows).toHaveLength(0);
+    expect(leadImportFailure({ errors: parsed.errors, imported: 0 })).toBe(parsed.errors[0]);
   });
 });

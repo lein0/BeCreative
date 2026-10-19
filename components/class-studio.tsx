@@ -135,6 +135,10 @@ export async function ClassStudio({ classId, teacherId }: { classId: string; tea
               venue: studio.location?.name ?? "",
               virtualLink: studio.klass.virtualLink ?? "",
               categoryId: studio.klass.categoryId,
+              seriesBooking: studio.klass.seriesBookingEnabled,
+              firstFree: studio.klass.firstClassFree,
+              waitlist: studio.klass.waitlistEnabled,
+              publish: studio.klass.status === "published",
             }}
           />
         </div>

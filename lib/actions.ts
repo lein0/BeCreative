@@ -10,6 +10,7 @@ import { getActor, requireActor } from "@/lib/actor";
 import { bookSession, cancelBooking, purchaseOffer, type ActionState } from "@/lib/booking-service";
 import { bookingResultPath, errorRedirectPath, loginNextPath, safeNextPath, studioOwnsResource } from "@/lib/checkout-rules";
 import { convertLead, importLeadCsv, logLeadActivity } from "@/lib/crm";
+import { leadImportFailure } from "@/lib/leads";
 import { LA_TIMEZONE, ROLES, type Role } from "@/lib/constants";
 import { db } from "@/lib/db";
 import { bookingSessions, classes, leads, leadViews, platformSettings, promoCodes, recurrences, sessions, teachers, user, userRoles } from "@/lib/db/schema";
@@ -428,7 +429,12 @@ export async function leadAction(formData: FormData) {
     if (!(file instanceof File)) return;
     const people = await db.select().from(user);
     const reps = new Map(people.map((person) => [person.email.toLowerCase(), person.id]));
-    await importLeadCsv(await file.text(), reps);
+    const imported = await importLeadCsv(await file.text(), reps);
+    const failure = leadImportFailure(imported);
+    if (failure) {
+      if (imported.imported > 0) revalidatePath("/crm");
+      redirect(errorRedirectPath("/crm/import", failure, "/crm"));
+    }
   }
   if (command === "due") await db.update(leads).set({ nextStep: text(formData, "nextStep"), nextStepDue: text(formData, "due") || null, updatedAt: new Date() }).where(eq(leads.id, text(formData, "leadId")));
   if (command === "save-view") {

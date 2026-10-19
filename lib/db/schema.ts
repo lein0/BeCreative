@@ -359,14 +359,18 @@ export const introRedemptions = pgTable("intro_redemptions", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
-export const waitlistEntries = pgTable("waitlist_entries", {
-  id: text("id").primaryKey(),
-  sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
-  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
-  status: text("status").notNull().default("waiting"),
-  isDemo: boolean("is_demo").notNull().default(false),
-  createdAt: ts("created_at").notNull().defaultNow(),
-});
+export const waitlistEntries = pgTable(
+  "waitlist_entries",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("waiting"),
+    isDemo: boolean("is_demo").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("waitlist_active_user_session").on(table.sessionId, table.userId).where(sql`${table.status} in ('waiting', 'offered')`)],
+);
 
 export const reviews = pgTable("reviews", {
   id: text("id").primaryKey(),

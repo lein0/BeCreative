@@ -34,6 +34,10 @@ export function ClassForm({
     venue?: string;
     virtualLink?: string;
     categoryId?: string;
+    seriesBooking?: boolean;
+    firstFree?: boolean;
+    waitlist?: boolean;
+    publish?: boolean;
   };
 }) {
   const [state, action, pending] = useActionState(createClassAction, null);
@@ -117,16 +121,16 @@ export function ClassForm({
         </div>
         <div className="flex flex-wrap gap-4 text-sm">
           <label className="flex items-center gap-2">
-            <input type="checkbox" name="seriesBooking" /> Students can book the whole series
+            <input type="checkbox" name="seriesBooking" defaultChecked={initial?.seriesBooking ?? false} /> Students can book the whole series
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" name="firstFree" /> First class free
+            <input type="checkbox" name="firstFree" defaultChecked={initial?.firstFree ?? false} /> First class free
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" name="waitlist" defaultChecked /> Waitlist when full
+            <input type="checkbox" name="waitlist" defaultChecked={initial?.waitlist ?? true} /> Waitlist when full
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" name="publish" defaultChecked /> Publish
+            <input type="checkbox" name="publish" defaultChecked={initial?.publish ?? true} /> Publish
           </label>
         </div>
         <details className="rounded-2xl bg-sand/60 p-3 text-sm">

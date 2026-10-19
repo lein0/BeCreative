@@ -15,6 +15,13 @@
       "when": 1791420777741,
       "tag": "0001_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792429520542,
+      "tag": "0002_waitlist_active_user",
+      "breakpoints": true
     }
   ]
 }

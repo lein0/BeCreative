@@ -15,7 +15,7 @@ import {
   teachers,
   user,
 } from "@/lib/db/schema";
-import { confirmedCount, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
+import { confirmedCount, refundTeacherCancelledSession, releaseExpiredCheckoutHolds } from "@/lib/booking-service";
 import { decideManualBooking } from "@/lib/booking-rules";
 import { studioOwnsResource } from "@/lib/checkout-rules";
 import { sendIndividually } from "@/lib/email";
@@ -82,7 +82,10 @@ export async function syncRule(recurrenceId: string, today = ymdInZone(new Date(
   for (const id of diff.deleteIds) await db.delete(sessions).where(eq(sessions.id, id));
   for (const id of diff.cancelIds) {
     await db.update(sessions).set({ status: "cancelled", cancellationReason: "Removed from the series" }).where(eq(sessions.id, id));
+  }
+  for (const id of diff.cancelIds) {
     await notifySession(id, "A session was cancelled", "A session you booked was cancelled because the series schedule changed.");
+    await refundTeacherCancelledSession(id);
   }
   for (const id of diff.keepIds) {
     const session = existing.find((item) => item.id === id);
@@ -334,6 +337,7 @@ export async function skipSession(sessionId: string, actorUserId: string, delega
   if (!session || !studioOwnsResource(await classTeacherId(session.classId), teacherId)) return;
   await db.update(sessions).set({ status: "cancelled", exception: "skipped", cancellationReason: "Teacher skipped this date" }).where(eq(sessions.id, sessionId));
   await notifySession(sessionId, "Class cancelled", "Your teacher cancelled this date. If you paid online, the refund follows the class policy.");
+  await refundTeacherCancelledSession(sessionId);
   const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
   if (klass) await audit({ actorUserId, teacherId: klass.teacherId, delegated, action: "session.skip", entityType: "session", entityId: sessionId, summary: `Skipped ${session.localDate}` });
 }

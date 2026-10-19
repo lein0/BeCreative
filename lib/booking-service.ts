@@ -307,6 +307,12 @@ export async function bookSession(input: {
         if (existing) throw new Error("You're already booked for that session.");
         if (!decision.ok) throw new Error(decision.reason === "full" ? "This session is full." : "That session can't be booked.");
         if (decision.status === "waitlisted") {
+          const [alreadyWaiting] = await tx
+            .select({ id: waitlistEntries.id })
+            .from(waitlistEntries)
+            .where(and(eq(waitlistEntries.sessionId, session.id), eq(waitlistEntries.userId, input.userId), inArray(waitlistEntries.status, ["waiting", "offered"])))
+            .limit(1);
+          if (alreadyWaiting) return { waitlisted: true as const };
           await tx.insert(waitlistEntries).values({ id: crypto.randomUUID(), sessionId: session.id, userId: input.userId, status: "waiting" });
           return { waitlisted: true as const };
         }
@@ -627,14 +633,13 @@ async function settleCancelledOrder(order: typeof orders.$inferSelect, rows: { s
   if (fresh?.status === "paid" && refundCents > 0) await refundPaidOrder(fresh, refundCents, coversWholePayment);
 }
 
-export async function cancelBooking(userId: string, bookingId: string) {
+async function settleConfirmedCancellation(booking: typeof bookings.$inferSelect) {
   const now = new Date();
-  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
-  if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
+  if (booking.status !== "confirmed") return { error: "Booking not found." as const };
   const links = await db.select().from(bookingSessions).where(eq(bookingSessions.bookingId, booking.id));
   const rows = links.length ? await db.select().from(sessions).where(inArray(sessions.id, links.map((link) => link.sessionId))) : [];
   const upcoming = rows.filter((session) => session.startsAt > now);
-  if (!upcoming.length) return { error: "This class has already started." };
+  if (!upcoming.length) return { error: "This class has already started." as const };
   let order = booking.orderId ? (await db.select().from(orders).where(eq(orders.id, booking.orderId)).limit(1))[0] : undefined;
   if (order) {
     const settled = await settleOpenCheckout(order);
@@ -647,7 +652,38 @@ export async function cancelBooking(userId: string, bookingId: string) {
   await releaseBookingSeat(booking, now);
   if (order) await settleCancelledOrder(order, rows, now);
   await offerOpenedSeats(rows.map((session) => session.id));
-  return { ok: true };
+  return { ok: true as const };
+}
+
+export async function cancelBooking(userId: string, bookingId: string) {
+  const [booking] = await db.select().from(bookings).where(and(eq(bookings.id, bookingId), eq(bookings.userId, userId))).limit(1);
+  if (!booking || booking.status !== "confirmed") return { error: "Booking not found." };
+  return settleConfirmedCancellation(booking);
+}
+
+/**
+ * A teacher cancelled this session. Purchases that no longer have a live date use the same
+ * settlement as a student cancellation: the booking is cancelled, the card is refunded for
+ * unattended sessions, and pack or membership credit is restored. A series purchase that still
+ * includes another date is left alone — this app does not prorate one date of a series.
+ */
+export async function refundTeacherCancelledSession(sessionId: string) {
+  const links = await db
+    .select({ bookingId: bookings.id })
+    .from(bookingSessions)
+    .innerJoin(bookings, eq(bookings.id, bookingSessions.bookingId))
+    .where(and(eq(bookingSessions.sessionId, sessionId), eq(bookings.status, "confirmed")));
+  for (const link of links) {
+    const attached = await db
+      .select({ id: sessions.id, status: sessions.status })
+      .from(bookingSessions)
+      .innerJoin(sessions, eq(sessions.id, bookingSessions.sessionId))
+      .where(eq(bookingSessions.bookingId, link.bookingId));
+    const stillRunning = attached.some((session) => session.id !== sessionId && session.status !== "cancelled");
+    if (stillRunning) continue;
+    const [booking] = await db.select().from(bookings).where(eq(bookings.id, link.bookingId)).limit(1);
+    if (booking) await settleConfirmedCancellation(booking);
+  }
 }
 
 export async function fulfillPaidCheckout(orderId: string, paymentIntent: string | null, subscriptionId: string | null, options?: { notify?: boolean }) {

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "waitlist_active_user_session" ON "waitlist_entries" USING btree ("session_id","user_id") WHERE "waitlist_entries"."status" in ('waiting', 'offered');
