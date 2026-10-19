@@ -55,6 +55,7 @@ import {
 import { paidCheckoutSendsBookingEmail, studioCanSell } from "@/lib/review-rules";
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { createCheckout, getStripe, stripeConfigured } from "@/lib/stripe";
+import { appointmentConflicts } from "@/lib/slots";
 
 export type ActionState = { error?: string; ok?: string } | null;
 
@@ -261,6 +262,18 @@ export async function bookSession(input: {
       if (!klass || klass.status !== "published") throw new Error("This class isn't open for booking.");
       const [teacher] = await tx.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
       if (!teacher || teacher.status !== "approved") throw new Error("This teacher isn't bookable yet.");
+      await tx.execute(sql`select id from teachers where id = ${teacher.id} for update`);
+      const privateVisits = await tx
+        .select({ startsAt: visitBookings.startsAt, endsAt: visitBookings.endsAt, bufferMinutes: services.bufferMinutes })
+        .from(visitBookings)
+        .innerJoin(services, eq(services.id, visitBookings.serviceId))
+        .where(and(eq(services.teacherId, teacher.id), eq(services.kind, "appointment"), eq(visitBookings.status, "confirmed")));
+      const overlapsPrivateVisit = (rows: { startsAt: Date; endsAt: Date }[]) =>
+        rows.some((session) => privateVisits.some((visit) => appointmentConflicts(
+          { startsAt: session.startsAt, endsAt: session.endsAt },
+          [{ startsAt: visit.startsAt, endsAt: visit.endsAt }],
+          visit.bufferMinutes,
+        )));
 
       const counts = new Map<string, number>();
       for (const session of targetSessions) counts.set(session.id, await confirmedCount(session.id, tx as unknown as typeof db));
@@ -286,8 +299,10 @@ export async function bookSession(input: {
         );
         if (!decision.ok) throw new Error(decision.reason);
         targetSessions = targetSessions.filter((session) => decision.sessionIds.includes(session.id));
+        if (overlapsPrivateVisit(targetSessions)) throw new Error("That time overlaps a private appointment.");
       } else {
         const session = targetSessions[0]!;
+        if (overlapsPrivateVisit([session])) throw new Error("That time overlaps a private appointment.");
         const decision = decideBooking({
           now,
           sessionStartsAt: session.startsAt,

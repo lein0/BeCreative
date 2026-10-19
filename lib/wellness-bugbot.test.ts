@@ -47,7 +47,7 @@ const { eq, inArray } = await import("drizzle-orm");
 const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { sendEmail } = await import("@/lib/email");
-const { fulfillPaidCheckout, releaseVisitSeat } = await import("@/lib/booking-service");
+const { bookSession, fulfillPaidCheckout, releaseVisitSeat } = await import("@/lib/booking-service");
 const { bookVisit, cancelVisit, openSlotsForService, rosterWaiver, signWaiver } = await import("@/lib/wellness-service");
 
 const tag = `bug-${crypto.randomUUID().slice(0, 8)}`;
@@ -375,6 +375,38 @@ describe("wellness bugbot regressions", () => {
       startsAt: slot.startsAt.toISOString(),
     });
     expect(booked).toMatchObject({ error: "That time is not open." });
+  });
+
+  it("refuses a class seat that overlaps a confirmed private visit", async () => {
+    const { serviceId, optionId } = await appointment("Class clash", ids.teacher!, ids.category!);
+    const open = await openSlotsForService(serviceId, new Date(), 2);
+    if (open.kind !== "appointment") throw new Error("expected an appointment");
+    const slot = open.options[0]!.slots[2]!;
+    const later = open.options[0]!.slots.find((item) => item.startsAt.getTime() >= slot.endsAt.getTime() + 60 * 60_000);
+    expect(later).toBeTruthy();
+    const visit = await bookVisit({
+      userId: await person("visitor"),
+      email: "visitor@example.com",
+      serviceId,
+      optionId,
+      startsAt: slot.startsAt.toISOString(),
+    });
+    expect(visit).toHaveProperty("orderId");
+    const classId = crypto.randomUUID();
+    await db.insert(schema.classes).values({
+      id: classId, teacherId: ids.teacher!, categoryId: ids.category!, slug: `${tag}-clash`, title: "Clash", skillLevel: "all", format: "class", delivery: "in_person", maxSize: 10, durationMinutes: 60, pricePerSessionCents: 2000, status: "published",
+    });
+    const sessionId = crypto.randomUUID();
+    const laterId = crypto.randomUUID();
+    await db.insert(schema.sessions).values([
+      { id: sessionId, classId, startsAt: slot.startsAt, endsAt: slot.endsAt, localDate: slot.localDate, capacity: 10, status: "scheduled" },
+      { id: laterId, classId, startsAt: later!.startsAt, endsAt: later!.endsAt, localDate: later!.localDate, capacity: 10, status: "scheduled" },
+    ]);
+    const student = await person("class-seat");
+    const blocked = await bookSession({ userId: student, email: "class-seat@example.com", name: "Class Seat", sessionId });
+    expect(blocked).toEqual({ error: "That time overlaps a private appointment." });
+    const openSeat = await bookSession({ userId: student, email: "class-seat@example.com", name: "Class Seat", sessionId: laterId });
+    expect(openSeat).toHaveProperty("orderId");
   });
 
   it("does not let two visits spend the same pack credit", async () => {
