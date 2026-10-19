@@ -560,7 +560,8 @@ describe("Bugbot follow-ups", () => {
     expect(cancelled.ok).toBe(true);
     const [entry] = await db.select().from(schema.waitlistEntries).where(eq(schema.waitlistEntries.userId, waiting));
     expect(entry?.status).toBe("offered");
-    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: [waitingRow!.email], subject: "A seat opened: Waitlist class" }));
+    const notes = await db.select().from(schema.notificationOutbox).where(eq(schema.notificationOutbox.userId, waiting));
+    expect(notes.some((note) => note.event === "waitlist.spot_open" && note.title === "Waitlist class")).toBe(true);
   });
 
   it("does not call Stripe while a class page counts seats", async () => {

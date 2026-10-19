@@ -44,6 +44,7 @@ import {
   checkoutMustReleaseSeat,
   collectsOnline,
   duplicateSeriesBooking,
+  membershipPaymentRestoresAccess,
   membershipRenewalExtendsAccess,
   membershipStatusOnAbandon,
   membershipStatusOnCreate,
@@ -60,6 +61,7 @@ import { paidCheckoutEmitsBookingNotifications, paidCheckoutSendsBookingEmail, s
 import { checkoutHoldCutoff, checkoutHoldMinutes } from "@/lib/holds";
 import { resolvedPolicy, studentCancelOutcome, lateCancelFee, nextUpcomingStart } from "@/lib/cancel-policy";
 import { cardPaymentsReady, statementDescriptor } from "@/lib/connect-rules";
+import { sameLocalDay } from "@/lib/messaging-rules";
 import { emitNotification } from "@/lib/notifications";
 import { applyStudioCredit, parseStudioCreditLedgerSource, seriesProrate, studioCreditLedgerSource, studioCreditRestoreCents } from "@/lib/refund-math";
 import { consumeRefundableCash, grantStudioCredit, issueRefund } from "@/lib/refunds";
@@ -206,14 +208,16 @@ export async function offerOpenedSeats(sessionIds: string[]) {
       .where(and(eq(waitlistEntries.id, next.id), eq(waitlistEntries.status, "waiting")))
       .returning({ id: waitlistEntries.id });
     if (!claimed.length) continue;
-    const [person] = await db.select({ email: user.email }).from(user).where(eq(user.id, next.userId)).limit(1);
     const [klass] = await db.select().from(classes).where(eq(classes.id, session.classId)).limit(1);
-    if (!person?.email || !klass) continue;
-    await sendEmail({
-      to: [person.email],
-      subject: `A seat opened: ${klass.title}`,
-      text: `A spot opened in ${klass.title}. You do not have a reserved seat yet. Book it from the class page.`,
-      teacherId: klass.teacherId,
+    if (!klass) continue;
+    await emitNotification({
+      userId: next.userId,
+      event: "waitlist.spot_open",
+      audience: "student",
+      title: klass.title,
+      body: "You do not have a reserved seat yet. Book it from the class page.",
+      href: `/c/${klass.slug}`,
+      textEligible: true,
     });
   }
 }
@@ -531,7 +535,7 @@ export async function bookSession(input: {
     if ("waitlisted" in created && created.waitlisted) {
       if ("teacherUserId" in created && created.teacherUserId) {
         await emitNotification({ userId: created.teacherUserId, event: "waitlist.joined", audience: "teacher", title: `Waitlist: ${created.title}`, body: `${input.name} joined the waitlist.`, href: `/c/${created.classSlug}` });
-        await emitNotification({ userId: input.userId, event: "waitlist.joined", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
+        await emitNotification({ userId: input.userId, event: "student.waitlist", audience: "student", title: `You're on the waitlist for ${created.title}`, body: "You do not have a reserved seat yet.", href: "/bookings" });
       }
       return { waitlisted: true };
     }
@@ -792,6 +796,7 @@ export async function cancelBooking(userId: string, bookingId: string) {
       title: `Cancelled ${klass.title}`,
       body: refunded ? (attendedRemain ? "A refund for the sessions you have not attended is on the way." : "A full refund is on the way to your original payment method.") : outcome === "credit" ? "Studio credit was added to your account." : fee ? `No refund. A late cancel fee of $${(fee / 100).toFixed(2)} may apply.` : "This cancellation is outside the refund window.",
       href: `/c/${klass.slug}`,
+      textEligible: outcome !== "full_refund" && sameLocalDay(upcoming[0]!.startsAt, now),
     });
     const [teacher] = await db.select().from(teachers).where(eq(teachers.id, klass.teacherId)).limit(1);
     if (teacher) {
@@ -884,14 +889,24 @@ export async function renewMembershipFromInvoice(input: {
 }) {
   const orderId = `renewal:${input.invoiceId}`;
   const [already] = await db.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (already) return { extended: false };
   const linked = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, input.subscriptionId));
   const original = linked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
   if (!original) return { extended: false };
   const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, original.id)).limit(1);
   if (!sub) return { extended: false };
-  if (!membershipRenewalExtendsAccess({ billingReason: input.billingReason, currentPeriodEnd: sub.currentPeriodEnd, invoicePeriodEnd: input.periodEnd })) {
+  if (already) {
+    if (sub.status === "past_due" && input.billingReason && input.billingReason !== "subscription_create") {
+      await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, sub.id));
+      return { extended: false, restored: true };
+    }
     return { extended: false };
+  }
+  const period = { billingReason: input.billingReason, currentPeriodEnd: sub.currentPeriodEnd, invoicePeriodEnd: input.periodEnd };
+  if (!membershipPaymentRestoresAccess({ ...period, currentStatus: sub.status })) return { extended: false };
+  const extendsAccess = membershipRenewalExtendsAccess(period);
+  if (!extendsAccess) {
+    await db.update(membershipSubscriptions).set({ status: membershipStatusOnPayment() }).where(eq(membershipSubscriptions.id, sub.id));
+    return { extended: false, restored: true };
   }
   const money = renewalChargeSplit(original, input.amountPaidCents);
   await db.insert(orders).values({

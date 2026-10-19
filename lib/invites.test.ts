@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inviteActivityNote, inviteSetPasswordUrl, teacherInviteEmail } from "@/lib/invites";
+import { inviteActivityNote, inviteSetPasswordUrl, shouldSendTeacherInvite, teacherInviteEmail } from "@/lib/invites";
 
 describe("teacher invite", () => {
   it("emails a set-password link and never a temporary password", () => {
@@ -12,5 +12,11 @@ describe("teacher invite", () => {
     expect(mail.text).not.toMatch(/Invite-[0-9a-f]/);
     expect(inviteActivityNote().toLowerCase()).not.toContain("temporary password");
     expect(inviteActivityNote()).not.toContain("tok_123");
+  });
+
+  it("follows the auth.invite trigger and skips accounts that already have a password", () => {
+    expect(shouldSendTeacherInvite({ triggerOn: true, hasPassword: false })).toBe(true);
+    expect(shouldSendTeacherInvite({ triggerOn: false, hasPassword: false })).toBe(false);
+    expect(shouldSendTeacherInvite({ triggerOn: true, hasPassword: true })).toBe(false);
   });
 });

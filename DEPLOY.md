@@ -65,9 +65,21 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 | `TRUSTED_PROXY_CIDRS` | no | Extra proxy CIDRs for auth rate limits. Private ranges are already trusted, so App Runner's `X-Forwarded-For` chain resolves to the client |
 | `RUN_MIGRATIONS` | no | `1` (default) migrates on container start. `0` skips that and you run the one-off command |
 | `CRON_SECRET` | yes in production | Bearer token for `GET` or `POST /api/cron/tick`. Unset, the route returns 401 |
-| `TWILIO_ACCOUNT_SID` | no | SMS stays off until this, the auth token, and the from-number are all set |
-| `TWILIO_AUTH_TOKEN` | no | Pair to the Twilio account |
-| `TWILIO_FROM_NUMBER` | no | Sender number, E.164 |
+| `SMS_PROVIDER` | no | `aws` (default), `twilio`, or `telnyx`. Inert until that provider's variables are set |
+| `AWS_SMS_ORIGINATION_IDENTITY` | with AWS SMS | Phone number, pool, or sender id for End User Messaging |
+| `AWS_SMS_CONFIGURATION_SET` | no | Optional Pinpoint SMS configuration set |
+| `TWILIO_ACCOUNT_SID` | with Twilio | Account SID. Also needs the auth token and from-number |
+| `TWILIO_AUTH_TOKEN` | with Twilio | Pair to the account |
+| `TWILIO_FROM_NUMBER` | with Twilio | Sender number, E.164 |
+| `TELNYX_API_KEY` | with Telnyx | API key |
+| `TELNYX_FROM_NUMBER` | with Telnyx | Sender number |
+| `SMS_WEBHOOK_SECRET` | with texts | Bearer token, or `?token=`, for `POST /api/webhooks/sms` |
+| `IMESSAGE_PROVIDER` | no | `off` (default), `sendblue`, or `loopmessage` |
+| `SENDBLUE_API_KEY` | with Sendblue | With `SENDBLUE_API_SECRET` and `SENDBLUE_FROM_NUMBER` |
+| `LOOPMESSAGE_API_KEY` | with LoopMessage | With `LOOPMESSAGE_SENDER` |
+| `SHORT_LINK_DOMAIN` | no | Origin for text links. Defaults to `APP_URL` plus `/go/<code>` |
+| `SES_CONFIGURATION_SET` | no | Added as `X-SES-CONFIGURATION-SET` on outbound mail |
+| `SES_WEBHOOK_SECRET` | with SES feedback | Bearer token, or `?token=`, for `POST /api/webhooks/ses` |
 | `VAPID_PUBLIC_KEY` | no | Web push stays off until both VAPID keys are set and the admin flag is on |
 | `VAPID_PRIVATE_KEY` | no | Pair to the public key |
 
@@ -78,7 +90,8 @@ Start command stays the image entrypoint. It runs migrations, then `node server.
 Instance role:
 
 - `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/*`
-- `ses:SendEmail` on the verified identity
+- `ses:SendRawEmail` on the verified identity
+- `sms-voice:SendTextMessage` when texts use AWS End User Messaging
 
 Bucket CORS must allow `PUT` from `APP_URL`.
 
@@ -92,7 +105,32 @@ App Runner does not run cron itself. Amazon EventBridge Scheduler calls the app 
 - Method: `POST`
 - Header: `Authorization: Bearer <CRON_SECRET>`
 
-That tick claims queued jobs with `FOR UPDATE SKIP LOCKED`, sends due notifications, queues class reminders 24 hours and 2 hours before start, and escalates support tickets that sat with a teacher for 24 hours. A replay of the same reminder does not send a second message.
+That tick claims queued jobs with `FOR UPDATE SKIP LOCKED`, sends due notifications, queues class reminders 24 hours and 2 hours before start, queues review asks, win-back notes, membership notices, and the Monday teacher summary, and escalates support tickets that sat with a teacher for 24 hours. A replay of the same reminder does not send a second message.
+
+## Email authentication
+
+Verify the sending domain in SES, then publish:
+
+- SPF: `v=spf1 include:amazonses.com -all`
+- DKIM: the three CNAME records SES shows for the identity
+- DMARC: `v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain`
+
+Create an SES configuration set and set `SES_CONFIGURATION_SET`. Point its bounce and complaint topics at `https://<your-domain>/api/webhooks/ses?token=<SES_WEBHOOK_SECRET>`. A permanent bounce or a complaint sets `email_suppressed` on that address, and later mail to it is skipped.
+
+## Text messages
+
+AWS End User Messaging (Pinpoint SMS v2) is the default because it lives in the same account as App Runner. Twilio and Telnyx are drop-in alternates. Nothing sends until the provider variables are set.
+
+Register A2P 10DLC before production traffic in the US:
+
+1. Register the brand (the legal entity) in AWS End User Messaging or the provider console.
+2. Register a campaign whose use case is account notifications, with the sample messages for the 2-hour reminder, a same-day cancellation, and a waitlist spot.
+3. Attach the origination number or pool and put its id in `AWS_SMS_ORIGINATION_IDENTITY`.
+4. Point inbound messages at `POST /api/webhooks/sms?token=<SMS_WEBHOOK_SECRET>` so STOP, HELP, and START update the opt-out list.
+
+By default, texts go only for a reminder 2 hours before class, a cancellation on the same day, and a waitlist spot that opened. Everything else is email. A person must check the SMS box at signup or checkout first. Quiet hours are 9pm–8am Pacific. The monthly cap defaults to $50 at one cent per segment and is an admin setting.
+
+iMessage is off until `IMESSAGE_PROVIDER` is `sendblue` or `loopmessage` and an admin turns the platform flag on. The app asks the provider whether the number can take iMessage and sends blue when it can. If that send fails, the same text goes by SMS. These are third-party APIs, not Apple Messages for Business. Apple’s terms and deliverability can change, and a number can be filtered. Messages for Business is customer-initiated, so it cannot send these alerts.
 
 ## Staging and production
 

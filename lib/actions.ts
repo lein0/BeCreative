@@ -58,6 +58,21 @@ export async function signupAction(_prev: ActionState, formData: FormData): Prom
       headers: await headers(),
     });
     await ensureAdminByEmail(email);
+    const { findUserByEmail } = await import("@/lib/email");
+    const created = await findUserByEmail(email);
+    if (created) {
+      const { applyContactPrefs } = await import("@/lib/contact-prefs");
+      const { emitNotification } = await import("@/lib/notifications");
+      await applyContactPrefs(created.id, formData, "capture");
+      await emitNotification({
+        userId: created.id,
+        event: "student.welcome",
+        audience: "student",
+        title: "your account",
+        body: "You can book a class whenever you like.",
+        href: "/explore",
+      });
+    }
   } catch (error) {
     return { error: authFailure(error, "Could not create the account.") };
   }
@@ -87,6 +102,8 @@ export async function bookAction(formData: FormData): Promise<void> {
   const limit = await hitRateLimit(`book:${actor.id}`, 30, 60 * 60 * 1000);
   if (!limit.ok) redirect(errorRedirectPath(`/c/${slug}`, "Too many booking attempts. Wait an hour and try again."));
   if (formData.get("policyAccepted") !== "1") redirect(errorRedirectPath(`/c/${slug}`, "Accept the cancellation policy to book."));
+  const { applyContactPrefs } = await import("@/lib/contact-prefs");
+  await applyContactPrefs(actor.id, formData, "checkout");
   const result = await bookSession({
     userId: actor.id,
     email: actor.email,
@@ -505,6 +522,8 @@ export async function bookVisitAction(formData: FormData) {
   const slug = text(formData, "slug");
   const addonIds = formData.getAll("addonId").map(String).filter(Boolean);
   if (formData.get("policyAccepted") !== "1") redirect(`/s/${slug}?error=${encodeURIComponent("Accept the cancellation policy to book.")}`);
+  const { applyContactPrefs } = await import("@/lib/contact-prefs");
+  await applyContactPrefs(actor.id, formData, "checkout");
   const result = await bookVisit({
     userId: actor.id,
     email: actor.email,
@@ -687,6 +706,9 @@ export async function policySettingsAction(formData: FormData) {
     webPushEnabled: formData.get("webPushEnabled") === "1",
     mailingAddress: text(formData, "mailingAddress") || "BeCreative, Los Angeles, CA",
     policyVersion: Number(text(formData, "policyVersion") || 1),
+    smsMonthlyCapCents: dollars("smsMonthlyCap"),
+    smsSegmentCostCents: Number(text(formData, "smsSegmentCostCents") || 1),
+    imessageEnabled: formData.get("imessageEnabled") === "1",
     updatedAt: new Date(),
     updatedBy: actor.id,
   }).where(eq(platformSettings.id, 1));
@@ -740,7 +762,11 @@ export async function notificationPrefAction(formData: FormData) {
     else await db.insert(notificationPreferences).values({ id: crypto.randomUUID(), userId: actor.id, event, ...row });
   }
   const creditOptIn = creditOptInFromForm({ saveCredit: formData.get("saveCredit") === "1", checked: formData.get("creditOptIn") === "1" });
-  if (creditOptIn !== null) await db.update(user).set({ creditOptIn }).where(eq(user.id, actor.id));
+  const emailOn = formData.get("email") === "1";
+  const patch: { creditOptIn?: boolean; emailUnsubscribed?: false } = {};
+  if (emailOn) patch.emailUnsubscribed = false;
+  if (creditOptIn !== null) patch.creditOptIn = creditOptIn;
+  if (emailOn || creditOptIn !== null) await db.update(user).set(patch).where(eq(user.id, actor.id));
   revalidatePath("/settings/notifications");
 }
 
