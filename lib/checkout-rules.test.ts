@@ -61,6 +61,7 @@ describe("replaced checkout", () => {
     expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "sam")).toBe(true);
     expect(replacedCheckoutToAbandon({ userId: "sam", status: "paid" }, "sam")).toBe(false);
     expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "other")).toBe(false);
+    expect(replacedCheckoutToAbandon({ userId: null, status: "pending" }, "sam")).toBe(false);
     expect(replacedCheckoutToAbandon(null, "sam")).toBe(false);
   });
 
