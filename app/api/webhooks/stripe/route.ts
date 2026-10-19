@@ -7,6 +7,7 @@ import { logEvent } from "@/lib/log";
 import { db } from "@/lib/db";
 import { membershipSubscriptions, orders, stripeEvents, teachers } from "@/lib/db/schema";
 import { getStripe } from "@/lib/stripe";
+import { shouldRetryRenewal } from "@/lib/renewal-copy";
 import { invoiceSubscriptionId } from "@/lib/stripe-invoice";
 import { chargeRefundReleasesSeats, webhookClaimShouldRelease } from "@/lib/webhook-idempotency";
 
@@ -86,7 +87,12 @@ export async function dispatchStripeEvent(event: Stripe.Event) {
     const subscription = invoiceSubscriptionId(invoice);
     if (subscription) {
       const [order] = await db.select().from(orders).where(eq(orders.stripeSubscriptionId, subscription)).limit(1);
-      if (order) await db.update(membershipSubscriptions).set({ status: "past_due" }).where(eq(membershipSubscriptions.orderId, order.id));
+      if (order) {
+        const [sub] = await db.select().from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, order.id)).limit(1);
+        if (sub && shouldRetryRenewal({ cancelAtPeriodEnd: sub.cancelAtPeriodEnd, status: sub.status })) {
+          await db.update(membershipSubscriptions).set({ status: "past_due" }).where(eq(membershipSubscriptions.id, sub.id));
+        }
+      }
     }
   }
   if (event.type === "account.updated") {

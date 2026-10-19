@@ -1,5 +1,6 @@
 import { cronAuthorized } from "@/lib/jobs";
 import { scheduleLifecycle } from "@/lib/lifecycle";
+import { scheduleRenewalNotices } from "@/lib/renewal";
 import { escalateDueTickets } from "@/lib/support";
 import { scheduleReminders, workJobs } from "@/lib/worker";
 
@@ -7,9 +8,10 @@ async function tick(request: Request) {
   if (!cronAuthorized(request.headers.get("authorization"))) return new Response("Unauthorized", { status: 401 });
   const reminders = await scheduleReminders();
   const lifecycle = await scheduleLifecycle();
+  const renewals = await scheduleRenewalNotices();
   const jobs = await workJobs();
   const escalations = await escalateDueTickets();
-  return Response.json({ ok: true, reminders, lifecycle, jobs, escalations });
+  return Response.json({ ok: true, reminders, lifecycle, renewals, jobs, escalations });
 }
 
 export async function GET(request: Request) {

@@ -399,7 +399,7 @@ export async function savePack(input: { teacherId: string; name: string; creditC
   return id;
 }
 
-export async function saveMembership(input: { teacherId: string; name: string; termMonths: number; kind: string; classesPerPeriod: number | null; priceCents: number; recurring: boolean; policy: string; classIds: string[]; actorUserId: string; delegated: boolean }) {
+export async function saveMembership(input: { teacherId: string; name: string; termMonths: number; kind: string; classesPerPeriod: number | null; priceCents: number; recurring: boolean; policy: string; classIds: string[]; actorUserId: string; delegated: boolean; introDays?: number | null; introPriceCents?: number | null }) {
   const id = crypto.randomUUID();
   await db.insert(memberships).values({
     id,
@@ -412,6 +412,8 @@ export async function saveMembership(input: { teacherId: string; name: string; t
     priceCents: input.priceCents,
     recurring: input.recurring,
     pauseCancelPolicy: input.policy,
+    introDays: input.introDays && input.introDays > 0 ? input.introDays : null,
+    introPriceCents: input.introDays && input.introDays > 0 ? input.introPriceCents ?? 0 : null,
     classIds: input.classIds,
   });
   await audit({ actorUserId: input.actorUserId, teacherId: input.teacherId, delegated: input.delegated, action: "membership.create", entityType: "membership", entityId: id, summary: `Created membership ${input.name}` });

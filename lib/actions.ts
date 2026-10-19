@@ -135,12 +135,18 @@ export async function cancelBookingAction(formData: FormData) {
 
 export async function buyOfferAction(formData: FormData) {
   const actor = await requireActor();
+  const requestHeaders = await headers();
   const result = await purchaseOffer({
     userId: actor.id,
     email: actor.email,
     kind: text(formData, "kind") === "membership" ? "membership" : "pack",
     id: text(formData, "id"),
     code: text(formData, "code"),
+    consent: formData.get("consent") === "on",
+    disclosureVersion: text(formData, "disclosureVersion"),
+    platform: "web",
+    ip: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
+    userAgent: requestHeaders.get("user-agent"),
   });
   if (result.error) redirect(errorRedirectPath(text(formData, "back"), result.error));
   if (result.checkoutUrl) redirect(result.checkoutUrl);
@@ -362,6 +368,8 @@ export async function pricingAction(formData: FormData) {
       recurring: formData.get("recurring") === "on",
       policy: text(formData, "policy") || "Cancel anytime before the next renewal. Pause up to 30 days.",
       classIds: formData.getAll("classId").map(String),
+      introDays: text(formData, "introDays") ? Number(text(formData, "introDays")) : null,
+      introPriceCents: text(formData, "introPrice") ? Math.round(Number(text(formData, "introPrice")) * 100) : null,
       actorUserId: actor.id,
       delegated,
     });

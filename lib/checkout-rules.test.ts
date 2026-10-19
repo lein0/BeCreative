@@ -11,7 +11,9 @@ import {
   packCreditsOnPayment,
   parseAttributionCookie,
   chargeFullyRefunded,
+  collectedRenewalGrantsAccess,
   membershipRenewalExtendsAccess,
+  renewedMembershipPeriod,
   paidInvoiceRenewal,
   refundCancelsBooking,
   renewalChargeSplit,
@@ -136,6 +138,40 @@ describe("membership renewals", () => {
     expect(membershipRenewalExtendsAccess({ billingReason: "subscription_create", currentPeriodEnd: current, invoicePeriodEnd: next })).toBe(false);
     expect(membershipRenewalExtendsAccess({ billingReason: "subscription_cycle", currentPeriodEnd: current, invoicePeriodEnd: next })).toBe(true);
     expect(membershipRenewalExtendsAccess({ billingReason: "subscription_cycle", currentPeriodEnd: next, invoicePeriodEnd: next })).toBe(false);
+  });
+
+  it("grants a collected renewal after a scheduled cancel and leaves that cancel in place", () => {
+    expect(collectedRenewalGrantsAccess({
+      status: "active",
+      cancelAtPeriodEnd: true,
+      billingReason: "subscription_cycle",
+      currentPeriodEnd: current,
+      invoicePeriodEnd: next,
+    })).toBe(true);
+    expect(collectedRenewalGrantsAccess({
+      status: "past_due",
+      cancelAtPeriodEnd: true,
+      billingReason: "subscription_cycle",
+      currentPeriodEnd: current,
+      invoicePeriodEnd: next,
+    })).toBe(true);
+    expect(collectedRenewalGrantsAccess({
+      status: "cancelled",
+      cancelAtPeriodEnd: true,
+      billingReason: "subscription_cycle",
+      currentPeriodEnd: current,
+      invoicePeriodEnd: next,
+    })).toBe(false);
+    expect(collectedRenewalGrantsAccess({
+      status: "active",
+      cancelAtPeriodEnd: true,
+      billingReason: "subscription_create",
+      currentPeriodEnd: current,
+      invoicePeriodEnd: next,
+    })).toBe(false);
+    const patch = renewedMembershipPeriod({ periodStart: current, periodEnd: next });
+    expect(patch).toEqual({ status: "active", currentPeriodStart: current, currentPeriodEnd: next, classesUsedThisPeriod: 0 });
+    expect(patch).not.toHaveProperty("cancelAtPeriodEnd");
   });
 
   it("keeps the original fee split when the renewal charges the same amount", () => {
