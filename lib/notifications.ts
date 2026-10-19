@@ -19,8 +19,9 @@ export async function emitNotification(input: {
   email?: string | null;
   phone?: string | null;
   demo?: boolean;
+  id?: string;
 }) {
-  const id = crypto.randomUUID();
+  const id = input.id?.trim() || crypto.randomUUID();
   await db.insert(notificationOutbox).values({
     id,
     userId: input.userId,
@@ -28,7 +29,7 @@ export async function emitNotification(input: {
     title: input.title,
     body: input.body,
     href: input.href,
-  });
+  }).onConflictDoNothing();
   const [pref] = await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.userId, input.userId), eq(notificationPreferences.event, input.event))).limit(1);
   const prefs: ChannelPrefs = pref
     ? { email: pref.email, inApp: pref.inApp, sms: pref.sms, push: pref.push, cadence: pref.cadence === "daily" ? "daily" : "instant" }

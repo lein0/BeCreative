@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { cancelFailureRedirect, checkoutMustReleaseSeat, seriesCancelError, sessionBelongsToClass, sessionCancelAlreadyApplied } from "@/lib/checkout-rules";
-import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, OUTBOX_INBOX_SENT, outboxStatusAfterDelivery, outboxStillNeedsInbox, phoneFromForm, smsSendKeepsOutboxPending, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
+import { creditOptInFromForm, deferredSmsStillPending, escapeHtml, listUnsubscribeUrl, nextDigestTime, notificationPhone, OUTBOX_INBOX_SENT, outboxStatusAfterDelivery, outboxStillNeedsInbox, phoneFromForm, reminderNoticeId, smsSendKeepsOutboxPending, unsubscribeConfirmedBy, unsubscribeUrl } from "@/lib/notify-prefs";
 import { quoteWithStudioCredit } from "@/lib/pricing";
-import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, expiredHoldStudioCreditRestore, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, seriesBookingCloses, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
+import { adminRefundScope, applyStudioCredit, entitlementRestoreKey, expiredHoldStudioCreditRestore, introRestoresWhenBookingCloses, nextAdminRefundKey, nextStripeRefundKey, parseStudioCreditLedgerSource, refundCashAlreadyReserved, refundedTotalAfterReserve, refundFailureKeepsSeat, refundLedgerMatchesSession, refundLedgerStatus, refundReplayIsSuccess, refundReserveFailed, seriesBookingCloses, sessionIdFromEntitlementRestore, sessionsStillNeedingRestore, studentCancelRefundCounts, studioCreditLedgerSource, studioCreditRestoreCents, studioCreditRestoreForPostedRefund, teacherCancelRetriesRefundOnly, teacherRefundStillOpen } from "@/lib/refund-math";
 import { bookingStudentName, classBookingSendsDirectEmail, paidCheckoutEmitsBookingNotifications } from "@/lib/review-rules";
 import { statementDescriptor, statementDescriptorSuffix } from "@/lib/connect-rules";
 import { nextQuietEnd } from "@/lib/notify-prefs";
@@ -389,5 +389,23 @@ describe("visit booking names the student", () => {
     expect(bookingStudentName("Ada Lovelace", "ada@example.com")).toBe("Ada Lovelace");
     expect(bookingStudentName("  ", "ada@example.com")).toBe("ada@example.com");
     expect(bookingStudentName(null, "ada@example.com")).toBe("ada@example.com");
+  });
+});
+
+describe("reminder replay uses one notice", () => {
+  it("keeps the same outbox id when the job runs again", () => {
+    expect(reminderNoticeId("job-1")).toBe("reminder:job-1");
+    expect(reminderNoticeId(" job-1 ")).toBe(reminderNoticeId("job-1"));
+    expect(reminderNoticeId("job-2")).not.toBe("reminder:job-1");
+    expect(reminderNoticeId(" ")).toBe("");
+  });
+});
+
+describe("unmarked reserve does not freeze cash", () => {
+  it("treats a pending marker as unreserved and a shortfall as cash that was not kept", () => {
+    expect(refundCashAlreadyReserved("pending:refund:1")).toBe(false);
+    expect(refundCashAlreadyReserved("reserved:refund:1")).toBe(true);
+    expect(refundReserveFailed(0, 2500)).toBe(true);
+    expect(refundReserveFailed(2500, 2500)).toBe(false);
   });
 });

@@ -111,6 +111,12 @@ export function smsSendKeepsOutboxPending(result: { ok: boolean; skipped?: boole
   return !result.ok && !result.skipped;
 }
 
+/** One reminder job replays this outbox id, so a crash after the insert does not send a second notice. */
+export function reminderNoticeId(jobId: string) {
+  const id = jobId.trim();
+  return id ? `reminder:${id}` : "";
+}
+
 /** Event saves must not clear the phone. Only the contact form writes it. */
 export function phoneFromForm(input: { savePhone: boolean; phone: string }) {
   if (!input.savePhone) return null;

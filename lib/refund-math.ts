@@ -126,6 +126,14 @@ export function refundCashAlreadyReserved(marker: string | null | undefined) {
 }
 
 /**
+ * A shortfall means this attempt committed no cash. The reserved marker is written in the same
+ * transaction, so a pending retry must not release money that was never recorded.
+ */
+export function refundReserveFailed(reservedCents: number, requestedCents: number) {
+  return reservedCents !== requestedCents;
+}
+
+/**
  * Add onto the current counter. A stale snapshot must not replace a newer total,
  * and the add is refused when it would pass the amount the student paid.
  */

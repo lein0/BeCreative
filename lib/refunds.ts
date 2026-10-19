@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { auditLog, orders, packPurchases, promoRedemptions, refundLedger, studioCredits } from "@/lib/db/schema";
-import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundCashAlreadyReserved, refundIdempotencyKey, refundLedgerStatus, refundReplayIsSuccess, reservedStripeMarker, seriesProrate, nextStripeRefundKey, studioCreditRestoreForPostedRefund } from "@/lib/refund-math";
+import { partialRefundRemaining, pendingStripeMarker, promoReversesOnRefund, refundCashAlreadyReserved, refundIdempotencyKey, refundLedgerStatus, refundReplayIsSuccess, refundReserveFailed, reservedStripeMarker, seriesProrate, nextStripeRefundKey, studioCreditRestoreForPostedRefund } from "@/lib/refund-math";
 import { getStripe } from "@/lib/stripe";
 
 export async function issueRefund(input: {
@@ -71,12 +71,27 @@ export async function issueRefund(input: {
   const reservationMarker = existing?.status === "failed" ? pendingStripeMarker(stripeKey) : existing?.stripeRefundId ?? null;
   const alreadyReserved = amountCents > 0 && refundCashAlreadyReserved(reservationMarker);
   if (amountCents > 0 && !alreadyReserved) {
-    const reserved = await reserveRefundableCash(order.id, amountCents);
-    if (reserved !== amountCents) {
+    let reserved = 0;
+    try {
+      reserved = await db.transaction(async (tx) => {
+        const taken = await reserveRefundableCash(order.id, amountCents, tx);
+        if (refundReserveFailed(taken, amountCents)) return taken;
+        const marked = await tx
+          .update(refundLedger)
+          .set({ stripeRefundId: reservedStripeMarker(stripeKey) })
+          .where(and(eq(refundLedger.id, id), eq(refundLedger.status, "pending")))
+          .returning({ id: refundLedger.id });
+        if (!marked.length) throw new Error("Refund is already in progress.");
+        return taken;
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "Refund is already in progress.") return { error: "Refund is already in progress." };
+      throw error;
+    }
+    if (refundReserveFailed(reserved, amountCents)) {
       await db.update(refundLedger).set({ status: "failed", stripeRefundId: null }).where(and(eq(refundLedger.id, id), eq(refundLedger.status, "pending")));
       return { error: "Nothing left to refund.", amountCents: 0 };
     }
-    await db.update(refundLedger).set({ stripeRefundId: reservedStripeMarker(stripeKey) }).where(eq(refundLedger.id, id));
   }
   let stripeRefundId: string | null = null;
   if (order.stripePaymentIntentId && amountCents > 0) {
@@ -192,13 +207,13 @@ export async function grantStudioCredit(userId: string, teacherId: string, amoun
 }
 
 /** Exact cash reservation. Adds to the current refunded total, or returns 0 when that cash is already gone. */
-export async function reserveRefundableCash(orderId: string, amountCents: number): Promise<number> {
+export async function reserveRefundableCash(orderId: string, amountCents: number, store: Pick<typeof db, "select" | "update"> = db): Promise<number> {
   const amount = Math.max(0, Math.trunc(amountCents));
   if (amount <= 0) return 0;
-  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  const [order] = await store.select().from(orders).where(eq(orders.id, orderId)).limit(1);
   if (!order) return 0;
   if (order.refundedCents + amount > order.studentPaysCents) return 0;
-  const updated = await db
+  const updated = await store
     .update(orders)
     .set({ refundedCents: sql`${orders.refundedCents} + ${amount}`, updatedAt: new Date() })
     .where(and(
@@ -207,7 +222,7 @@ export async function reserveRefundableCash(orderId: string, amountCents: number
       sql`${orders.refundedCents} + ${amount} <= ${orders.studentPaysCents}`,
     ))
     .returning({ refundedCents: orders.refundedCents });
-  if (!updated.length) return reserveRefundableCash(orderId, amount);
+  if (!updated.length) return reserveRefundableCash(orderId, amount, store);
   return amount;
 }
 

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { bookingSessions, bookings, classes, services, sessions, visitBookings } from "@/lib/db/schema";
 import { claimJobs, enqueueJob, finishJob } from "@/lib/jobs";
 import { deliverOutbox, emitNotification } from "@/lib/notifications";
+import { reminderNoticeId } from "@/lib/notify-prefs";
 
 export async function workJobs(limit = 20) {
   const claimed = await claimJobs(limit);
@@ -15,7 +16,9 @@ export async function workJobs(limit = 20) {
         await deliverOutbox(String(payload.outboxId ?? ""), typeof payload.phone === "string" ? payload.phone : null, audience, job.kind === "notification.sms" ? "sms" : "all");
       }
       if (job.kind === "reminder.send") {
+        const noticeId = reminderNoticeId(job.id);
         await emitNotification({
+          id: noticeId || undefined,
           userId: String(payload.userId),
           event: "booking.reminder",
           audience: "student",
