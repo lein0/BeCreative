@@ -36,6 +36,7 @@ vi.mock("next/headers", () => ({
 }));
 
 const { eq, inArray } = await import("drizzle-orm");
+const { ymdInZone } = await import("@/lib/time");
 const { db, pool } = await import("@/lib/db");
 const schema = await import("@/lib/db/schema");
 const { bookSession, cancelBooking, confirmedCount, purchaseOffer, renewMembershipFromInvoice } = await import("@/lib/booking-service");
@@ -110,10 +111,11 @@ describe("Bugbot follow-ups", () => {
       durationMinutes: 60,
       capacity: 8,
     });
-    await syncRule(recurrenceId, "2026-10-08");
+    const today = ymdInZone(new Date());
+    await syncRule(recurrenceId, today);
     const before = await db.select().from(schema.sessions).where(eq(schema.sessions.recurrenceId, recurrenceId));
     expect(before.length).toBeGreaterThan(0);
-    const bookedSession = before.find((session) => session.localDate >= "2026-10-08");
+    const bookedSession = before.find((session) => session.localDate >= today);
     expect(bookedSession).toBeTruthy();
     const bookingId = crypto.randomUUID();
     await db.insert(schema.bookings).values({
