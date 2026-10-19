@@ -27,8 +27,8 @@ import {
   waitlistEntries,
 } from "@/lib/db/schema";
 import { sendEmail } from "@/lib/email";
-import { consentAccepted, membershipCheckoutPlan, membershipOffer } from "@/lib/renewal-copy";
-import { disclosureForMembership, disclosurePayload, recordRenewalConsent, sendAcknowledgmentForOrder } from "@/lib/renewal";
+import { consentAccepted, fulfillmentShouldStopRenewal, membershipCheckoutPlan, membershipOffer } from "@/lib/renewal-copy";
+import { disclosureForMembership, disclosurePayload, honorScheduledCancel, recordRenewalConsent, sendAcknowledgmentForOrder } from "@/lib/renewal";
 import {
   canSpendMembership,
   canSpendPack,
@@ -946,6 +946,10 @@ export async function fulfillPaidCheckout(orderId: string, paymentIntent: string
       .update(membershipSubscriptions)
       .set({ status: membershipStatusOnPayment() })
       .where(and(eq(membershipSubscriptions.orderId, order.id), eq(membershipSubscriptions.status, "pending")));
+    const linked = await db.select({ cancelAtPeriodEnd: membershipSubscriptions.cancelAtPeriodEnd }).from(membershipSubscriptions).where(eq(membershipSubscriptions.orderId, order.id));
+    if (subscriptionId && linked.some((row) => fulfillmentShouldStopRenewal({ cancelAtPeriodEnd: row.cancelAtPeriodEnd, stripeSubscriptionId: subscriptionId }))) {
+      await honorScheduledCancel(subscriptionId);
+    }
     const card = await subscriptionCard({ paymentIntentId: paymentIntent, subscriptionId });
     if (card) {
       await db.update(membershipSubscriptions).set({ cardBrand: card.cardBrand, cardLast4: card.cardLast4 }).where(eq(membershipSubscriptions.orderId, order.id));

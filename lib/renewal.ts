@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
 import { adminEmails } from "@/lib/env";
 import { db } from "@/lib/db";
 import {
@@ -37,9 +37,12 @@ import {
   membershipOffer,
   mergeTemplates,
   materialPriceStays,
+  canReclaimNotice,
   noticeAlert,
+  noticeClaimDetail,
   noticeMail,
   noticeSendClaimed,
+  noticeSettled,
   membershipStartedAt,
   planNotices,
   preservedAcknowledgment,
@@ -174,6 +177,20 @@ async function alertOps(message: string) {
   const recipients = adminEmails();
   if (!recipients.length) return;
   await sendEmail({ to: recipients, subject: "Renewal notice needs attention", text: message });
+}
+
+/** Checkout can record a cancel before the Stripe subscription id exists. Stop renewal when that id shows up. */
+export async function honorScheduledCancel(stripeSubscriptionId: string) {
+  try {
+    const stopped = await stopSubscriptionRenewal(stripeSubscriptionId);
+    if (!stopped.ok && stopped.reason !== "unconfigured") {
+      await alertOps(`A membership was cancelled before Stripe subscription ${stripeSubscriptionId} was saved. Stopping that renewal failed.`);
+    }
+    return stopped;
+  } catch {
+    await alertOps(`A membership was cancelled before Stripe subscription ${stripeSubscriptionId} was saved. Stopping that renewal failed.`);
+    return { ok: false as const, reason: "failed" as const };
+  }
 }
 
 async function rememberInApp(userId: string, title: string, body: string, href: string) {
@@ -435,8 +452,8 @@ export async function saveRenewalTemplate(input: { actorUserId: string; legalSig
   return { ok: true as const, version };
 }
 
-function handled(rows: { kind: string; eventOn: string; status: string }[], kind: NoticeKind, eventOn: string) {
-  return rows.some((row) => row.kind === kind && row.eventOn === eventOn);
+function settled(rows: { kind: string; eventOn: string; status: string }[], kind: NoticeKind, eventOn: string) {
+  return rows.some((row) => row.kind === kind && row.eventOn === eventOn && noticeSettled(row.status));
 }
 
 export async function scheduleRenewalNotices(now = new Date()) {
@@ -478,8 +495,8 @@ export async function scheduleRenewalNotices(now = new Date()) {
     if (!plan || !teacher || !person) continue;
     if (!renewalNoticeEligible({ status: sub.status, cancelAtPeriodEnd: sub.cancelAtPeriodEnd, recurring: plan.recurring })) continue;
     const mine = notices.filter((notice) => notice.subscriptionId === sub.id);
-    const price = priceChanges.find((change) => change.membershipId === plan.id && !handled(mine, "price_change", isoDate(change.effectiveAt))) ?? priceChanges.filter((change) => change.membershipId === plan.id).at(-1) ?? null;
-    const material = materialChanges.find((change) => change.membershipId === plan.id && !handled(mine, "material_change", isoDate(change.effectiveAt))) ?? null;
+    const price = priceChanges.find((change) => change.membershipId === plan.id && !settled(mine, "price_change", isoDate(change.effectiveAt))) ?? priceChanges.filter((change) => change.membershipId === plan.id).at(-1) ?? null;
+    const material = materialChanges.find((change) => change.membershipId === plan.id && !settled(mine, "material_change", isoDate(change.effectiveAt))) ?? null;
     const decisions = planNotices({
       now,
       termMonths: plan.termMonths,
@@ -487,11 +504,11 @@ export async function scheduleRenewalNotices(now = new Date()) {
       periodEnd: sub.currentPeriodEnd,
       introEndsAt: sub.introEndsAt,
       introDays: plan.introDays,
-      priceChange: price ? { effectiveAt: price.effectiveAt, sent: handled(mine, "price_change", isoDate(price.effectiveAt)) } : null,
-      materialChange: material ? { effectiveAt: material.effectiveAt, sent: false } : null,
-      annualSentFor: mine.filter((notice) => notice.kind === "annual").map((notice) => notice.eventOn),
-      preRenewalSent: handled(mine, "pre_renewal", isoDate(sub.currentPeriodEnd)),
-      introSent: sub.introEndsAt ? handled(mine, "intro_ending", isoDate(sub.introEndsAt)) : false,
+      priceChange: price ? { effectiveAt: price.effectiveAt, sent: settled(mine, "price_change", isoDate(price.effectiveAt)) } : null,
+      materialChange: material ? { effectiveAt: material.effectiveAt, sent: settled(mine, "material_change", isoDate(material.effectiveAt)) } : null,
+      annualSentFor: mine.filter((notice) => notice.kind === "annual" && noticeSettled(notice.status)).map((notice) => notice.eventOn),
+      preRenewalSent: settled(mine, "pre_renewal", isoDate(sub.currentPeriodEnd)),
+      introSent: sub.introEndsAt ? settled(mine, "intro_ending", isoDate(sub.introEndsAt)) : false,
     });
     const cancelUrl = `${legal.siteUrl}/account/memberships/${sub.id}/cancel`;
     let cardLine: { cardBrand: string; last4: string } | null = null;
@@ -513,7 +530,9 @@ export async function scheduleRenewalNotices(now = new Date()) {
     for (const decision of decisions) {
       if (decision.action === "wait") continue;
       const eventOn = isoDate(decision.eventAt);
-      if (handled(mine, decision.kind, eventOn)) continue;
+      const existing = mine.find((notice) => notice.kind === decision.kind && notice.eventOn === eventOn);
+      if (existing && noticeSettled(existing.status)) continue;
+      if (existing && !canReclaimNotice({ status: existing.status, detail: existing.detail, now })) continue;
       const renewalPrice = sub.renewalPriceCents > 0 ? sub.renewalPriceCents : plan.priceCents;
       const quoted = relatedPriceChange({ kind: decision.kind, eventAt: decision.eventAt, price });
       const card = await cardLineForNotice();
@@ -537,6 +556,21 @@ export async function scheduleRenewalNotices(now = new Date()) {
         priceStays: materialPriceStays(decision.kind, quoted),
       }, templates, legal);
       if (decision.action === "missed") {
+        const detail = noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`);
+        if (existing) {
+          const updated = await db.update(renewalNotices).set({
+            status: "missed",
+            subject: mail.subject,
+            body: mail.text,
+            detail,
+          }).where(and(eq(renewalNotices.id, existing.id), ne(renewalNotices.status, "sent"), ne(renewalNotices.status, "missed"))).returning();
+          if (updated.length) {
+            existing.status = "missed";
+            missed += 1;
+            await alertOps(noticeAlert(decision.kind, `subscription ${sub.id} on ${eventOn}`));
+          }
+          continue;
+        }
         const inserted = await db.insert(renewalNotices).values({
           id: crypto.randomUUID(),
           userId: sub.userId,
@@ -548,7 +582,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
           status: "missed",
           subject: mail.subject,
           body: mail.text,
-          detail: noticeAlert(decision.kind, `${decision.daysBefore.toFixed(1)} days before ${eventOn}`),
+          detail,
         }).onConflictDoNothing().returning();
         if (inserted.length) {
           missed += 1;
@@ -556,22 +590,45 @@ export async function scheduleRenewalNotices(now = new Date()) {
         }
         continue;
       }
-      const claimed = await db.insert(renewalNotices).values({
-        id: crypto.randomUUID(),
-        userId: sub.userId,
-        membershipId: plan.id,
-        teacherId: teacher.id,
-        subscriptionId: sub.id,
-        kind: decision.kind,
-        eventOn,
-        status: "sending",
-        subject: mail.subject,
-        body: mail.text,
-      }).onConflictDoNothing().returning();
+      const claimToken = crypto.randomUUID();
+      const claimDetail = noticeClaimDetail(claimToken, now);
+      const claimed = existing
+        ? await db.update(renewalNotices).set({
+          status: "sending",
+          detail: claimDetail,
+          subject: mail.subject,
+          body: mail.text,
+        }).where(and(
+          eq(renewalNotices.id, existing.id),
+          existing.status === "failed"
+            ? eq(renewalNotices.status, "failed")
+            : and(
+              eq(renewalNotices.status, "sending"),
+              existing.detail == null ? isNull(renewalNotices.detail) : eq(renewalNotices.detail, existing.detail),
+            ),
+        )).returning()
+        : await db.insert(renewalNotices).values({
+          id: crypto.randomUUID(),
+          userId: sub.userId,
+          membershipId: plan.id,
+          teacherId: teacher.id,
+          subscriptionId: sub.id,
+          kind: decision.kind,
+          eventOn,
+          status: "sending",
+          detail: claimDetail,
+          subject: mail.subject,
+          body: mail.text,
+        }).onConflictDoNothing().returning();
       if (!noticeSendClaimed(claimed.length)) continue;
       const claim = claimed[0];
       if (!claim) continue;
-      mine.push(claim);
+      if (existing) {
+        existing.status = "sending";
+        existing.detail = claimDetail;
+      } else {
+        mine.push(claim);
+      }
       let emailId: string | null = null;
       let delivery = "skipped";
       let status = "sent";
@@ -587,6 +644,7 @@ export async function scheduleRenewalNotices(now = new Date()) {
         emailId,
         deliveryStatus: delivery,
       }).where(eq(renewalNotices.id, claim.id));
+      if (existing) existing.status = status;
       sent += 1;
       if (status === "sent" && decision.kind === "price_change" && price && isoDate(price.effectiveAt) === eventOn) {
         await db.update(membershipPriceChanges).set({ noticeSentAt: now }).where(eq(membershipPriceChanges.id, price.id));

@@ -11,8 +11,10 @@ import {
   acknowledgmentStillDue,
   buildDisclosure,
   consentAccepted,
+  canReclaimNotice,
   daysBetween,
   dunningBody,
+  fulfillmentShouldStopRenewal,
   failedRenewalNotice,
   legalIdentity,
   addLocalMonths,
@@ -27,8 +29,10 @@ import {
   membershipPolicyText,
   membershipStartedAt,
   membershipTermPhrase,
+  noticeClaimDetail,
   noticeMail,
   noticeSendClaimed,
+  noticeSettled,
   planNotices,
   preservedAcknowledgment,
   priceAfterMemberNotice,
@@ -504,6 +508,27 @@ describe("cancellation and dunning", () => {
   it("sends a renewal notice only from the tick that claimed the row", () => {
     expect(noticeSendClaimed(1)).toBe(true);
     expect(noticeSendClaimed(0)).toBe(false);
+  });
+
+  it("retries a failed or abandoned notice while a fresh claim stays owned", () => {
+    const now = new Date("2026-10-16T20:00:00.000Z");
+    expect(noticeSettled("sent")).toBe(true);
+    expect(noticeSettled("missed")).toBe(true);
+    expect(noticeSettled("failed")).toBe(false);
+    expect(noticeSettled("sending")).toBe(false);
+    expect(canReclaimNotice({ status: "failed", detail: null, now })).toBe(true);
+    expect(canReclaimNotice({ status: "sent", detail: null, now })).toBe(false);
+    expect(canReclaimNotice({ status: "sending", detail: noticeClaimDetail("owned", now), now })).toBe(false);
+    const stale = new Date(now.getTime() - 6 * 60 * 1000);
+    expect(canReclaimNotice({ status: "sending", detail: noticeClaimDetail("crashed", stale), now })).toBe(true);
+    expect(canReclaimNotice({ status: "sending", detail: null, now })).toBe(true);
+  });
+
+  it("stops Stripe when a cancel was recorded before the subscription id arrived", () => {
+    expect(fulfillmentShouldStopRenewal({ cancelAtPeriodEnd: true, stripeSubscriptionId: "sub_123" })).toBe(true);
+    expect(fulfillmentShouldStopRenewal({ cancelAtPeriodEnd: false, stripeSubscriptionId: "sub_123" })).toBe(false);
+    expect(fulfillmentShouldStopRenewal({ cancelAtPeriodEnd: true, stripeSubscriptionId: null })).toBe(false);
+    expect(fulfillmentShouldStopRenewal({ cancelAtPeriodEnd: true })).toBe(false);
   });
 
   it("replaces a stored card when Stripe has a different one", () => {

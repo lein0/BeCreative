@@ -739,6 +739,31 @@ export function noticeSendClaimed(insertedRows: number) {
   return insertedRows > 0;
 }
 
+/** Sent and missed notices are done. Failed and in-flight claims can still be retried inside the legal window. */
+export function noticeSettled(status: string) {
+  return status === "sent" || status === "missed";
+}
+
+export const NOTICE_CLAIM_STALE_MS = 5 * 60 * 1000;
+
+export function noticeClaimDetail(token: string, at: Date) {
+  return `claim:${token}:${at.getTime()}`;
+}
+
+export function canReclaimNotice(input: { status: string; detail: string | null; now: Date }, staleMs = NOTICE_CLAIM_STALE_MS) {
+  if (noticeSettled(input.status)) return false;
+  if (input.status === "failed") return true;
+  if (input.status !== "sending") return false;
+  const match = /^claim:[^:]+:(\d+)$/.exec(input.detail ?? "");
+  if (!match) return true;
+  return input.now.getTime() - Number(match[1]) >= staleMs;
+}
+
+/** A cancel saved before checkout fulfillment must stop Stripe once the subscription id arrives. */
+export function fulfillmentShouldStopRenewal(input: { cancelAtPeriodEnd: boolean; stripeSubscriptionId?: string | null }) {
+  return input.cancelAtPeriodEnd && Boolean(input.stripeSubscriptionId);
+}
+
 export function replacementCard(
   current: { cardBrand?: string | null; cardLast4?: string | null },
   next: { cardBrand: string; cardLast4: string } | null,
