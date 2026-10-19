@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { user } from "@/lib/db/schema";
-import { phoneForStorage, phonesMatch } from "@/lib/phone";
+import { phoneDigitKeys, phoneForStorage, phonesMatch } from "@/lib/phone";
 
-/** Checkout only opts in when the box is checked. A different number does not inherit the old opt-in. */
+/** Checkout only opts in when the box is checked. Replacing a saved number does not inherit the old opt-in. The first saved number keeps signup consent. */
 export function checkoutContactPatch(input: {
   storedPhone: string | null;
   phone: string | null;
@@ -11,7 +11,7 @@ export function checkoutContactPatch(input: {
   marketing: boolean;
 }) {
   if (!input.phone && !input.sms && !input.marketing) return null;
-  const phoneChanged = Boolean(input.phone) && !phonesMatch(input.storedPhone ?? "", input.phone ?? "");
+  const phoneChanged = phoneDigitKeys(input.storedPhone ?? "").length > 0 && Boolean(input.phone) && !phonesMatch(input.storedPhone ?? "", input.phone ?? "");
   return {
     ...(input.phone ? { phone: input.phone } : {}),
     ...(input.sms ? { smsOptIn: true as const } : phoneChanged ? { smsOptIn: false as const } : {}),

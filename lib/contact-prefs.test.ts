@@ -32,6 +32,21 @@ describe("checkout contact prefs", () => {
     })).toBeNull();
   });
 
+  it("keeps signup SMS consent when checkout saves the first phone with the box unchecked", () => {
+    expect(checkoutContactPatch({
+      storedPhone: null,
+      phone: "+13105550100",
+      sms: false,
+      marketing: false,
+    })).toEqual({ phone: "+13105550100" });
+    expect(checkoutContactPatch({
+      storedPhone: "  ",
+      phone: "+13105550100",
+      sms: false,
+      marketing: false,
+    })).toEqual({ phone: "+13105550100" });
+  });
+
   it("opts the new number in when the box is checked", () => {
     expect(checkoutContactPatch({
       storedPhone: "+13105550100",
