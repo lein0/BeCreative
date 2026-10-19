@@ -67,6 +67,55 @@ describe("resolved ticket rating link", () => {
     expect(readTable(schema.tickets).find((ticket) => ticket.id === "dst")?.status).toBe("open");
   });
 
+  it("alerts admins when a student replies on a safety, payment, or escalated ticket", async () => {
+    seedTable(schema.userRoles, [
+      { id: "role-admin", userId: "admin-1", role: "admin" },
+      { id: "role-admin-2", userId: "admin-2", role: "admin" },
+    ]);
+    seedTable(schema.tickets, [{
+      id: "t-pay",
+      userId: "student-1",
+      category: "payment",
+      status: "waiting",
+      route: "admin",
+      subject: "Charged twice",
+    }]);
+    await replyToTicket({ ticketId: "t-pay", authorUserId: "student-1", body: "Any update?" });
+    const admins = notes.sent.filter((note) => note.userId === "admin-1" || note.userId === "admin-2");
+    expect(admins.map((note) => note.href)).toEqual(["/admin/support/t-pay", "/admin/support/t-pay"]);
+    expect(notes.sent.some((note) => note.userId === "student-1")).toBe(false);
+
+    notes.sent.length = 0;
+    await replyToTicket({ ticketId: "t-pay", authorUserId: "admin-1", body: "Refunded", teacherSide: true });
+    expect(notes.sent.map((note) => note.userId)).toEqual(["student-1"]);
+
+    notes.sent.length = 0;
+    await replyToTicket({ ticketId: "t-pay", authorUserId: "admin-1", body: "Internal only", internal: true });
+    expect(notes.sent).toEqual([]);
+
+    notes.sent.length = 0;
+    seedTable(schema.teachers, [{ id: "teacher-1", userId: "teacher-user" }]);
+    seedTable(schema.tickets, [{
+      id: "t-late",
+      userId: "student-1",
+      teacherId: "teacher-1",
+      category: "class",
+      status: "open",
+      route: "admin",
+      subject: "Late",
+      escalatedAt: new Date(),
+    }]);
+    await replyToTicket({ ticketId: "t-late", authorUserId: "student-1", body: "Still waiting", teacherSide: true });
+    expect(notes.sent.filter((note) => note.userId === "admin-1" || note.userId === "admin-2")).toHaveLength(2);
+    expect(notes.sent.find((note) => note.userId === "teacher-user")?.href).toBe("/teach/support");
+
+    notes.sent.length = 0;
+    readTable(schema.tickets)[0]!.route = "teacher";
+    await replyToTicket({ ticketId: "t-late", authorUserId: "student-1", body: "Studio only", teacherSide: true });
+    expect(notes.sent.some((note) => note.userId === "admin-1" || note.userId === "admin-2")).toBe(false);
+    expect(notes.sent.some((note) => note.userId === "teacher-user")).toBe(true);
+  });
+
   it("alerts admins when a teacher ticket passes the reply window", async () => {
     seedTable(schema.userRoles, [{ id: "role-admin", userId: "admin-1", role: "admin" }]);
     seedTable(schema.tickets, [{

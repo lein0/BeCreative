@@ -10,9 +10,10 @@ async function slaHours() {
   return row?.ticketTeacherSlaHours ?? SHIP_DEFAULTS.ticketTeacherSlaHours;
 }
 
-async function notifyAdmins(input: { event: NotificationEvent; title: string; body: string; href: string }) {
+async function notifyAdmins(input: { event: NotificationEvent; title: string; body: string; href: string }, exceptUserId?: string) {
   const admins = await db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, "admin"));
   for (const admin of admins) {
+    if (admin.userId === exceptUserId) continue;
     await emitNotification({ userId: admin.userId, event: input.event, audience: "teacher", title: input.title, body: input.body, href: input.href });
   }
 }
@@ -70,6 +71,9 @@ export async function replyToTicket(input: { ticketId: string; authorUserId: str
       if (teacher && teacher.userId !== input.authorUserId) {
         await emitNotification({ userId: teacher.userId, event: "ticket.updated", audience: "teacher", title: `Reply: ${ticket.subject}`, body: input.body, href: "/teach/support" });
       }
+    }
+    if (studentWrote && ticket.route === "admin") {
+      await notifyAdmins({ event: "ticket.updated", title: `Reply: ${ticket.subject}`, body: input.body, href: `/admin/support/${ticket.id}` }, input.authorUserId);
     }
   }
 }
