@@ -16,6 +16,11 @@ import {
   refundCancelsBooking,
   renewalChargeSplit,
   safeNextPath,
+  nextBookingAfterReplace,
+  priorHoldReleaseTiming,
+  replacedCheckoutDecision,
+  replacedCheckoutToAbandon,
+  SETTLED_CHECKOUT_ERROR,
   sessionLockOrder,
   studioOwnsResource,
   unattendedRefundCents,
@@ -51,6 +56,41 @@ describe("paid packs receive credits when checkout completes", () => {
     expect(packCreditsOnCreate({ awaitingCardPayment: true, creditCount: 5 })).toBe(0);
     expect(packCreditsOnCreate({ awaitingCardPayment: false, creditCount: 5 })).toBe(5);
     expect(packCreditsOnPayment(5)).toBe(5);
+  });
+});
+
+describe("replaced checkout", () => {
+  it("releases only the student's own pending order", () => {
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "sam")).toBe(true);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "paid" }, "sam")).toBe(false);
+    expect(replacedCheckoutToAbandon({ userId: "sam", status: "pending" }, "other")).toBe(false);
+    expect(replacedCheckoutToAbandon({ userId: null, status: "pending" }, "sam")).toBe(false);
+    expect(replacedCheckoutToAbandon(null, "sam")).toBe(false);
+  });
+
+  it("does not open a second hold when the prior payment is still collecting", () => {
+    expect(nextBookingAfterReplace("blocked")).toEqual({
+      proceed: false,
+      error: "The previous checkout is already paid or still processing. Finish that payment before booking again.",
+    });
+    expect(nextBookingAfterReplace("released").proceed).toBe(true);
+    expect(nextBookingAfterReplace("skipped").proceed).toBe(true);
+  });
+
+  it("keeps the unpaid seat until the replacement is kept, and refuses a settled checkout", () => {
+    expect(priorHoldReleaseTiming({ decision: "release", replacementKept: false })).toEqual({ releaseNow: false, proceed: true });
+    expect(priorHoldReleaseTiming({ decision: "release", replacementKept: true })).toEqual({ releaseNow: true, proceed: true });
+    expect(priorHoldReleaseTiming({ decision: "skipped", replacementKept: true })).toEqual({ releaseNow: false, proceed: true });
+    expect(priorHoldReleaseTiming({ decision: "blocked", replacementKept: true })).toMatchObject({ releaseNow: false, proceed: false });
+    expect(replacedCheckoutDecision({ userId: "sam", status: "paid" }, "sam")).toBe("settled");
+    expect(replacedCheckoutDecision({ userId: "sam", status: "pay_at_studio" }, "sam")).toBe("settled");
+    expect(replacedCheckoutDecision({ userId: "sam", status: "pending" }, "sam")).toBe("release");
+    expect(replacedCheckoutDecision({ userId: "sam", status: "expired" }, "sam")).toBe("skipped");
+    expect(priorHoldReleaseTiming({ decision: "settled", replacementKept: true })).toEqual({
+      releaseNow: false,
+      proceed: false,
+      error: SETTLED_CHECKOUT_ERROR,
+    });
   });
 });
 

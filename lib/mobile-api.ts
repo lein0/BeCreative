@@ -37,7 +37,7 @@ import { isCatalogEvent, MONEY_EVENTS, platformName } from "@/lib/analytics-even
 import { openTicket } from "@/lib/support";
 import { signWaiver } from "@/lib/wellness-service";
 import { applyContactPrefs } from "@/lib/contact-prefs";
-import { bookingTimezone, classNeedsSignature, pickBookingSession, placeFields, reauthMethod, teacherOffers, type ReauthBody } from "@/lib/student-api";
+import { bookingTimezone, classNeedsSignature, classPlace, pickBookingSession, placeFields, reauthMethod, teacherOffers, type ReauthBody } from "@/lib/student-api";
 import { confirmAppEmailVerification, confirmAppPasswordReset, exchangeSocialToken, reauthMatches, requestAppEmailVerification, requestAppPasswordReset } from "@/lib/student-auth";
 
 type Actor = { id: string; name: string; email: string; roles: string[] };
@@ -377,14 +377,14 @@ export async function handleMobileApi(request: Request, path: string[]) {
           startsAt: when?.startsAt ?? null,
           endsAt: when?.endsAt ?? null,
           timezone: bookingTimezone(zonesByClass.get(row.klass.id) ?? []),
-          location: placeFields(row.location),
+          location: classPlace(row.klass.delivery, row.location),
         };
       }),
     });
   }
 
   if (method === "POST" && root === "bookings" && !second) {
-    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean };
+    const body = await request.json() as { sessionId?: string; classId?: string; series?: boolean; code?: string; payWith?: string; policyAccepted?: boolean; paymentSheet?: boolean; abandonOrderId?: string };
     const result = await bookSession({
       userId: actor.id,
       email: actor.email,
@@ -398,6 +398,7 @@ export async function handleMobileApi(request: Request, path: string[]) {
       paymentSheet: body.paymentSheet,
       platform,
       returnToApp: true,
+      abandonOrderId: body.abandonOrderId,
       ip: request.headers.get("x-forwarded-for"),
     });
     return json(result, "error" in result && result.error ? 400 : 200);
@@ -420,20 +421,20 @@ export async function handleMobileApi(request: Request, path: string[]) {
       db.select({ sub: membershipSubscriptions, plan: memberships }).from(membershipSubscriptions).innerJoin(memberships, eq(memberships.id, membershipSubscriptions.membershipId)).where(eq(membershipSubscriptions.userId, actor.id)),
     ]);
     return json({
-      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
-      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd })),
+      packs: packRows.map((row) => ({ id: row.purchase.id, name: row.pack.name, remaining: row.purchase.creditsRemaining, total: row.purchase.creditsTotal, expiresAt: row.purchase.expiresAt ? new Date(row.purchase.expiresAt).toISOString() : null, classIds: row.pack.classIds, categoryIds: row.pack.categoryIds, teacherId: row.pack.teacherId })),
+      memberships: subRows.map((row) => ({ id: row.sub.id, name: row.plan.name, status: row.sub.status, periodEnd: row.sub.currentPeriodEnd, classIds: row.plan.classIds, categoryIds: row.plan.categoryIds, teacherId: row.plan.teacherId })),
     });
   }
 
   if (method === "POST" && root === "packs" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string; paymentSheet?: boolean };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, returnToApp: true });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "pack", id: body.id || "", code: body.code, paymentSheet: body.paymentSheet, platform, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
   if (method === "POST" && root === "memberships" && second === "purchase") {
     const body = await request.json() as { id?: string; code?: string };
-    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, returnToApp: true });
+    const result = await purchaseOffer({ userId: actor.id, email: actor.email, kind: "membership", id: body.id || "", code: body.code, platform, returnToApp: true });
     return json(result, "error" in result && result.error ? 400 : 200);
   }
 
@@ -557,7 +558,7 @@ async function visibleHelpArticles() {
 }
 
 function publicClass(row: { class: { id: string; slug: string; title: string; pricePerSessionCents: number | null; delivery: string }; teacher: { slug: string; studioName: string | null }; category?: { slug: string; vertical: string; name: string }; next?: { startsAt: Date } | null; price?: number; spots?: number | null; location?: { lat: number; lng: number; neighborhood: string; name?: string | null; city?: string | null } | null }) {
-  const place = placeFields(row.location);
+  const place = classPlace(row.class.delivery, row.location);
   return {
     id: row.class.id,
     slug: row.class.slug,

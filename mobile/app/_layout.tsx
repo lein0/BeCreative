@@ -23,7 +23,7 @@ function Bridge() {
     if (!url) return;
     const link = parseDeepLink(url);
     if (!link) return;
-    if (link.type === "bookings") {
+    if (link.type === "bookings" || link.type === "reset" || link.type === "verify") {
       router.replace(hrefForDeepLink(link) as "/bookings");
       return;
     }

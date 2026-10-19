@@ -12,4 +12,12 @@ describe("mobile checkout return paths", () => {
       cancelPath: "/t/studio",
     });
   });
+
+  it("marks web checkout so the return page stays on https", () => {
+    expect(checkoutPaths(true, "booking", "/bookings?paid=1", "/c/scene?cancelled=1", "web")).toEqual({
+      successPath: "/mobile/return?flow=booking&paid=1&web=1",
+      cancelPath: "/mobile/return?flow=booking&cancelled=1&web=1",
+    });
+    expect(checkoutPaths(true, "pack", "/bookings?pack=1", "/t/studio", "ios").successPath).toBe("/mobile/return?flow=pack&paid=1");
+  });
 });
