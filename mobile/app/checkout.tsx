@@ -1,11 +1,12 @@
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Body, Button, Card, Display, Notice } from "@mobile/components/ui";
 import { openCheckoutSession } from "@mobile/checkout/browser";
 import { readCheckoutDraft } from "@mobile/checkout/draft";
 import { money } from "@mobile/format";
+import { markCheckoutSettled } from "../../lib/mobile-client";
 import { useSession } from "@mobile/session";
 import { PayActions } from "@mobile/stripe/pay";
 import { useAppTheme } from "@mobile/theme/theme";
@@ -19,7 +20,13 @@ export default function Checkout() {
   const [done, setDone] = useState(false);
   const [opening, setOpening] = useState(false);
 
+  useEffect(() => {
+    if (!draft?.orderId || draft.waitlisted || draft.alreadyBooked) return;
+    if (!draft.checkoutUrl && !draft.clientSecret) markCheckoutSettled(draft.orderId);
+  }, [draft]);
+
   async function finishSheet(paymentIntentId: string) {
+    markCheckoutSettled(draft?.orderId);
     setDone(true);
     await track("checkout_completed", { orderId: draft?.orderId ?? "", paymentIntentId });
   }
@@ -38,6 +45,7 @@ export default function Checkout() {
         setError("Checkout closed before it finished. You can try again.");
         return;
       }
+      markCheckoutSettled(draft?.orderId);
       setDone(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open checkout.");
