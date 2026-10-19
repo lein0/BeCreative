@@ -1,7 +1,7 @@
 import type { PriceQuote } from "@/lib/pricing";
 
 /** Only the student's own pending checkout can be released when they book a different seat. */
-export function replacedCheckoutToAbandon(order: { userId: string; status: string } | null | undefined, userId: string) {
+export function replacedCheckoutToAbandon(order: { userId: string | null; status: string } | null | undefined, userId: string) {
   return Boolean(order && order.userId === userId && order.status === "pending");
 }
 
